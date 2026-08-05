@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pullback-in-Uptrend Screener</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36;
+    --text: #e6e9ef; --muted: #8b93a5; --accent: #4f8ff7;
+    --green: #3ecf8e; --red: #f76d6d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin-bottom: 1.5rem; }
+  .bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: .6rem 1.4rem; font-size: 1rem; cursor: pointer; font-weight: 600;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  a.dl { color: var(--accent); text-decoration: none; }
+  .pill {
+    padding: .2rem .7rem; border-radius: 999px; font-size: .85rem;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .pill.running { color: var(--accent); border-color: var(--accent); }
+  .pill.done { color: var(--green); border-color: var(--green); }
+  .pill.error { color: var(--red); border-color: var(--red); }
+  section { background: var(--panel); border: 1px solid var(--border);
+            border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  h2 { font-size: 1rem; margin: 0 0 .75rem; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .05em; }
+  #log {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .8rem; white-space: pre-wrap; color: var(--muted);
+    max-height: 260px; overflow-y: auto; margin: 0;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { text-align: right; padding: .45rem .6rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  td.rr { color: var(--green); font-weight: 700; }
+  .empty { color: var(--muted); font-style: italic; }
+  .tablewrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pullback-in-Uptrend Swing Screener</h1>
+  <div class="sub">US + EU large caps &middot; price &gt; SMA200 &middot; RSI 35&ndash;55 &middot;
+    pivot support &middot; R:R &ge; 3 &middot; profitability &amp; earnings gates &middot; risk-based sizing</div>
+
+  <div class="bar">
+    <button id="runBtn" onclick="runScan()">Run screener</button>
+    <span id="statusPill" class="pill">idle</span>
+    <span id="timing" class="pill" style="display:none"></span>
+    <a class="dl" id="csvLink" href="/results.csv" style="display:none">Download CSV</a>
+  </div>
+
+  <section>
+    <h2>Results <span id="resultCount"></span></h2>
+    <div class="tablewrap"><div id="results" class="empty">No scan run yet — press <b>Run screener</b>.
+      A full scan takes a few minutes (universe build + 1y OHLC download + fundamentals).</div></div>
+  </section>
+
+  <section>
+    <h2>Progress log</h2>
+    <pre id="log">—</pre>
+  </section>
+
+  <section id="rejSection" style="display:none">
+    <h2>Rejection summary</h2>
+    <div class="tablewrap"><div id="rejections"></div></div>
+    <div id="nearMisses"></div>
+  </section>
+</main>
+
+<script>
+const COLS = ["ticker","price","support","stop","resistance","RR","RSI",
+              "shares","risk_EUR","days_to_earnings"];
+let poller = null;
+
+async function runScan() {
+  const r = await fetch("/run", {method: "POST"});
+  if (r.ok || r.status === 409) startPolling();
+}
+
+function startPolling() {
+  if (!poller) poller = setInterval(refresh, 2000);
+  refresh();
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function refresh() {
+  const s = await (await fetch("/status")).json();
+
+  const pill = document.getElementById("statusPill");
+  pill.textContent = s.status;
+  pill.className = "pill " + s.status;
+  document.getElementById("runBtn").disabled = (s.status === "running");
+
+  const log = document.getElementById("log");
+  log.textContent = (s.log && s.log.length) ? s.log.join("\n") : "—";
+  log.scrollTop = log.scrollHeight;
+
+  const timing = document.getElementById("timing");
+  if (s.elapsed_s != null) {
+    timing.style.display = "";
+    timing.textContent = `scan: ${s.elapsed_s}s` +
+      (s.universe_size ? ` · universe: ${s.universe_size}` : "");
+  }
+
+  const res = document.getElementById("results");
+  const count = document.getElementById("resultCount");
+  const csv = document.getElementById("csvLink");
+  if (s.results && s.results.length) {
+    count.textContent = `(${s.results.length})`;
+    csv.style.display = "";
+    res.classList.remove("empty");
+    res.innerHTML = "<table><thead><tr>" +
+      COLS.map(c => `<th>${esc(c)}</th>`).join("") +
+      "</tr></thead><tbody>" +
+      s.results.map(row => "<tr>" + COLS.map(c => {
+        const v = row[c] == null ? "—" : row[c];
+        return `<td class="${c === "RR" ? "rr" : ""}">${esc(v)}</td>`;
+      }).join("") + "</tr>").join("") +
+      "</tbody></table>";
+  } else if (s.status === "done") {
+    count.textContent = "";
+    res.className = "empty";
+    res.textContent = "No setups matched today.";
+  }
+
+  const rejSection = document.getElementById("rejSection");
+  if (s.rejection_summary && s.rejection_summary.length) {
+    rejSection.style.display = "";
+    document.getElementById("rejections").innerHTML =
+      "<table><thead><tr><th>reason</th><th>count</th></tr></thead><tbody>" +
+      s.rejection_summary.map(r =>
+        `<tr><td>${esc(r.reason)}</td><td>${esc(r.count)}</td></tr>`).join("") +
+      "</tbody></table>";
+    if (s.near_misses && s.near_misses.length) {
+      document.getElementById("nearMisses").innerHTML =
+        "<h2 style='margin-top:1rem'>Near-misses (had a setup, failed a gate)</h2>" +
+        "<table><thead><tr><th>ticker</th><th>why</th></tr></thead><tbody>" +
+        s.near_misses.map(m =>
+          `<tr><td>${esc(m.ticker)}</td><td style="text-align:left">${esc(m.reason)}</td></tr>`).join("") +
+        "</tbody></table>";
+    }
+  }
+
+  if (s.status !== "running" && poller && s.status !== "idle") {
+    // keep polling only while running; one refresh after finish is enough
+    clearInterval(poller); poller = null;
+  }
+}
+
+refresh();
+</script>
+</body>
+</html>
