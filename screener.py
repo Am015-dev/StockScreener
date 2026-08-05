@@ -19,6 +19,7 @@ OHLC downloads are cached for an hour, so re-running with different filter
 values is fast.
 """
 
+import hashlib
 import os
 import time
 from collections import Counter
@@ -27,6 +28,8 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+
+import cache_store
 
 # ----------------------- PARAMETERS -----------------------
 # All Yahoo sectors except Financial Services (the no-financials rule —
@@ -185,6 +188,7 @@ def clear_cache():
     _cache.update(universe_key=None, universe=None, universe_ts=0.0,
                   ohlc_key=None, ohlc=None, ohlc_ts=0.0,
                   bench=None, bench_ts=0.0, info={}, earnings={}, finnhub={})
+    cache_store.clear()
 
 
 def _fresh(ts: float) -> bool:
@@ -198,6 +202,11 @@ def build_universe(p: dict, progress=print) -> list[str]:
         age = int((time.time() - _cache["universe_ts"]) / 60)
         progress(f"Reusing cached universe ({len(_cache['universe'])} tickers, {age}m old).")
         return _cache["universe"]
+    hit, stored = cache_store.fetch(f"universe:{key}", CACHE_TTL)
+    if hit:
+        progress(f"Loaded universe from disk cache ({len(stored)} tickers).")
+        _cache.update(universe_key=key, universe=stored, universe_ts=time.time())
+        return stored
 
     syms: list[str] = []
     try:
@@ -239,35 +248,51 @@ def build_universe(p: dict, progress=print) -> list[str]:
             seen.add(t)
             out.append(t)
     _cache.update(universe_key=key, universe=out, universe_ts=time.time())
+    cache_store.put(f"universe:{key}", out)
     return out
 
 
 def _get_ohlc(universe: list[str], progress=print):
-    key = hash(tuple(universe))
+    key = hashlib.md5(",".join(universe).encode()).hexdigest()
     if _cache["ohlc_key"] == key and _fresh(_cache["ohlc_ts"]):
         age = int((time.time() - _cache["ohlc_ts"]) / 60)
         progress(f"Reusing cached 1y OHLC ({age}m old) — filter-only rerun, fast.")
         return _cache["ohlc"]
+    hit, stored = cache_store.fetch(f"ohlc:{key}", CACHE_TTL)
+    if hit:
+        progress("Loaded 1y OHLC from disk cache — no re-download needed.")
+        _cache.update(ohlc_key=key, ohlc=stored, ohlc_ts=time.time())
+        return stored
     progress("Batch-downloading 1y OHLC for the whole universe (one call, ~1-2 min)...")
     data = yf.download(universe, period="1y", auto_adjust=True,
                        group_by="ticker", threads=True, progress=False)
     _cache.update(ohlc_key=key, ohlc=data, ohlc_ts=time.time())
+    cache_store.put(f"ohlc:{key}", data)
     return data
 
 
 def _get_info(ticker: str) -> dict:
-    hit = _cache["info"].get(ticker)
-    if hit and _fresh(hit[0]):
-        return hit[1]
+    mem = _cache["info"].get(ticker)
+    if mem and _fresh(mem[0]):
+        return mem[1]
+    hit, stored = cache_store.fetch(f"info:{ticker}", CACHE_TTL)
+    if hit:
+        _cache["info"][ticker] = (time.time(), stored)
+        return stored
     info = yf.Ticker(ticker).info or {}
     _cache["info"][ticker] = (time.time(), info)
+    cache_store.put(f"info:{ticker}", info)
     return info
 
 
 def _get_days_to_earnings(ticker: str) -> int | None:
-    hit = _cache["earnings"].get(ticker)
-    if hit and _fresh(hit[0]):
-        return hit[1]
+    mem = _cache["earnings"].get(ticker)
+    if mem and _fresh(mem[0]):
+        return mem[1]
+    hit, stored = cache_store.fetch(f"earn:{ticker}", CACHE_TTL)
+    if hit:
+        _cache["earnings"][ticker] = (time.time(), stored)
+        return stored
     days = None
     try:
         ed = yf.Ticker(ticker).get_earnings_dates(limit=4)
@@ -277,6 +302,7 @@ def _get_days_to_earnings(ticker: str) -> int | None:
     except Exception:
         pass
     _cache["earnings"][ticker] = (time.time(), days)
+    cache_store.put(f"earn:{ticker}", days)
     return days
 
 
@@ -284,6 +310,10 @@ def _get_benchmarks(progress=print) -> dict:
     """Region -> benchmark Close series (or None if unavailable)."""
     if _cache["bench"] is not None and _fresh(_cache["bench_ts"]):
         return _cache["bench"]
+    hit, stored = cache_store.fetch("bench", CACHE_TTL)
+    if hit:
+        _cache.update(bench=stored, bench_ts=time.time())
+        return stored
     bench = {}
     try:
         data = yf.download(list(BENCHMARKS.values()), period="1y", auto_adjust=True,
@@ -298,6 +328,8 @@ def _get_benchmarks(progress=print) -> dict:
         progress(f"  benchmark download failed ({e}) — regime/RS checks disabled")
         bench = {region: None for region in BENCHMARKS}
     _cache.update(bench=bench, bench_ts=time.time())
+    if any(v is not None for v in bench.values()):
+        cache_store.put("bench", bench)
     return bench
 
 
@@ -343,9 +375,13 @@ def _finnhub_days_to_earnings(ticker: str) -> int | None:
     tier). Returns None when no key is set, on any error, or no date found."""
     if not FINNHUB_KEY or _region(ticker) != "US":
         return None
-    hit = _cache["finnhub"].get(ticker)
-    if hit and _fresh(hit[0]):
-        return hit[1]
+    mem = _cache["finnhub"].get(ticker)
+    if mem and _fresh(mem[0]):
+        return mem[1]
+    hit, stored = cache_store.fetch(f"fh:{ticker}", CACHE_TTL)
+    if hit:
+        _cache["finnhub"][ticker] = (time.time(), stored)
+        return stored
     days = None
     try:
         today = pd.Timestamp.now().normalize()
@@ -363,6 +399,7 @@ def _finnhub_days_to_earnings(ticker: str) -> int | None:
     except Exception:
         pass
     _cache["finnhub"][ticker] = (time.time(), days)
+    cache_store.put(f"fh:{ticker}", days)
     return days
 
 

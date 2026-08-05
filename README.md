@@ -108,12 +108,22 @@ rationale. The score weighs:
 
 …minus 5 points per data-quality flag.
 
-## Fast reruns
+## Fast reruns & caching
 
-The universe discovery and the 1-year OHLC download are cached in memory for
-an hour. The first scan takes a few minutes; re-running with tweaked filters
-reuses the cached data and finishes in seconds (only stage-2 fundamentals for
-*new* survivors trigger fresh API calls, and those are cached too).
+Two cache levels, both with a 1-hour TTL:
+
+1. **In-memory** — universe discovery, the 1-year OHLC batch download,
+   benchmarks, and per-ticker fundamentals/earnings dates. Re-running with
+   tweaked thresholds reuses everything and finishes in seconds; only
+   universe-shaping changes (market cap, regions, sectors) or *new* stage-1
+   survivors trigger fresh API calls.
+2. **On-disk (SQLite)** — the same data mirrored to a small database
+   (`SCREENER_CACHE_DB`, default `/tmp/screener_cache.db`), so a process
+   restart within the hour reloads from disk instead of re-downloading (the
+   log says so explicitly). Strictly best-effort: a missing or corrupt DB
+   never breaks a scan. Note that on Render's free tier the filesystem is
+   wiped on spin-down, so the disk cache mainly pays off locally or with a
+   persistent disk.
 
 ## Run locally
 
