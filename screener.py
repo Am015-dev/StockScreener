@@ -49,6 +49,7 @@ DEFAULTS = {
     "sectors": list(ALL_SECTORS),
     "min_mkt_cap_b": 10.0,       # $B
     "min_dollar_vol_m": 200.0,   # $M/day traded (price x volume)
+    "universe_max": 600,         # cap scan size: less rate-limit risk, less RAM
     "exclude": "AVGO, AMZN, GOOG, NVDA, AAL",  # held-at-cap or permanent passes
     # setup
     "rsi_low": 35.0,             # pullback zone, not collapse
@@ -93,7 +94,8 @@ FALLBACK_UNIVERSE = [
     "NOVN.SW","RHHBY","AZN.L","SHEL.L","ULVR.L","NOVO-B.CO","RACE.MI",
 ]
 
-CACHE_TTL = 3600  # reuse universe/OHLC/fundamentals for an hour
+CACHE_TTL = 3600      # reuse universe/OHLC/fundamentals for an hour
+DOWNLOAD_CHUNK = 250  # tickers per yf.download call: rate-limit friendliness
 # ----------------------------------------------------------
 
 
@@ -124,6 +126,7 @@ def clean_params(overrides: dict | None) -> dict:
 
     p["min_mkt_cap_b"] = _num(o.get("min_mkt_cap_b"), p["min_mkt_cap_b"], 0.5, 5000)
     p["min_dollar_vol_m"] = _num(o.get("min_dollar_vol_m"), p["min_dollar_vol_m"], 0, 100000)
+    p["universe_max"] = _num(o.get("universe_max"), p["universe_max"], 50, 5000, int)
     p["rsi_low"] = _num(o.get("rsi_low"), p["rsi_low"], 0, 100)
     p["rsi_high"] = _num(o.get("rsi_high"), p["rsi_high"], 0, 100)
     if p["rsi_low"] > p["rsi_high"]:
@@ -197,7 +200,8 @@ def _fresh(ts: float) -> bool:
 
 def build_universe(p: dict, progress=print) -> list[str]:
     min_cap = p["min_mkt_cap_b"] * 1e9
-    key = (p["include_us"], p["include_eu"], tuple(p["sectors"]), round(min_cap))
+    key = (p["include_us"], p["include_eu"], tuple(p["sectors"]), round(min_cap),
+           p["universe_max"])
     if _cache["universe_key"] == key and _fresh(_cache["universe_ts"]):
         age = int((time.time() - _cache["universe_ts"]) / 60)
         progress(f"Reusing cached universe ({len(_cache['universe'])} tickers, {age}m old).")
@@ -208,7 +212,8 @@ def build_universe(p: dict, progress=print) -> list[str]:
         _cache.update(universe_key=key, universe=stored, universe_ts=time.time())
         return stored
 
-    syms: list[str] = []
+    us_syms: list[str] = []
+    eu_syms: list[str] = []
     try:
         if p["include_us"]:
             for sector in p["sectors"]:
@@ -221,7 +226,7 @@ def build_universe(p: dict, progress=print) -> list[str]:
                     res = yf.screen(q, size=250, sortField="intradaymarketcap", sortAsc=False)
                     got = [x["symbol"] for x in res.get("quotes", [])]
                     progress(f"  us/{sector}: {len(got)}")
-                    syms += got
+                    us_syms += got
                 except Exception as e:
                     progress(f"  us/{sector} failed: {e}")
         if p["include_eu"]:
@@ -235,18 +240,33 @@ def build_universe(p: dict, progress=print) -> list[str]:
                     res = yf.screen(q, size=100, sortField="intradaymarketcap", sortAsc=False)
                     got = [x["symbol"] for x in res.get("quotes", [])]
                     progress(f"  {region}: {len(got)}")
-                    syms += got
+                    eu_syms += got
                 except Exception as e:
                     progress(f"  {region} failed: {e}")
     except AttributeError:
         progress("  yf.screen unavailable — update yfinance: pip install -U yfinance")
-    if not syms:  # final fallback: static core list
-        syms = list(FALLBACK_UNIVERSE)
-    seen, out = set(), []
-    for t in syms:
-        if t and t not in seen:
-            seen.add(t)
-            out.append(t)
+    if not us_syms and not eu_syms:  # final fallback: static core list
+        us_syms = list(FALLBACK_UNIVERSE)
+
+    def dedupe(lst, seen):
+        out = []
+        for t in lst:
+            if t and t not in seen:
+                seen.add(t)
+                out.append(t)
+        return out
+
+    seen: set = set()
+    us, eu = dedupe(us_syms, seen), dedupe(eu_syms, seen)
+    # cap the universe (rate-limit + memory safety); each query is already
+    # sorted by market cap desc, so truncation keeps the largest names,
+    # split proportionally between US and EU
+    cap = p["universe_max"]
+    if len(us) + len(eu) > cap:
+        us_keep = round(cap * len(us) / (len(us) + len(eu)))
+        us, eu = us[:us_keep], eu[:cap - us_keep]
+        progress(f"  universe capped at {cap} (largest caps kept: {len(us)} US, {len(eu)} EU)")
+    out = us + eu
     _cache.update(universe_key=key, universe=out, universe_ts=time.time())
     cache_store.put(f"universe:{key}", out)
     return out
@@ -263,11 +283,46 @@ def _get_ohlc(universe: list[str], progress=print):
         progress("Loaded 1y OHLC from disk cache — no re-download needed.")
         _cache.update(ohlc_key=key, ohlc=stored, ohlc_ts=time.time())
         return stored
-    progress("Batch-downloading 1y OHLC for the whole universe (one call, ~1-2 min)...")
-    data = yf.download(universe, period="1y", auto_adjust=True,
-                       group_by="ticker", threads=True, progress=False)
+
+    n_chunks = (len(universe) + DOWNLOAD_CHUNK - 1) // DOWNLOAD_CHUNK
+    progress(f"Batch-downloading 1y OHLC for {len(universe)} tickers "
+             f"({n_chunks} chunks of {DOWNLOAD_CHUNK})...")
+    parts, failed = [], 0
+    for ci in range(n_chunks):
+        chunk = universe[ci * DOWNLOAD_CHUNK:(ci + 1) * DOWNLOAD_CHUNK]
+        try:
+            d = yf.download(chunk, period="1y", auto_adjust=True,
+                            group_by="ticker", threads=8, progress=False)
+            if d is None or d.empty:
+                failed += 1
+                progress(f"  chunk {ci+1}/{n_chunks}: empty response (rate-limited?)")
+                continue
+            if not isinstance(d.columns, pd.MultiIndex):  # single-ticker shape
+                d = pd.concat({chunk[0]: d}, axis=1)
+            parts.append(d)
+            progress(f"  chunk {ci+1}/{n_chunks}: ok")
+        except Exception as e:
+            failed += 1
+            progress(f"  chunk {ci+1}/{n_chunks} failed: {e}")
+    if not parts:
+        raise RuntimeError(
+            "every price download failed — Yahoo Finance is likely rate-limiting "
+            "or blocking this server right now; wait a few minutes and rerun")
+    data = pd.concat(parts, axis=1) if len(parts) > 1 else parts[0]
+
+    got = set(data.columns.get_level_values(0))
+    n_empty = sum(1 for t in universe
+                  if t not in got or data[t]["Close"].dropna().empty)
+    if n_empty:
+        progress(f"  warning: {n_empty}/{len(universe)} tickers returned no data"
+                 + (" — Yahoo may be rate-limiting; rerun in a few minutes"
+                    if n_empty > len(universe) * 0.2 else ""))
     _cache.update(ohlc_key=key, ohlc=data, ohlc_ts=time.time())
-    cache_store.put(f"ohlc:{key}", data)
+    try:  # keep the disk cache off the hot path for very large frames (RAM)
+        if float(data.memory_usage().sum()) < 150e6:
+            cache_store.put(f"ohlc:{key}", data)
+    except Exception:
+        pass
     return data
 
 

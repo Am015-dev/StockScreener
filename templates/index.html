@@ -115,6 +115,8 @@
             <input type="number" id="min_mkt_cap_b" min="0.5" step="1"></div>
           <div class="field"><label>Min liquidity ($M traded/day)</label>
             <input type="number" id="min_dollar_vol_m" min="0" step="10"></div>
+          <div class="field"><label>Max universe size (largest caps kept)</label>
+            <input type="number" id="universe_max" min="50" max="5000" step="50"></div>
           <div class="field wide"><label>Excluded tickers (held-at-cap / permanent passes, comma-separated)</label>
             <input type="text" id="exclude" placeholder="AVGO, AMZN, ..."></div>
         </div>
@@ -241,7 +243,7 @@
 const COLS = ["ticker","status","sector","price","support","stop","resistance","RR","RSI",
               "rs_3m","vol_ratio","stop_atr","score","shares","risk_EUR","cum_risk_EUR",
               "fits_risk_budget","sector_after","friction_pct","days_to_earnings","flags"];
-const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","rsi_low","rsi_high","min_rr",
+const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","universe_max","rsi_low","rsi_high","min_rr",
                     "swing_lookback","pivot_k","stop_buffer_pct","min_stop_atr",
                     "earnings_drop_days","ticket_eur","max_risk_eur",
                     "cash_eur","current_open_risk_eur","sector_cap_pct","max_open_risk_pct",
