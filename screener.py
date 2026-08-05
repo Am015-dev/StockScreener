@@ -62,6 +62,16 @@ DEFAULTS = {
     # sizing
     "ticket_eur": 250.0,
     "max_risk_eur": 90.0,        # ~0.75% of an ~€11.8k book
+    # portfolio awareness (all optional — empty portfolio disables the checks)
+    "holdings": [],              # [{"ticker": "AAPL", "shares": 10, "cost": 150.0}]
+    "cash_eur": 0.0,             # free cash available to fund new entries
+    "current_open_risk_eur": 0.0,  # summed risk of stops already in the market
+    "sector_cap_pct": 35.0,      # flag entries pushing a sector past this weight
+    "max_open_risk_pct": 6.0,    # aggregate open-risk ceiling as % of book
+    # trade economics
+    "commission_eur": 1.0,       # per order
+    "spread_bps": 5.0,           # half-spread + slippage estimate
+    "max_friction_pct": 20.0,    # reject if costs eat > this % of target profit (0 = off)
 }
 EURUSD = 1.08                    # rough conversion for sizing math
 
@@ -125,6 +135,29 @@ def clean_params(overrides: dict | None) -> dict:
     p["earnings_drop_days"] = _num(o.get("earnings_drop_days"), p["earnings_drop_days"], 0, 60, int)
     p["ticket_eur"] = _num(o.get("ticket_eur"), p["ticket_eur"], 1, 1e7)
     p["max_risk_eur"] = _num(o.get("max_risk_eur"), p["max_risk_eur"], 1, 1e6)
+
+    p["cash_eur"] = _num(o.get("cash_eur"), p["cash_eur"], 0, 1e9)
+    p["current_open_risk_eur"] = _num(o.get("current_open_risk_eur"),
+                                      p["current_open_risk_eur"], 0, 1e9)
+    p["sector_cap_pct"] = _num(o.get("sector_cap_pct"), p["sector_cap_pct"], 5, 100)
+    p["max_open_risk_pct"] = _num(o.get("max_open_risk_pct"), p["max_open_risk_pct"], 0.5, 100)
+    p["commission_eur"] = _num(o.get("commission_eur"), p["commission_eur"], 0, 1000)
+    p["spread_bps"] = _num(o.get("spread_bps"), p["spread_bps"], 0, 500)
+    p["max_friction_pct"] = _num(o.get("max_friction_pct"), p["max_friction_pct"], 0, 100)
+
+    holdings = o.get("holdings", p["holdings"])
+    clean_h = []
+    if isinstance(holdings, (list, tuple)):
+        for h in holdings[:100]:
+            try:
+                t = str(h["ticker"]).strip().upper()
+                sh = float(h["shares"])
+                cb = float(h.get("cost", 0) or 0)
+                if t and sh > 0:
+                    clean_h.append({"ticker": t, "shares": sh, "cost": cb})
+            except (KeyError, TypeError, ValueError):
+                continue
+    p["holdings"] = clean_h
 
     exclude = o.get("exclude", p["exclude"])
     if isinstance(exclude, (list, tuple)):
@@ -352,6 +385,73 @@ def last_pivot_low(low: pd.Series, k: int) -> float | None:
     return None
 
 
+# ----------------------- portfolio -----------------------
+def _to_eur(value: float, ticker: str) -> float:
+    """Rough currency normalization: US listings are USD, EU listings are
+    treated as EUR-equivalent (CHF/GBP/DKK strays accepted as approximation)."""
+    return value / EURUSD if _region(ticker) == "US" else value
+
+
+def _last_close(container, ticker: str) -> float | None:
+    try:
+        return float(container[ticker]["Close"].dropna().iloc[-1])
+    except Exception:
+        try:
+            return float(container["Close"].dropna().iloc[-1])
+        except Exception:
+            return None
+
+
+def _portfolio_state(p: dict, data, universe: list[str], progress=print) -> dict | None:
+    """Value the user's holdings and derive book size, sector weights, and the
+    remaining aggregate risk budget. Returns None when no portfolio is given."""
+    if not p["holdings"] and p["cash_eur"] <= 0:
+        return None
+    extra = {}
+    missing = [h["ticker"] for h in p["holdings"] if h["ticker"] not in universe]
+    if missing:
+        try:
+            d2 = yf.download(missing, period="5d", auto_adjust=True,
+                             group_by="ticker", threads=True, progress=False)
+            for t in missing:
+                px = _last_close(d2, t)
+                if px is not None:
+                    extra[t] = px
+        except Exception:
+            pass
+
+    positions, sector_val = {}, {}
+    for h in p["holdings"]:
+        t = h["ticker"]
+        price = extra.get(t)
+        if price is None:
+            price = _last_close(data, t)
+        if price is None:
+            progress(f"  portfolio: no price for {t} — position ignored in book math")
+            continue
+        value_eur = _to_eur(price * h["shares"], t)
+        sector = _get_info(t).get("sector") or "?"
+        pnl_pct = round((price / h["cost"] - 1) * 100, 1) if h["cost"] > 0 else None
+        positions[t] = {"shares": h["shares"], "price": price, "value_eur": round(value_eur, 2),
+                        "sector": sector, "pnl_pct": pnl_pct}
+        sector_val[sector] = sector_val.get(sector, 0.0) + value_eur
+
+    book_eur = p["cash_eur"] + sum(pos["value_eur"] for pos in positions.values())
+    risk_budget_eur = None
+    if book_eur > 0:
+        risk_budget_eur = round(book_eur * p["max_open_risk_pct"] / 100
+                                - p["current_open_risk_eur"], 2)
+    port = {"positions": positions, "cash_eur": p["cash_eur"],
+            "book_eur": round(book_eur, 2), "sector_val": sector_val,
+            "risk_budget_eur": risk_budget_eur,
+            "sector_weights": {s: round(v / book_eur * 100, 1)
+                               for s, v in sector_val.items()} if book_eur > 0 else {}}
+    progress(f"Portfolio: {len(positions)} positions, book €{book_eur:,.0f} "
+             f"(cash €{p['cash_eur']:,.0f}), remaining risk budget "
+             f"{'n/a' if risk_budget_eur is None else f'€{risk_budget_eur:,.0f}'}")
+    return port
+
+
 # ----------------------- scoring -----------------------
 def _clamp01(x: float) -> float:
     return min(max(x, 0.0), 1.0)
@@ -419,6 +519,8 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
         rejections[t] = reason
 
     data = _get_ohlc(universe, progress)
+
+    port = _portfolio_state(p, data, universe, progress)
 
     bench = _get_benchmarks(progress)
     regime = {region: market_uptrend(close) for region, close in bench.items()}
@@ -538,12 +640,46 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                 continue
 
             # ---- sizing off YOUR risk, not a fixed ticket ----
-            ticket_usd = p["ticket_eur"] * EURUSD
-            max_risk_usd = p["max_risk_eur"] * EURUSD
-            shares_by_risk = max_risk_usd / risk_ps
-            shares_by_ticket = ticket_usd / price
-            shares = round(min(shares_by_risk, shares_by_ticket), 4)
-            actual_risk_eur = round(shares * risk_ps / EURUSD, 2)
+            fx = EURUSD if region == "US" else 1.0  # EUR budget -> listing currency
+            shares_by_risk = p["max_risk_eur"] * fx / risk_ps
+            shares_by_ticket = p["ticket_eur"] * fx / price
+            shares = min(shares_by_risk, shares_by_ticket)
+
+            # ---- portfolio awareness (only when a portfolio was provided) ----
+            status = "NEW"
+            sector_after = None
+            if port is not None:
+                held = port["positions"].get(ticker)
+                if held:
+                    status = ("ADD" if held["pnl_pct"] is None
+                              else f"ADD ({held['pnl_pct']:+.1f}%)")
+                pos_value_eur = _to_eur(shares * price, ticker)
+                if port["cash_eur"] <= 0:
+                    flags.append("no_cash")
+                elif pos_value_eur > port["cash_eur"]:
+                    shares *= port["cash_eur"] / pos_value_eur
+                    flags.append("cash_capped")
+                pos_value_eur = _to_eur(shares * price, ticker)
+                if sector and port["book_eur"] > 0:
+                    sector_after = round((port["sector_val"].get(sector, 0.0) + pos_value_eur)
+                                         / port["book_eur"] * 100, 1)
+                    if sector_after > p["sector_cap_pct"]:
+                        flags.append("sector_cap")
+
+            shares = round(shares, 4)
+            actual_risk_eur = round(_to_eur(shares * risk_ps, ticker), 2)
+
+            # ---- net-of-cost economics: block trades friction eats alive ----
+            pos_value_eur = _to_eur(shares * price, ticker)
+            target_profit_eur = _to_eur(shares * reward_ps, ticker)
+            cost_eur = 2 * p["commission_eur"] + p["spread_bps"] / 1e4 * pos_value_eur
+            friction_pct = (round(cost_eur / target_profit_eur * 100, 1)
+                            if target_profit_eur > 0 else None)
+            if (p["max_friction_pct"] > 0 and friction_pct is not None
+                    and friction_pct > p["max_friction_pct"]):
+                reject(ticker, f"friction (costs {friction_pct:.0f}% of target profit "
+                               f"> {p['max_friction_pct']:.0f}%)")
+                continue
 
             row = {
                 "ticker": ticker, "name": info.get("shortName") or ticker,
@@ -553,6 +689,8 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                 "resistance": round(resistance, 2),
                 "RR": round(rr, 2), "RSI": round(r, 1),
                 "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
+                "status": status, "sector_after": sector_after,
+                "friction_pct": friction_pct,
                 "shares": shares, "risk_EUR": actual_risk_eur,
                 "days_to_earnings": days_to_earnings,
                 "flags": ",".join(flags),
@@ -567,8 +705,23 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
     df = pd.DataFrame(rows)
     if len(df):
         df = df.sort_values("score", ascending=False).reset_index(drop=True)
+        # aggregate risk budget: walking down the ranking, how far does the
+        # book's remaining risk capacity reach? (#4: portfolio-level risk cap)
+        if port is not None and port["risk_budget_eur"] is not None:
+            cum = df["risk_EUR"].cumsum()
+            df["cum_risk_EUR"] = cum.round(2)
+            df["fits_risk_budget"] = cum <= port["risk_budget_eur"]
+            n_fit = int(df["fits_risk_budget"].sum())
+            progress(f"Risk budget €{port['risk_budget_eur']:,.0f} covers the "
+                     f"top {n_fit} of {len(df)} setups.")
+    port_summary = None
+    if port is not None:
+        port_summary = {"book_eur": port["book_eur"], "cash_eur": port["cash_eur"],
+                        "risk_budget_eur": port["risk_budget_eur"],
+                        "n_positions": len(port["positions"]),
+                        "sector_weights": port["sector_weights"]}
     return {"df": df, "rejections": rejections, "universe_size": len(universe),
-            "elapsed_s": elapsed, "params": p}
+            "elapsed_s": elapsed, "params": p, "portfolio": port_summary}
 
 
 def summarize_rejections(rejections: dict[str, str], progress=print):

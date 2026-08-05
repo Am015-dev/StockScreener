@@ -162,6 +162,36 @@
         </div>
       </div>
 
+      <div class="fgroup">
+        <div class="glabel">Portfolio (optional — saved in your browser)</div>
+        <div class="fgrid">
+          <div class="field wide"><label>Holdings — one per line: TICKER, shares, cost basis</label>
+            <textarea id="holdingsText" rows="4" placeholder="AAPL, 10, 172.50&#10;SAP.DE, 5, 148"
+              style="width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);
+                     border-radius:6px;padding:.4rem .55rem;font-size:.9rem;font-family:ui-monospace,Menlo,monospace;"></textarea></div>
+          <div class="field"><label>Free cash (€)</label>
+            <input type="number" id="cash_eur" min="0" step="100"></div>
+          <div class="field"><label>Current open risk (€, stops in market)</label>
+            <input type="number" id="current_open_risk_eur" min="0" step="10"></div>
+          <div class="field"><label>Sector cap (% of book)</label>
+            <input type="number" id="sector_cap_pct" min="5" max="100" step="5"></div>
+          <div class="field"><label>Max total open risk (% of book)</label>
+            <input type="number" id="max_open_risk_pct" min="0.5" max="100" step="0.5"></div>
+        </div>
+      </div>
+
+      <div class="fgroup">
+        <div class="glabel">Trade economics</div>
+        <div class="fgrid">
+          <div class="field"><label>Commission per order (€)</label>
+            <input type="number" id="commission_eur" min="0" step="0.5"></div>
+          <div class="field"><label>Spread + slippage (bps)</label>
+            <input type="number" id="spread_bps" min="0" step="1"></div>
+          <div class="field"><label>Max friction (% of target profit, 0 = off)</label>
+            <input type="number" id="max_friction_pct" min="0" max="100" step="5"></div>
+        </div>
+      </div>
+
       <div class="hint">Tip: the universe and price data are cached for an hour —
         the first scan takes a few minutes, but re-running with tweaked filters is fast.</div>
     </details>
@@ -182,6 +212,7 @@
 
   <section>
     <h2>All results <span id="resultCount"></span></h2>
+    <div id="portSummary" class="hint" style="display:none;margin:0 0 .6rem"></div>
     <div class="tablewrap"><div id="results" class="empty">No scan run yet — press <b>Run screener</b>.
       The first scan takes a few minutes (universe build + 1y price download + fundamentals).</div></div>
   </section>
@@ -199,13 +230,40 @@
 </main>
 
 <script>
-const COLS = ["ticker","sector","price","support","stop","resistance","RR","RSI",
-              "rs_3m","vol_ratio","stop_atr","score","shares","risk_EUR",
-              "days_to_earnings","flags"];
+const COLS = ["ticker","status","sector","price","support","stop","resistance","RR","RSI",
+              "rs_3m","vol_ratio","stop_atr","score","shares","risk_EUR","cum_risk_EUR",
+              "fits_risk_budget","sector_after","friction_pct","days_to_earnings","flags"];
 const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","rsi_low","rsi_high","min_rr",
                     "swing_lookback","pivot_k","stop_buffer_pct","min_stop_atr",
-                    "earnings_drop_days","ticket_eur","max_risk_eur"];
+                    "earnings_drop_days","ticket_eur","max_risk_eur",
+                    "cash_eur","current_open_risk_eur","sector_cap_pct","max_open_risk_pct",
+                    "commission_eur","spread_bps","max_friction_pct"];
 const BOOL_FIELDS = ["include_us","include_eu","require_profitable","require_market_uptrend"];
+const SAVED_FIELDS = ["holdingsText","cash_eur","current_open_risk_eur","sector_cap_pct",
+                      "max_open_risk_pct","commission_eur","spread_bps","max_friction_pct"];
+
+function parseHoldings(text) {
+  return text.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+    const parts = l.split(/[,;\t]+/).map(x => x.trim());
+    return {ticker: (parts[0] || "").toUpperCase(),
+            shares: parseFloat(parts[1]), cost: parseFloat(parts[2]) || 0};
+  }).filter(h => h.ticker && h.shares > 0);
+}
+
+function saveLocal() {
+  const o = {};
+  SAVED_FIELDS.forEach(f => o[f] = document.getElementById(f).value);
+  try { localStorage.setItem("screener_portfolio", JSON.stringify(o)); } catch (e) {}
+}
+
+function restoreLocal() {
+  try {
+    const o = JSON.parse(localStorage.getItem("screener_portfolio") || "{}");
+    SAVED_FIELDS.forEach(f => {
+      if (o[f] !== undefined && o[f] !== "") document.getElementById(f).value = o[f];
+    });
+  } catch (e) {}
+}
 let DEFAULTS = null, SECTORS = [];
 let poller = null;
 
@@ -220,6 +278,7 @@ async function loadDefaults() {
   document.getElementById("sectorChecks").innerHTML = SECTORS.map(s =>
     `<label><input type="checkbox" class="sector" value="${esc(s)}"> ${esc(s)}</label>`).join("");
   resetFilters();
+  restoreLocal();
 }
 
 function resetFilters() {
@@ -240,10 +299,12 @@ function collectParams() {
   BOOL_FIELDS.forEach(f => p[f] = document.getElementById(f).checked);
   p.exclude = document.getElementById("exclude").value;
   p.sectors = [...document.querySelectorAll(".sector:checked")].map(cb => cb.value);
+  p.holdings = parseHoldings(document.getElementById("holdingsText").value);
   return p;
 }
 
 async function runScan() {
+  saveLocal();
   const r = await fetch("/run", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -268,7 +329,8 @@ function renderTopPicks(picks) {
   document.getElementById("topCards").innerHTML = picks.map((p, i) => `
     <div class="card">
       <div class="rank">${medal(i)}</div>
-      <div class="tk">${esc(p.ticker)} <span style="color:${scoreColor(p.score)}">${esc(p.score ?? "")}</span></div>
+      <div class="tk">${esc(p.ticker)} <span style="color:${scoreColor(p.score)}">${esc(p.score ?? "")}</span>
+        ${p.status && p.status !== "NEW" ? `<span class="pill" style="margin-left:.4rem;font-size:.7rem">${esc(p.status)}</span>` : ""}</div>
       <div class="nm">${esc(p.name ?? "")} · ${esc(p.sector ?? "")}</div>
       <div class="scorebar"><div style="width:${Math.min(p.score ?? 0, 100)}%;background:${scoreColor(p.score)}"></div></div>
       <div class="nums">
@@ -306,6 +368,17 @@ async function refresh() {
 
   renderTopPicks(s.top_picks);
 
+  const ps = document.getElementById("portSummary");
+  if (s.portfolio) {
+    ps.style.display = "";
+    const w = Object.entries(s.portfolio.sector_weights || {})
+      .sort((a, b) => b[1] - a[1]).map(([k, v]) => `${esc(k)} ${esc(v)}%`).join(" · ");
+    ps.innerHTML = `📊 Book €${esc(s.portfolio.book_eur)} · cash €${esc(s.portfolio.cash_eur)}` +
+      ` · ${esc(s.portfolio.n_positions)} positions · remaining risk budget ` +
+      (s.portfolio.risk_budget_eur == null ? "n/a" : `€${esc(s.portfolio.risk_budget_eur)}`) +
+      (w ? `<br>Sector weights: ${w}` : "");
+  } else { ps.style.display = "none"; }
+
   const res = document.getElementById("results");
   const count = document.getElementById("resultCount");
   const csv = document.getElementById("csvLink");
@@ -317,9 +390,11 @@ async function refresh() {
       COLS.map(c => `<th>${esc(c)}</th>`).join("") +
       "</tr></thead><tbody>" +
       s.results.map(row => "<tr>" + COLS.map(c => {
-        const v = (row[c] == null || row[c] === "") ? "—" : row[c];
+        let v = (row[c] == null || row[c] === "") ? "—" : row[c];
+        if (c === "fits_risk_budget" && row[c] != null) v = row[c] ? "✓" : "✗";
         let cls = c === "RR" ? "rr" : c === "score" ? "score" : "";
-        let style = c === "score" ? ` style="color:${scoreColor(row.score)}"` : "";
+        let style = c === "score" ? ` style="color:${scoreColor(row.score)}"` :
+                    c === "fits_risk_budget" && row[c] === false ? ` style="color:var(--red)"` : "";
         return `<td class="${cls}"${style}>${esc(v)}</td>`;
       }).join("") + "</tr>").join("") +
       "</tbody></table>";

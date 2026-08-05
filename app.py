@@ -38,6 +38,7 @@ _state = {
     "rejection_summary": [],   # [{"reason": ..., "count": ...}]
     "near_misses": [],         # [{"ticker": ..., "reason": ...}]
     "params_used": None,
+    "portfolio": None,         # book/cash/risk-budget summary when holdings given
     "error": None,
 }
 
@@ -93,6 +94,7 @@ def _run_scan(params):
         _state["universe_size"] = result["universe_size"]
         _state["elapsed_s"] = round(result["elapsed_s"])
         _state["params_used"] = result["params"]
+        _state["portfolio"] = result.get("portfolio")
         if len(df):
             df.to_csv(RESULTS_CSV, index=False)
         _state["status"] = "done"

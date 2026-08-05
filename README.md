@@ -55,6 +55,33 @@ nothing extra:
 Data-quality issues never vanish silently: they show up in a `flags` column
 and cost 5 score points each, so you always see *why* a name ranked lower.
 
+## Portfolio awareness (optional)
+
+Paste your holdings (`TICKER, shares, cost basis`, one per line) and free cash
+into the **Portfolio** panel — it's saved in your browser (localStorage), never
+on the server. When present, every candidate is judged against *your* book:
+
+- **New / Add annotation** — held names show `ADD (+12.3%)` with unrealized
+  P&L, so the question becomes "add?" instead of "buy?".
+- **Fundability** — positions larger than free cash are shrunk to fit
+  (`cash_capped` flag) or flagged `no_cash`; suggestions are things you can
+  actually execute.
+- **Sector-concentration guardrail** — the `sector_after` column shows what
+  the sector's weight would become; past your cap (default 35%) it's flagged
+  `sector_cap` and score-penalized. No more doubling down on what you're
+  already overweight.
+- **Aggregate risk budget** — instead of only a flat per-trade cap, the book's
+  total open-risk ceiling (default 6% of book, minus risk already in the
+  market) is walked down the ranking: `cum_risk_EUR` and a ✓/✗
+  `fits_risk_budget` column show exactly how many of today's setups your
+  budget covers.
+- **Net-of-cost economics** — with your commission and spread, trades where
+  round-trip costs eat more than 20% (adjustable) of the target profit are
+  rejected outright (`friction` reason) — the classic small-ticket trap.
+
+Without holdings everything behaves as before; the friction gate still runs
+since it only needs your cost settings.
+
 ## Top picks & scoring
 
 Results are ranked by a 0–100 composite score, and the top 3 are shown as
