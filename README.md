@@ -58,8 +58,17 @@ and cost 5 score points each, so you always see *why* a name ranked lower.
 ## Portfolio awareness (optional)
 
 Paste your holdings (`TICKER, shares, cost basis`, one per line) and free cash
-into the **Portfolio** panel — it's saved in your browser (localStorage), never
-on the server. When present, every candidate is judged against *your* book:
+into the **Portfolio** panel — or hit **📥 Import broker CSV** and upload your
+broker's transaction export. The Revolut format is supported end-to-end: the
+full event history (buys, sells, splits, mergers, corrections, dividends,
+fees, cash top-ups/withdrawals, broker-migration transfers) is replayed to
+reconstruct your *current* open positions with average cost basis, plus free
+cash per currency converted to EUR. A simple `ticker,shares,cost` CSV works
+too. The file is parsed once and never stored server-side — the result lands
+in the editable holdings box (so you can fix e.g. EU ticker suffixes like
+`BAYN → BAYN.DE`, which the import flags for you) and is saved in your
+browser (localStorage). When present, every candidate is judged against
+*your* book:
 
 - **New / Add annotation** — held names show `ADD (+12.3%)` with unrealized
   P&L, so the question becomes "add?" instead of "buy?".

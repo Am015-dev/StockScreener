@@ -18,6 +18,7 @@ from collections import Counter
 import pandas as pd
 from flask import Flask, Response, jsonify, render_template, request
 
+import portfolio_import
 import screener
 
 app = Flask(__name__)
@@ -128,6 +129,23 @@ def run():
                       rejection_summary=[], near_misses=[], params_used=params)
         threading.Thread(target=_run_scan, args=(params,), daemon=True).start()
     return jsonify({"ok": True, "params": params})
+
+
+@app.route("/parse_portfolio", methods=["POST"])
+def parse_portfolio():
+    """Parse an uploaded broker CSV (Revolut transaction export or a simple
+    ticker,shares,cost list) into holdings + cash. Nothing is stored server-
+    side — the result goes back to the browser, which keeps it locally."""
+    text = request.get_data(as_text=True) or ""
+    if len(text) > 2_000_000:
+        return jsonify({"ok": False, "error": "file too large (2MB max)"}), 413
+    try:
+        result = portfolio_import.parse_portfolio_csv(text)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"could not parse: {e}"}), 400
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/status")

@@ -164,6 +164,14 @@
 
       <div class="fgroup">
         <div class="glabel">Portfolio (optional — saved in your browser)</div>
+        <div style="margin:.6rem 0 .2rem; display:flex; gap:.6rem; align-items:center; flex-wrap:wrap">
+          <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none">
+          <button type="button" class="ghost" onclick="document.getElementById('csvFile').click()">
+            📥 Import broker CSV</button>
+          <span class="hint" style="margin:0">Revolut transaction export or a simple
+            <code>ticker,shares,cost</code> list — parsed once, kept only in your browser</span>
+        </div>
+        <div id="importNote" class="hint" style="display:none"></div>
         <div class="fgrid">
           <div class="field wide"><label>Holdings — one per line: TICKER, shares, cost basis</label>
             <textarea id="holdingsText" rows="4" placeholder="AAPL, 10, 172.50&#10;SAP.DE, 5, 148"
@@ -302,6 +310,31 @@ function collectParams() {
   p.holdings = parseHoldings(document.getElementById("holdingsText").value);
   return p;
 }
+
+document.getElementById("csvFile").addEventListener("change", async (ev) => {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const note = document.getElementById("importNote");
+  note.style.display = ""; note.textContent = "Parsing " + file.name + "…";
+  try {
+    const r = await fetch("/parse_portfolio", {method: "POST", body: await file.text()});
+    const d = await r.json();
+    if (!d.ok) { note.textContent = "⚠ " + (d.error || "could not parse file"); return; }
+    document.getElementById("holdingsText").value = d.holdings
+      .map(h => `${h.ticker}, ${h.shares}, ${h.cost}`).join("\n");
+    if (d.cash_eur > 0) document.getElementById("cash_eur").value = d.cash_eur;
+    saveLocal();
+    let msg = `✓ Imported ${d.holdings.length} open positions` +
+      (d.cash_eur > 0 ? `, cash €${d.cash_eur}` : "") +
+      (d.stats && d.stats.rows ? ` (from ${d.stats.rows} events)` : "") + ".";
+    if (d.notes && d.notes.length) msg += " " + d.notes.join(" · ");
+    note.textContent = msg;
+  } catch (e) {
+    note.textContent = "⚠ import failed: " + e;
+  } finally {
+    ev.target.value = "";
+  }
+});
 
 async function runScan() {
   saveLocal();
