@@ -6,16 +6,16 @@
 <title>Pullback-in-Uptrend Screener</title>
 <style>
   :root {
-    --bg: #0f1115; --panel: #171a21; --border: #262b36;
+    --bg: #0f1115; --panel: #171a21; --panel2: #1d222c; --border: #262b36;
     --text: #e6e9ef; --muted: #8b93a5; --accent: #4f8ff7;
-    --green: #3ecf8e; --red: #f76d6d;
+    --green: #3ecf8e; --amber: #e8b64c; --red: #f76d6d; --gold: #f2c14e;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text);
     font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  main { max-width: 1000px; margin: 0 auto; }
+  main { max-width: 1100px; margin: 0 auto; }
   h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
   .sub { color: var(--muted); margin-bottom: 1.5rem; }
   .bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
@@ -24,6 +24,8 @@
     padding: .6rem 1.4rem; font-size: 1rem; cursor: pointer; font-weight: 600;
   }
   button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted);
+                 font-weight: 400; font-size: .9rem; padding: .45rem 1rem; }
   a.dl { color: var(--accent); text-decoration: none; }
   .pill {
     padding: .2rem .7rem; border-radius: 999px; font-size: .85rem;
@@ -36,6 +38,45 @@
             border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
   h2 { font-size: 1rem; margin: 0 0 .75rem; color: var(--muted);
        text-transform: uppercase; letter-spacing: .05em; }
+  /* --- filters --- */
+  details > summary { cursor: pointer; color: var(--muted); font-size: 1rem;
+       text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
+       list-style: none; }
+  details > summary::before { content: "▸ "; }
+  details[open] > summary::before { content: "▾ "; }
+  .fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+           gap: .75rem 1rem; margin-top: 1rem; }
+  .field label { display: block; font-size: .75rem; color: var(--muted); margin-bottom: .2rem; }
+  .field input[type=number], .field input[type=text] {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: .4rem .55rem;
+    font-size: .9rem;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .checks { display: flex; flex-wrap: wrap; gap: .4rem .9rem; margin-top: .5rem; }
+  .checks label { display: flex; align-items: center; gap: .35rem; font-size: .85rem;
+                  color: var(--text); cursor: pointer; white-space: nowrap; }
+  .checks input { accent-color: var(--accent); }
+  .fgroup { margin-top: 1rem; }
+  .fgroup > .glabel { font-size: .75rem; color: var(--muted);
+                      text-transform: uppercase; letter-spacing: .05em; }
+  .wide { grid-column: 1 / -1; }
+  /* --- top picks --- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .9rem; }
+  .card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+          padding: .9rem 1rem; position: relative; }
+  .card .rank { position: absolute; top: .7rem; right: .9rem; font-size: 1.2rem; }
+  .card .tk { font-size: 1.15rem; font-weight: 700; }
+  .card .nm { color: var(--muted); font-size: .8rem; margin-bottom: .5rem;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scorebar { height: 6px; background: var(--border); border-radius: 3px; margin: .4rem 0 .6rem; }
+  .scorebar > div { height: 100%; border-radius: 3px; background: var(--green); }
+  .card .nums { display: grid; grid-template-columns: 1fr 1fr; gap: .15rem .8rem;
+                font-size: .85rem; }
+  .card .nums span { color: var(--muted); }
+  .card .why { margin-top: .6rem; font-size: .8rem; color: var(--muted);
+               border-top: 1px solid var(--border); padding-top: .5rem; }
+  /* --- tables / log --- */
   #log {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: .8rem; white-space: pre-wrap; color: var(--muted);
@@ -46,27 +87,100 @@
   th { color: var(--muted); font-weight: 600; }
   th:first-child, td:first-child { text-align: left; }
   td.rr { color: var(--green); font-weight: 700; }
+  td.score { font-weight: 700; }
   .empty { color: var(--muted); font-style: italic; }
   .tablewrap { overflow-x: auto; }
+  .hint { font-size: .8rem; color: var(--muted); margin-top: .6rem; }
 </style>
 </head>
 <body>
 <main>
   <h1>Pullback-in-Uptrend Swing Screener</h1>
-  <div class="sub">US + EU large caps &middot; price &gt; SMA200 &middot; RSI 35&ndash;55 &middot;
-    pivot support &middot; R:R &ge; 3 &middot; profitability &amp; earnings gates &middot; risk-based sizing</div>
+  <div class="sub">Uptrending large caps caught mid-pullback near support, ranked by a
+    composite quality score. Tune the filters, hit Run, and play.</div>
+
+  <section>
+    <details id="filterBox" open>
+      <summary>Filters</summary>
+
+      <div class="fgroup">
+        <div class="glabel">Universe</div>
+        <div class="checks">
+          <label><input type="checkbox" id="include_us"> US markets</label>
+          <label><input type="checkbox" id="include_eu"> European markets</label>
+        </div>
+        <div class="checks" id="sectorChecks"></div>
+        <div class="fgrid">
+          <div class="field"><label>Min market cap ($B)</label>
+            <input type="number" id="min_mkt_cap_b" min="0.5" step="1"></div>
+          <div class="field"><label>Min liquidity ($M traded/day)</label>
+            <input type="number" id="min_dollar_vol_m" min="0" step="10"></div>
+          <div class="field wide"><label>Excluded tickers (held-at-cap / permanent passes, comma-separated)</label>
+            <input type="text" id="exclude" placeholder="AVGO, AMZN, ..."></div>
+        </div>
+      </div>
+
+      <div class="fgroup">
+        <div class="glabel">Setup</div>
+        <div class="fgrid">
+          <div class="field"><label>RSI from (pullback floor)</label>
+            <input type="number" id="rsi_low" min="0" max="100" step="1"></div>
+          <div class="field"><label>RSI to (pullback ceiling)</label>
+            <input type="number" id="rsi_high" min="0" max="100" step="1"></div>
+          <div class="field"><label>Min reward:risk</label>
+            <input type="number" id="min_rr" min="0.5" step="0.5"></div>
+          <div class="field"><label>Swing-high lookback (days)</label>
+            <input type="number" id="swing_lookback" min="10" max="250" step="5"></div>
+          <div class="field"><label>Pivot width (bars each side)</label>
+            <input type="number" id="pivot_k" min="1" max="10" step="1"></div>
+          <div class="field"><label>Stop buffer below support (%)</label>
+            <input type="number" id="stop_buffer_pct" min="0" max="10" step="0.5"></div>
+        </div>
+      </div>
+
+      <div class="fgroup">
+        <div class="glabel">Quality &amp; policy gates</div>
+        <div class="checks">
+          <label><input type="checkbox" id="require_profitable"> Require forward EPS &gt; 0</label>
+        </div>
+        <div class="fgrid">
+          <div class="field"><label>Skip if earnings within (days)</label>
+            <input type="number" id="earnings_drop_days" min="0" max="60" step="1"></div>
+        </div>
+      </div>
+
+      <div class="fgroup">
+        <div class="glabel">Position sizing</div>
+        <div class="fgrid">
+          <div class="field"><label>Ticket size (€)</label>
+            <input type="number" id="ticket_eur" min="1" step="50"></div>
+          <div class="field"><label>Max risk per trade (€)</label>
+            <input type="number" id="max_risk_eur" min="1" step="10"></div>
+        </div>
+      </div>
+
+      <div class="hint">Tip: the universe and price data are cached for an hour —
+        the first scan takes a few minutes, but re-running with tweaked filters is fast.</div>
+    </details>
+  </section>
 
   <div class="bar">
     <button id="runBtn" onclick="runScan()">Run screener</button>
+    <button class="ghost" onclick="resetFilters()">Reset filters</button>
     <span id="statusPill" class="pill">idle</span>
     <span id="timing" class="pill" style="display:none"></span>
     <a class="dl" id="csvLink" href="/results.csv" style="display:none">Download CSV</a>
   </div>
 
+  <section id="topSection" style="display:none">
+    <h2>🏆 Top picks today</h2>
+    <div class="cards" id="topCards"></div>
+  </section>
+
   <section>
-    <h2>Results <span id="resultCount"></span></h2>
+    <h2>All results <span id="resultCount"></span></h2>
     <div class="tablewrap"><div id="results" class="empty">No scan run yet — press <b>Run screener</b>.
-      A full scan takes a few minutes (universe build + 1y OHLC download + fundamentals).</div></div>
+      The first scan takes a few minutes (universe build + 1y price download + fundamentals).</div></div>
   </section>
 
   <section>
@@ -82,12 +196,56 @@
 </main>
 
 <script>
-const COLS = ["ticker","price","support","stop","resistance","RR","RSI",
-              "shares","risk_EUR","days_to_earnings"];
+const COLS = ["ticker","sector","price","support","stop","resistance","RR","RSI",
+              "score","shares","risk_EUR","days_to_earnings"];
+const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","rsi_low","rsi_high","min_rr",
+                    "swing_lookback","pivot_k","stop_buffer_pct","earnings_drop_days",
+                    "ticket_eur","max_risk_eur"];
+const BOOL_FIELDS = ["include_us","include_eu","require_profitable"];
+let DEFAULTS = null, SECTORS = [];
 let poller = null;
 
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function loadDefaults() {
+  const d = await (await fetch("/defaults")).json();
+  DEFAULTS = d.defaults; SECTORS = d.sectors;
+  document.getElementById("sectorChecks").innerHTML = SECTORS.map(s =>
+    `<label><input type="checkbox" class="sector" value="${esc(s)}"> ${esc(s)}</label>`).join("");
+  resetFilters();
+}
+
+function resetFilters() {
+  if (!DEFAULTS) return;
+  NUM_FIELDS.forEach(f => document.getElementById(f).value = DEFAULTS[f]);
+  BOOL_FIELDS.forEach(f => document.getElementById(f).checked = !!DEFAULTS[f]);
+  document.getElementById("exclude").value = DEFAULTS.exclude;
+  document.querySelectorAll(".sector").forEach(cb =>
+    cb.checked = DEFAULTS.sectors.includes(cb.value));
+}
+
+function collectParams() {
+  const p = {};
+  NUM_FIELDS.forEach(f => {
+    const v = parseFloat(document.getElementById(f).value);
+    if (!isNaN(v)) p[f] = v;
+  });
+  BOOL_FIELDS.forEach(f => p[f] = document.getElementById(f).checked);
+  p.exclude = document.getElementById("exclude").value;
+  p.sectors = [...document.querySelectorAll(".sector:checked")].map(cb => cb.value);
+  return p;
+}
+
 async function runScan() {
-  const r = await fetch("/run", {method: "POST"});
+  const r = await fetch("/run", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(collectParams()),
+  });
+  if (r.ok) document.getElementById("filterBox").open = false;
   if (r.ok || r.status === 409) startPolling();
 }
 
@@ -96,9 +254,29 @@ function startPolling() {
   refresh();
 }
 
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function medal(i) { return ["🥇","🥈","🥉"][i] || "🏅"; }
+function scoreColor(s) { return s >= 70 ? "var(--green)" : s >= 50 ? "var(--amber)" : "var(--red)"; }
+
+function renderTopPicks(picks) {
+  const sec = document.getElementById("topSection");
+  if (!picks || !picks.length) { sec.style.display = "none"; return; }
+  sec.style.display = "";
+  document.getElementById("topCards").innerHTML = picks.map((p, i) => `
+    <div class="card">
+      <div class="rank">${medal(i)}</div>
+      <div class="tk">${esc(p.ticker)} <span style="color:${scoreColor(p.score)}">${esc(p.score ?? "")}</span></div>
+      <div class="nm">${esc(p.name ?? "")} · ${esc(p.sector ?? "")}</div>
+      <div class="scorebar"><div style="width:${Math.min(p.score ?? 0, 100)}%;background:${scoreColor(p.score)}"></div></div>
+      <div class="nums">
+        <div><span>entry</span> ${esc(p.price)}</div>
+        <div><span>target</span> ${esc(p.resistance)}</div>
+        <div><span>stop</span> ${esc(p.stop)}</div>
+        <div><span>R:R</span> ${esc(p.RR)}</div>
+        <div><span>shares</span> ${esc(p.shares)}</div>
+        <div><span>risk</span> €${esc(p.risk_EUR)}</div>
+      </div>
+      ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
+    </div>`).join("");
 }
 
 async function refresh() {
@@ -120,6 +298,8 @@ async function refresh() {
       (s.universe_size ? ` · universe: ${s.universe_size}` : "");
   }
 
+  renderTopPicks(s.top_picks);
+
   const res = document.getElementById("results");
   const count = document.getElementById("resultCount");
   const csv = document.getElementById("csvLink");
@@ -132,13 +312,15 @@ async function refresh() {
       "</tr></thead><tbody>" +
       s.results.map(row => "<tr>" + COLS.map(c => {
         const v = row[c] == null ? "—" : row[c];
-        return `<td class="${c === "RR" ? "rr" : ""}">${esc(v)}</td>`;
+        let cls = c === "RR" ? "rr" : c === "score" ? "score" : "";
+        let style = c === "score" ? ` style="color:${scoreColor(row.score)}"` : "";
+        return `<td class="${cls}"${style}>${esc(v)}</td>`;
       }).join("") + "</tr>").join("") +
       "</tbody></table>";
   } else if (s.status === "done") {
     count.textContent = "";
     res.className = "empty";
-    res.textContent = "No setups matched today.";
+    res.textContent = "No setups matched — try widening the RSI band, lowering min R:R, or lowering min market cap.";
   }
 
   const rejSection = document.getElementById("rejSection");
@@ -165,6 +347,7 @@ async function refresh() {
   }
 }
 
+loadDefaults();
 refresh();
 </script>
 </body>

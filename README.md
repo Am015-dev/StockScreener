@@ -20,7 +20,31 @@ gates, plus a small web UI you can deploy for free on Render.
 - **Sizing**: shares = min(max-risk-based, ticket-based), reported with the
   actual EUR risk per position
 
-All parameters live at the top of [`screener.py`](screener.py).
+Every threshold above is a **user-adjustable filter in the web UI** — RSI band,
+min R:R, market cap, liquidity, sectors, US/EU markets, earnings buffer,
+profitability toggle, exclusion list, stop buffer, lookbacks, and sizing.
+Defaults live in `DEFAULTS` at the top of [`screener.py`](screener.py); bad
+input is clamped server-side, so you can't break a scan by playing.
+
+## Top picks & scoring
+
+Results are ranked by a 0–100 composite score, and the top 3 are shown as
+**Top picks today** cards with entry/stop/target, sizing, and a one-line
+rationale. The score weighs:
+
+| Weight | Component | Why |
+|-------:|-----------|-----|
+| 45% | reward:risk (capped at 5) | the point of the scan |
+| 20% | pullback depth (RSI position in the band) | deeper dip = better entry |
+| 20% | entry proximity to support (within 5% = best) | tighter stop, less heat |
+| 15% | days to earnings (30+ = best) | distance from binary events |
+
+## Fast reruns
+
+The universe discovery and the 1-year OHLC download are cached in memory for
+an hour. The first scan takes a few minutes; re-running with tweaked filters
+reuses the cached data and finishes in seconds (only stage-2 fundamentals for
+*new* survivors trigger fresh API calls, and those are cached too).
 
 ## Run locally
 
@@ -59,9 +83,10 @@ Notes on the free plan:
 
 ## Endpoints
 
-| Route          | What it does                                   |
-|----------------|------------------------------------------------|
-| `/`            | UI: run button, live log, ranked results table |
-| `POST /run`    | Starts a scan (409 if one is already running)  |
-| `/status`      | JSON: state, log, results, rejection summary   |
-| `/results.csv` | Latest results as CSV                          |
+| Route          | What it does                                             |
+|----------------|----------------------------------------------------------|
+| `/`            | UI: filters, top-pick cards, live log, ranked table      |
+| `/defaults`    | JSON: default filter values + sector list                |
+| `POST /run`    | Starts a scan; JSON body overrides any filter (409 if one is already running) |
+| `/status`      | JSON: state, log, results, top picks, rejection summary  |
+| `/results.csv` | Latest results as CSV                                    |

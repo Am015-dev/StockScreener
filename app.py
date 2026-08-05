@@ -2,7 +2,9 @@
 
 The free plan sleeps when idle and wakes on request ("on demand"), so the app
 runs the scan only when you press Run: a background thread does the work while
-the page polls /status for live progress. The latest results are kept in
+the page polls /status for live progress. Filters posted from the UI override
+the screener defaults per run; universe/OHLC data is cached in screener.py for
+an hour, so filter-tweak reruns are fast. The latest results are kept in
 memory and mirrored to a CSV on the instance's ephemeral disk, so they survive
 page reloads (but not a full spin-down — just press Run again).
 """
@@ -14,13 +16,14 @@ import time
 from collections import Counter
 
 import pandas as pd
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template, request
 
 import screener
 
 app = Flask(__name__)
 
 RESULTS_CSV = os.environ.get("RESULTS_CSV", "/tmp/screener_results.csv")
+TOP_N = 3
 
 _lock = threading.Lock()
 _state = {
@@ -30,18 +33,27 @@ _state = {
     "finished_at": None,
     "elapsed_s": None,
     "universe_size": None,
-    "results": [],             # list of row dicts
+    "results": [],             # list of row dicts, sorted by score desc
+    "top_picks": [],           # first TOP_N rows
     "rejection_summary": [],   # [{"reason": ..., "count": ...}]
     "near_misses": [],         # [{"ticker": ..., "reason": ...}]
+    "params_used": None,
     "error": None,
 }
+
+
+def _records(df: pd.DataFrame) -> list[dict]:
+    """DataFrame -> list of dicts with NaN turned into JSON-safe None."""
+    return df.astype(object).where(df.notna(), None).to_dict("records")
 
 
 def _load_cached_csv():
     if os.path.exists(RESULTS_CSV):
         try:
             df = pd.read_csv(RESULTS_CSV)
-            _state["results"] = df.to_dict("records")
+            records = _records(df)
+            _state["results"] = records
+            _state["top_picks"] = records[:TOP_N]
             _state["status"] = "done"
             _state["finished_at"] = os.path.getmtime(RESULTS_CSV)
             _state["log"] = ["Loaded cached results from previous run."]
@@ -61,9 +73,9 @@ def _progress(msg):
         _state["log"][:] = _state["log"][-500:]
 
 
-def _run_scan():
+def _run_scan(params):
     try:
-        result = screener.run_screener(progress=_progress)
+        result = screener.run_screener(params, progress=_progress)
         df = result["df"]
         rejections = result["rejections"]
 
@@ -75,9 +87,12 @@ def _run_scan():
             {"ticker": t, "reason": w} for t, w in rejections.items()
             if "R:R" in w or "earnings" in w or "unprofitable" in w
         ]
-        _state["results"] = df.to_dict("records") if len(df) else []
+        records = _records(df) if len(df) else []
+        _state["results"] = records
+        _state["top_picks"] = records[:TOP_N]
         _state["universe_size"] = result["universe_size"]
         _state["elapsed_s"] = round(result["elapsed_s"])
+        _state["params_used"] = result["params"]
         if len(df):
             df.to_csv(RESULTS_CSV, index=False)
         _state["status"] = "done"
@@ -94,16 +109,23 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/defaults")
+def defaults():
+    return jsonify({"defaults": screener.DEFAULTS, "sectors": screener.ALL_SECTORS})
+
+
 @app.route("/run", methods=["POST"])
 def run():
+    overrides = request.get_json(silent=True) or {}
+    params = screener.clean_params(overrides)
     with _lock:
         if _state["status"] == "running":
             return jsonify({"ok": False, "message": "A scan is already running."}), 409
         _state.update(status="running", log=[], error=None,
                       started_at=time.time(), finished_at=None,
-                      rejection_summary=[], near_misses=[])
-        threading.Thread(target=_run_scan, daemon=True).start()
-    return jsonify({"ok": True})
+                      rejection_summary=[], near_misses=[], params_used=params)
+        threading.Thread(target=_run_scan, args=(params,), daemon=True).start()
+    return jsonify({"ok": True, "params": params})
 
 
 @app.route("/status")
