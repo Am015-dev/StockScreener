@@ -135,13 +135,16 @@
             <input type="number" id="pivot_k" min="1" max="10" step="1"></div>
           <div class="field"><label>Stop buffer below support (%)</label>
             <input type="number" id="stop_buffer_pct" min="0" max="10" step="0.5"></div>
+          <div class="field"><label>Min stop distance (ATRs — noise gate)</label>
+            <input type="number" id="min_stop_atr" min="0" max="5" step="0.25"></div>
         </div>
       </div>
 
       <div class="fgroup">
         <div class="glabel">Quality &amp; policy gates</div>
         <div class="checks">
-          <label><input type="checkbox" id="require_profitable"> Require forward EPS &gt; 0</label>
+          <label><input type="checkbox" id="require_profitable"> Require EPS &gt; 0 (forward, trailing fallback)</label>
+          <label><input type="checkbox" id="require_market_uptrend"> Require market uptrend (SPY / STOXX50 above SMA200)</label>
         </div>
         <div class="fgrid">
           <div class="field"><label>Skip if earnings within (days)</label>
@@ -197,11 +200,12 @@
 
 <script>
 const COLS = ["ticker","sector","price","support","stop","resistance","RR","RSI",
-              "score","shares","risk_EUR","days_to_earnings"];
+              "rs_3m","vol_ratio","stop_atr","score","shares","risk_EUR",
+              "days_to_earnings","flags"];
 const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","rsi_low","rsi_high","min_rr",
-                    "swing_lookback","pivot_k","stop_buffer_pct","earnings_drop_days",
-                    "ticket_eur","max_risk_eur"];
-const BOOL_FIELDS = ["include_us","include_eu","require_profitable"];
+                    "swing_lookback","pivot_k","stop_buffer_pct","min_stop_atr",
+                    "earnings_drop_days","ticket_eur","max_risk_eur"];
+const BOOL_FIELDS = ["include_us","include_eu","require_profitable","require_market_uptrend"];
 let DEFAULTS = null, SECTORS = [];
 let poller = null;
 
@@ -272,6 +276,8 @@ function renderTopPicks(picks) {
         <div><span>target</span> ${esc(p.resistance)}</div>
         <div><span>stop</span> ${esc(p.stop)}</div>
         <div><span>R:R</span> ${esc(p.RR)}</div>
+        <div><span>RS 3m</span> ${p.rs_3m == null ? "—" : esc(p.rs_3m) + "%"}</div>
+        <div><span>stop dist</span> ${p.stop_atr == null ? "—" : esc(p.stop_atr) + " ATR"}</div>
         <div><span>shares</span> ${esc(p.shares)}</div>
         <div><span>risk</span> €${esc(p.risk_EUR)}</div>
       </div>
@@ -311,7 +317,7 @@ async function refresh() {
       COLS.map(c => `<th>${esc(c)}</th>`).join("") +
       "</tr></thead><tbody>" +
       s.results.map(row => "<tr>" + COLS.map(c => {
-        const v = row[c] == null ? "—" : row[c];
+        const v = (row[c] == null || row[c] === "") ? "—" : row[c];
         let cls = c === "RR" ? "rr" : c === "score" ? "score" : "";
         let style = c === "score" ? ` style="color:${scoreColor(row.score)}"` : "";
         return `<td class="${cls}"${style}>${esc(v)}</td>`;

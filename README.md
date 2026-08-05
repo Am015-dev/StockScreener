@@ -26,6 +26,35 @@ profitability toggle, exclusion list, stop buffer, lookbacks, and sizing.
 Defaults live in `DEFAULTS` at the top of [`screener.py`](screener.py); bad
 input is clamped server-side, so you can't break a scan by playing.
 
+## Validation layer (all free)
+
+Beyond the original gates, each candidate is validated with data that costs
+nothing extra:
+
+- **Market regime gate** — entries are skipped (toggleable) when the region's
+  benchmark (SPY for US, EURO STOXX 50 for EU) is below its own SMA200:
+  pullback-buying in a falling market is a different, worse trade.
+- **Relative strength (`rs_3m`)** — 3-month return minus the benchmark's, so
+  "strong stock" is separated from "rising tide". Feeds the score.
+- **Pullback volume character (`vol_ratio`)** — recent 10-day volume vs the
+  prior 30 days. A healthy pullback is quiet (< 1); heavy-volume selling
+  scores worse.
+- **ATR noise gate (`stop_atr`)** — if the stop sits less than 1 ATR from
+  price (adjustable), normal daily noise will trigger it; the setup is
+  rejected as mechanically unsound.
+- **EPS fallback** — Yahoo's `forwardEps` is often missing for EU names; the
+  profitability gate falls back to trailing EPS (flagged `eps_fallback`)
+  instead of falsely rejecting.
+- **Earnings-date cross-check** — optionally set `FINNHUB_API_KEY`
+  ([finnhub.io](https://finnhub.io), free tier, no card) and US earnings dates
+  are verified against a second source: a missing Yahoo date is filled in, a
+  disagreement > 2 days uses the *earlier* date (conservative) and is flagged.
+  Without a key everything still works; unverifiable dates get an
+  `earnings_unverified` flag.
+
+Data-quality issues never vanish silently: they show up in a `flags` column
+and cost 5 score points each, so you always see *why* a name ranked lower.
+
 ## Top picks & scoring
 
 Results are ranked by a 0–100 composite score, and the top 3 are shown as
@@ -34,10 +63,14 @@ rationale. The score weighs:
 
 | Weight | Component | Why |
 |-------:|-----------|-----|
-| 45% | reward:risk (capped at 5) | the point of the scan |
-| 20% | pullback depth (RSI position in the band) | deeper dip = better entry |
-| 20% | entry proximity to support (within 5% = best) | tighter stop, less heat |
-| 15% | days to earnings (30+ = best) | distance from binary events |
+| 35% | reward:risk (capped at 5) | the point of the scan |
+| 15% | relative strength vs benchmark | leader in a pullback, not a laggard |
+| 15% | pullback depth (RSI position in the band) | deeper dip = better entry |
+| 15% | entry proximity to support (within 5% = best) | tighter stop, less heat |
+| 10% | pullback volume character (quiet = best) | distribution risk |
+| 10% | days to earnings (30+ = best) | distance from binary events |
+
+…minus 5 points per data-quality flag.
 
 ## Fast reruns
 

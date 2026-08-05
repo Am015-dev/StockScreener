@@ -10,3 +10,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
+      # Optional, free (finnhub.io, no card): cross-checks US earnings dates.
+      # Add FINNHUB_API_KEY in the Render dashboard to enable; works fine without.

@@ -19,11 +19,13 @@ OHLC downloads are cached for an hour, so re-running with different filter
 values is fast.
 """
 
+import os
 import time
 from collections import Counter
 
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 
 # ----------------------- PARAMETERS -----------------------
@@ -52,14 +54,23 @@ DEFAULTS = {
     "swing_lookback": 60,        # days for resistance (swing high)
     "pivot_k": 3,                # bars each side for a pivot low
     "stop_buffer_pct": 1.5,      # stop % below support
+    "min_stop_atr": 1.0,         # stop must sit >= this many ATRs away (noise gate)
     # policy gates
     "require_profitable": True,  # forward EPS > 0  (the anti-AAL gate)
     "earnings_drop_days": 10,    # no entries into binary events
+    "require_market_uptrend": True,  # benchmark (SPY / STOXX50) above its SMA200
     # sizing
     "ticket_eur": 250.0,
     "max_risk_eur": 90.0,        # ~0.75% of an ~€11.8k book
 }
 EURUSD = 1.08                    # rough conversion for sizing math
+
+BENCHMARKS = {"US": "SPY", "EU": "^STOXX50E"}  # regime + relative-strength references
+
+# Optional, free (finnhub.io free tier, no card): cross-checks earnings dates
+# for US tickers. Leave unset and the screener still works — Yahoo-only dates,
+# with an `earnings_unverified` flag when none is found.
+FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "")
 
 FALLBACK_UNIVERSE = [
     "AAPL","MSFT","NVDA","AMZN","GOOG","META","AVGO","LLY","UNH","XOM",
@@ -108,7 +119,9 @@ def clean_params(overrides: dict | None) -> dict:
     p["swing_lookback"] = _num(o.get("swing_lookback"), p["swing_lookback"], 10, 250, int)
     p["pivot_k"] = _num(o.get("pivot_k"), p["pivot_k"], 1, 10, int)
     p["stop_buffer_pct"] = _num(o.get("stop_buffer_pct"), p["stop_buffer_pct"], 0, 10)
+    p["min_stop_atr"] = _num(o.get("min_stop_atr"), p["min_stop_atr"], 0, 5)
     p["require_profitable"] = bool(o.get("require_profitable", p["require_profitable"]))
+    p["require_market_uptrend"] = bool(o.get("require_market_uptrend", p["require_market_uptrend"]))
     p["earnings_drop_days"] = _num(o.get("earnings_drop_days"), p["earnings_drop_days"], 0, 60, int)
     p["ticket_eur"] = _num(o.get("ticket_eur"), p["ticket_eur"], 1, 1e7)
     p["max_risk_eur"] = _num(o.get("max_risk_eur"), p["max_risk_eur"], 1, 1e6)
@@ -128,14 +141,17 @@ def _exclude_set(p: dict) -> set[str]:
 _cache: dict = {
     "universe_key": None, "universe": None, "universe_ts": 0.0,
     "ohlc_key": None, "ohlc": None, "ohlc_ts": 0.0,
+    "bench": None, "bench_ts": 0.0,   # region -> Close series
     "info": {},       # ticker -> (ts, info dict)
     "earnings": {},   # ticker -> (ts, days_to_earnings | None)
+    "finnhub": {},    # ticker -> (ts, days_to_earnings | None)
 }
 
 
 def clear_cache():
     _cache.update(universe_key=None, universe=None, universe_ts=0.0,
-                  ohlc_key=None, ohlc=None, ohlc_ts=0.0, info={}, earnings={})
+                  ohlc_key=None, ohlc=None, ohlc_ts=0.0,
+                  bench=None, bench_ts=0.0, info={}, earnings={}, finnhub={})
 
 
 def _fresh(ts: float) -> bool:
@@ -231,6 +247,92 @@ def _get_days_to_earnings(ticker: str) -> int | None:
     return days
 
 
+def _get_benchmarks(progress=print) -> dict:
+    """Region -> benchmark Close series (or None if unavailable)."""
+    if _cache["bench"] is not None and _fresh(_cache["bench_ts"]):
+        return _cache["bench"]
+    bench = {}
+    try:
+        data = yf.download(list(BENCHMARKS.values()), period="1y", auto_adjust=True,
+                           group_by="ticker", threads=True, progress=False)
+        for region, sym in BENCHMARKS.items():
+            try:
+                close = data[sym]["Close"].dropna()
+                bench[region] = close if len(close) >= 200 else None
+            except Exception:
+                bench[region] = None
+    except Exception as e:
+        progress(f"  benchmark download failed ({e}) — regime/RS checks disabled")
+        bench = {region: None for region in BENCHMARKS}
+    _cache.update(bench=bench, bench_ts=time.time())
+    return bench
+
+
+def _region(ticker: str) -> str:
+    return "EU" if "." in ticker else "US"
+
+
+def market_uptrend(close: pd.Series | None) -> bool | None:
+    if close is None or len(close) < 200:
+        return None
+    return bool(float(close.iloc[-1]) > float(close.rolling(200).mean().iloc[-1]))
+
+
+def rel_strength(close: pd.Series, bench_close: pd.Series | None, days: int = 63) -> float | None:
+    """Stock return minus benchmark return over `days` bars, in pct points."""
+    if bench_close is None or len(close) < days + 1 or len(bench_close) < days + 1:
+        return None
+    sr = float(close.iloc[-1] / close.iloc[-days - 1] - 1)
+    br = float(bench_close.iloc[-1] / bench_close.iloc[-days - 1] - 1)
+    return round((sr - br) * 100, 1)
+
+
+def atr(hist: pd.DataFrame, period: int = 14) -> float | None:
+    h, l, c = hist["High"], hist["Low"], hist["Close"]
+    pc = c.shift(1)
+    tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+    v = float(tr.rolling(period).mean().iloc[-1])
+    return v if np.isfinite(v) and v > 0 else None
+
+
+def pullback_volume_ratio(vol: pd.Series, recent: int = 10, base: int = 30) -> float | None:
+    """Recent volume vs the prior base period. < 1 = quiet pullback (healthy),
+    > 1 = selling on rising volume (distribution risk)."""
+    if len(vol) < recent + base:
+        return None
+    r = float(vol.tail(recent).mean())
+    b = float(vol.iloc[-(recent + base):-recent].mean())
+    return round(r / b, 2) if b > 0 else None
+
+
+def _finnhub_days_to_earnings(ticker: str) -> int | None:
+    """Free cross-check of the next earnings date (US symbols only on the free
+    tier). Returns None when no key is set, on any error, or no date found."""
+    if not FINNHUB_KEY or _region(ticker) != "US":
+        return None
+    hit = _cache["finnhub"].get(ticker)
+    if hit and _fresh(hit[0]):
+        return hit[1]
+    days = None
+    try:
+        today = pd.Timestamp.now().normalize()
+        r = requests.get(
+            "https://finnhub.io/api/v1/calendar/earnings",
+            params={"from": today.strftime("%Y-%m-%d"),
+                    "to": (today + pd.Timedelta(days=90)).strftime("%Y-%m-%d"),
+                    "symbol": ticker, "token": FINNHUB_KEY},
+            timeout=10)
+        events = (r.json() or {}).get("earningsCalendar", [])
+        dates = [pd.Timestamp(e["date"]) for e in events if e.get("date")]
+        future = [d for d in dates if d >= today]
+        if future:
+            days = int((min(future) - today).days)
+    except Exception:
+        pass
+    _cache["finnhub"][ticker] = (time.time(), days)
+    return days
+
+
 # ----------------------- indicators -----------------------
 def rsi(series: pd.Series, period: int = 14) -> float:
     delta = series.diff()
@@ -251,28 +353,46 @@ def last_pivot_low(low: pd.Series, k: int) -> float | None:
 
 
 # ----------------------- scoring -----------------------
+def _clamp01(x: float) -> float:
+    return min(max(x, 0.0), 1.0)
+
+
 def score_row(row: dict, p: dict) -> tuple[int, str]:
     """0-100 composite quality score + a one-line human rationale.
 
-    Weights: R:R is king (45%), then how deep into the pullback zone RSI sits
-    (20%), how close the entry is to support i.e. how tight the risk is (20%),
-    and distance to the next earnings report (15%).
+    Weights: R:R (35%), relative strength vs benchmark (15%), pullback depth
+    within the RSI band (15%), entry proximity to support (15%), pullback
+    volume character (10%), distance to earnings (10%). Each data-quality
+    flag costs 5 points.
     """
     rr_score = min(row["RR"] / 5.0, 1.0)
     span = max(p["rsi_high"] - p["rsi_low"], 1e-9)
-    pullback = min(max((p["rsi_high"] - row["RSI"]) / span, 0.0), 1.0)
+    pullback = _clamp01((p["rsi_high"] - row["RSI"]) / span)
     dist_to_support = (row["price"] - row["support"]) / row["price"]
     support_prox = 1.0 - min(dist_to_support / 0.05, 1.0)  # within 5% of support = best
     dte = row.get("days_to_earnings")
     earn = 0.7 if dte is None else min(dte / 30.0, 1.0)
+    rs = row.get("rs_3m")
+    rs_score = 0.5 if rs is None else _clamp01((rs + 10.0) / 20.0)   # -10%..+10% -> 0..1
+    vr = row.get("vol_ratio")
+    vol_score = 0.5 if vr is None else _clamp01((1.5 - vr) / 1.0)    # 0.5x -> 1, 1.5x -> 0
 
-    score = round(100 * (0.45 * rr_score + 0.20 * pullback +
-                         0.20 * support_prox + 0.15 * earn))
+    flags = [f for f in str(row.get("flags") or "").split(",") if f]
+    score = round(100 * (0.35 * rr_score + 0.15 * rs_score + 0.15 * pullback +
+                         0.15 * support_prox + 0.10 * vol_score + 0.10 * earn)
+                  - 5 * len(flags))
+    score = max(min(score, 100), 0)
 
     bits = [f"R:R {row['RR']:.1f}",
             f"entry {dist_to_support * 100:.1f}% above support",
             f"RSI {row['RSI']:.0f}"]
+    if rs is not None:
+        bits.append(f"RS vs mkt {rs:+.1f}%")
+    if vr is not None:
+        bits.append(f"pullback vol {vr:.2f}x" + (" (quiet)" if vr < 1 else ""))
     bits.append("earnings date unknown" if dte is None else f"earnings in {dte}d")
+    if flags:
+        bits.append("⚠ " + ", ".join(flags))
     return score, " · ".join(bits)
 
 
@@ -300,6 +420,16 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
 
     data = _get_ohlc(universe, progress)
 
+    bench = _get_benchmarks(progress)
+    regime = {region: market_uptrend(close) for region, close in bench.items()}
+    for region, up in regime.items():
+        label = {True: "UPTREND", False: "DOWNTREND", None: "unknown"}[up]
+        progress(f"Market regime {region} ({BENCHMARKS[region]}): {label}")
+    if p["require_market_uptrend"] and not any(v for v in regime.values()):
+        if all(v is False for v in regime.values()):
+            progress("Both benchmarks below SMA200 — regime gate will reject everything. "
+                     "Untick 'require market uptrend' to override.")
+
     t1 = time.time()
     for i, ticker in enumerate(universe, 1):
         if i % 50 == 0 or i == len(universe):
@@ -319,8 +449,12 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             price = float(hist["Close"].iloc[-1])
             sma200 = float(hist["Close"].rolling(200).mean().iloc[-1])
             avg_vol = float(hist["Volume"].tail(30).mean())
+            region = _region(ticker)
 
             # ---- Stage 1: cheap technical gates (no API calls) ----
+            if p["require_market_uptrend"] and regime.get(region) is False:
+                reject(ticker, f"market regime ({BENCHMARKS[region]} below SMA200)")
+                continue
             dollar_vol = avg_vol * price
             if dollar_vol < p["min_dollar_vol_m"] * 1e6:
                 reject(ticker, f"liquidity (${dollar_vol/1e6:.0f}M/day)")
@@ -349,6 +483,16 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                 reject(ticker, f"R:R {rr:.1f} < {p['min_rr']:.1f}")
                 continue
 
+            # ---- setup-quality validators (still free: same OHLC data) ----
+            a = atr(hist)
+            stop_atr = round(risk_ps / a, 2) if a else None
+            if stop_atr is not None and stop_atr < p["min_stop_atr"]:
+                reject(ticker, f"stop inside noise ({stop_atr:.1f} ATR < {p['min_stop_atr']:.1f})")
+                continue
+            rs_3m = rel_strength(hist["Close"], bench.get(region))
+            vol_ratio = pullback_volume_ratio(hist["Volume"])
+            flags: list[str] = []
+
             # ---- Stage 2: expensive per-ticker calls, survivors only ----
             progress(f"    [stage 2] {ticker}: technical setup found, fetching fundamentals...")
             info = _get_info(ticker)
@@ -366,12 +510,29 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             if mktcap < p["min_mkt_cap_b"] * 1e9:
                 reject(ticker, f"mkt cap {mktcap/1e9:.1f}B < min")
                 continue
-            if p["require_profitable"] and (fwd_eps is None or fwd_eps <= 0):
+            # profitability gate with a free fallback: Yahoo's forwardEps is
+            # often missing for EU names — fall back to trailing EPS (flagged)
+            # instead of falsely rejecting as "unprofitable".
+            eps_used = fwd_eps
+            if eps_used is None and info.get("trailingEps") is not None:
+                eps_used = info["trailingEps"]
+                flags.append("eps_fallback")
+            if p["require_profitable"] and (eps_used is None or eps_used <= 0):
                 reject(ticker, f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
                 continue
 
-            # ---- earnings proximity ----
+            # ---- earnings proximity (Yahoo, cross-checked via free Finnhub) ----
             days_to_earnings = _get_days_to_earnings(ticker)
+            days_fh = _finnhub_days_to_earnings(ticker)
+            if days_to_earnings is None and days_fh is not None:
+                days_to_earnings = days_fh
+                flags.append("earnings_from_finnhub")
+            elif (days_to_earnings is not None and days_fh is not None
+                  and abs(days_to_earnings - days_fh) > 2):
+                days_to_earnings = min(days_to_earnings, days_fh)  # conservative
+                flags.append("earnings_sources_disagree")
+            if days_to_earnings is None:
+                flags.append("earnings_unverified")
             if days_to_earnings is not None and days_to_earnings <= p["earnings_drop_days"]:
                 reject(ticker, f"earnings in {days_to_earnings}d")
                 continue
@@ -391,8 +552,10 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                 "support": round(support, 2), "stop": round(stop, 2),
                 "resistance": round(resistance, 2),
                 "RR": round(rr, 2), "RSI": round(r, 1),
+                "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
                 "shares": shares, "risk_EUR": actual_risk_eur,
                 "days_to_earnings": days_to_earnings,
+                "flags": ",".join(flags),
             }
             row["score"], row["rationale"] = score_row(row, p)
             rows.append(row)
