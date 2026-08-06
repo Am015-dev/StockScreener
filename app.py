@@ -208,13 +208,24 @@ def _run_scan(params):
         _state["finished_at"] = time.time()
 
 
-_auto = {"running": False}
+_auto = {"running": False, "cycles": 0}
+_AUTO_MAX_CYCLES = 4
 
 
 def _start_auto_reverify(params):
     with _lock:
         if _auto["running"]:
             return
+        if _auto["cycles"] >= _AUTO_MAX_CYCLES:
+            if _auto["cycles"] == _AUTO_MAX_CYCLES:   # say it once, then rest
+                _auto["cycles"] += 1
+                _progress(f"{len(_state['pending'])} pick(s) still can't be "
+                          f"verified after {_AUTO_MAX_CYCLES} automatic attempts — "
+                          f"leaving them as 'awaiting verification'. Their "
+                          f"fundamentals may simply not be available today; "
+                          f"a manual rerun later will try again.")
+            return
+        _auto["cycles"] += 1
         _auto["running"] = True
     threading.Thread(target=_auto_reverify, args=(params,), daemon=True).start()
 
@@ -270,6 +281,7 @@ def run():
                       rejection_summary=[], near_misses=[], params_used=params,
                       near_board=[], relax_hints={}, scanned=None, health=None,
                       pending=[])
+        _auto["cycles"] = 0   # a manual run resets the auto-verify budget
         try:   # the latest scan's filters double as the daily-alert profile
             with open(ALERT_PROFILE, "w") as f:
                 json.dump(params, f)
