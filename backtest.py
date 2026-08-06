@@ -15,6 +15,7 @@ Honest scope (stated in the UI too):
     at a time — the same conventions as the live track record.
 """
 
+import gc
 import hashlib
 import time
 
@@ -31,58 +32,36 @@ CURVE_POINTS = 200    # cap for the equity-curve payload
 HIST_PERIOD = "5y"    # simulation depth — a 1y sample only yields biased
                       # quick-resolution trades (stops), so go deep
 HIST_TTL = 86400      # 5y download cached for a day
-BT_CHUNK = 150
+BT_CHUNK = 100    # small batches: bounded memory on a 512MB instance
 
 
-def _get_history(universe: list[str], progress=print):
-    """5 years of daily bars for the universe — downloaded once, cached."""
-    key = hashlib.md5((HIST_PERIOD + ":" + ",".join(universe)).encode()).hexdigest()
-    mem = screener._cache.get("bt_ohlc")
-    if mem and mem[0] == key and time.time() - mem[2] < HIST_TTL:
-        progress("Reusing today's cached 5-year history.")
-        return mem[1]
-    hit, stored = cache_store.fetch(f"btohlc:{key}", HIST_TTL)
+def _fetch_chunk(chunk: list[str], progress=print):
+    """5y bars for ONE batch of tickers, disk-cached for a day. Small enough
+    (~100 tickers) to never threaten a 512MB instance."""
+    key = hashlib.md5((HIST_PERIOD + ":" + ",".join(chunk)).encode()).hexdigest()
+    hit, stored = cache_store.fetch(f"btc:{key}", HIST_TTL)
     if hit and stored is not None:
-        screener._cache["bt_ohlc"] = (key, stored, time.time())
-        progress("Loaded 5-year history from disk cache.")
         return stored
-    n_chunks = (len(universe) + BT_CHUNK - 1) // BT_CHUNK
-    progress(f"Downloading {HIST_PERIOD} of history for {len(universe)} stocks "
-             f"in {n_chunks} batches (one-time today; a few minutes)...")
-    parts, failed = [], 0
-    for ci in range(n_chunks):
-        chunk = universe[ci * BT_CHUNK:(ci + 1) * BT_CHUNK]
-        if ci:
-            time.sleep(1)
-        d = None
-        try:
-            ok, d = screener._yahoo_call(lambda chunk=chunk: yf.download(
-                chunk, period=HIST_PERIOD, auto_adjust=True,
-                group_by="ticker", threads=16, progress=False), scope="chart")
-            if not ok:
-                d = None
-        except Exception as e:
-            progress(f"  batch {ci + 1}/{n_chunks} failed: {e}")
-        if d is None or d.empty:
-            failed += 1
-            progress(f"  batch {ci + 1}/{n_chunks}: no data — skipped")
-            continue
-        if not isinstance(d.columns, pd.MultiIndex):
-            d = pd.concat({chunk[0]: d}, axis=1)
-        parts.append(d)
-        progress(f"  batch {ci + 1}/{n_chunks}: ok")
-    if not parts:
-        raise RuntimeError("could not download the 5-year history — Yahoo is "
-                           "throttling price data right now; try again in a "
-                           "few minutes")
-    data = pd.concat(parts, axis=1) if len(parts) > 1 else parts[0]
-    screener._cache["bt_ohlc"] = (key, data, time.time())
+    d = None
     try:
-        if failed == 0 and float(data.memory_usage().sum()) < 120e6:
-            cache_store.put(f"btohlc:{key}", data)
+        ok, d = screener._yahoo_call(lambda: yf.download(
+            chunk, period=HIST_PERIOD, auto_adjust=True,
+            group_by="ticker", threads=16, progress=False), scope="chart")
+        if not ok:
+            d = None
+    except Exception as e:
+        progress(f"  history batch failed: {e}")
+        d = None
+    if d is None or d.empty:
+        return None
+    if not isinstance(d.columns, pd.MultiIndex):
+        d = pd.concat({chunk[0]: d}, axis=1)
+    try:
+        if float(d.memory_usage().sum()) < 40e6:
+            cache_store.put(f"btc:{key}", d)
     except Exception:
         pass
-    return data
+    return d
 
 
 def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
@@ -95,15 +74,43 @@ def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
 
 def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
     """Simulate params `p` (already clean_params'd). When `data` is None the
-    5-year history is downloaded/cached automatically."""
-    if data is None:
-        data = _get_history(universe, progress)
+    5-year history is streamed batch by batch — downloaded, simulated,
+    discarded — so the deep history never has to fit in memory at once."""
     trades: list[dict] = []
     scanned = 0
-    for i, ticker in enumerate(universe, 1):
-        if i % 100 == 0:
-            progress(f"  simulating {i}/{len(universe)} stocks — "
+    if data is None:
+        n_chunks = (len(universe) + BT_CHUNK - 1) // BT_CHUNK
+        progress(f"Simulating {HIST_PERIOD} of history for {len(universe)} "
+                 f"stocks in {n_chunks} batches (first run downloads; "
+                 f"cached for the day)...")
+        for ci in range(n_chunks):
+            chunk = universe[ci * BT_CHUNK:(ci + 1) * BT_CHUNK]
+            if ci:
+                time.sleep(1)
+            frame = _fetch_chunk(chunk, progress)
+            if frame is None:
+                progress(f"  batch {ci + 1}/{n_chunks}: no data — skipped")
+                continue
+            done = _simulate_block(p, frame, chunk, trades)
+            scanned += done
+            progress(f"  batch {ci + 1}/{n_chunks}: {done} stocks simulated — "
                      f"{len(trades)} historical trades so far")
+            del frame
+            gc.collect()
+        if scanned == 0:
+            raise RuntimeError("could not download the 5-year history — Yahoo "
+                               "is throttling price data right now; try again "
+                               "in a few minutes")
+    else:
+        scanned = _simulate_block(p, data, universe, trades)
+    return _aggregate(trades, scanned)
+
+
+def _simulate_block(p: dict, data, tickers: list[str], trades: list) -> int:
+    """Run the simulation for one batch of tickers against its frame.
+    Appends to `trades`, returns how many stocks had enough history."""
+    scanned = 0
+    for ticker in tickers:
         try:
             hist = data[ticker].dropna()
         except Exception:
@@ -183,7 +190,10 @@ def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
                            "rr_planned": round(rr, 2),
                            "outcome_r": round(float(out_r), 2),
                            "status": status})
+    return scanned
 
+
+def _aggregate(trades: list[dict], scanned: int) -> dict:
     if not trades:
         return {"n": 0, "n_stocks": scanned}
 
