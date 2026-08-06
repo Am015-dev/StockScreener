@@ -17,6 +17,11 @@ map, which is how the web app (app.py) drives it. Every threshold is a
 parameter (see DEFAULTS) so the UI can expose them as filters. Universe and
 OHLC downloads are cached for an hour, so re-running with different filter
 values is fast.
+
+Yahoo rate limits (429) never abort a scan: throttled calls retry briefly,
+then a cooldown stops further live calls while the scan falls back to disk-
+cached data at any age; results built on missing fundamentals are flagged
+(`fundamentals_unavailable`) rather than falsely rejected.
 """
 
 import hashlib
@@ -28,6 +33,12 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+
+try:
+    from yfinance.exceptions import YFRateLimitError
+except Exception:  # older/newer yfinance layouts — fall back to message sniffing
+    class YFRateLimitError(Exception):
+        pass
 
 import cache_store
 
@@ -95,8 +106,57 @@ FALLBACK_UNIVERSE = [
 ]
 
 CACHE_TTL = 3600      # reuse universe/OHLC/fundamentals for an hour
+STALE_OK = float("inf")  # cache_store TTL meaning "any age beats no data"
 DOWNLOAD_CHUNK = 250  # tickers per yf.download call: rate-limit friendliness
+RATE_LIMIT_COOLDOWN = 180  # once Yahoo hard-429s us, stop live calls this long
+RETRY_DELAYS = (2, 5)      # backoff before giving up on a rate-limited call
 # ----------------------------------------------------------
+
+
+# ----------------------- rate-limit guard -----------------------
+# Yahoo throttles by IP and a hard 429 tends to persist for minutes. One
+# rate-limited call must never kill a scan (stale cache beats no scan), and
+# once we know we're throttled there is no point firing hundreds more doomed
+# requests — a cooldown window short-circuits live calls to the stale path.
+_rl = {"until": 0.0, "hits": 0}
+
+
+def _rate_limited_now() -> bool:
+    return time.time() < _rl["until"]
+
+
+def _note_rate_limited():
+    _rl["hits"] += 1
+    _rl["until"] = max(_rl["until"], time.time() + RATE_LIMIT_COOLDOWN)
+
+
+def _is_rate_limit(e: Exception) -> bool:
+    return (isinstance(e, YFRateLimitError)
+            or "too many requests" in str(e).lower() or "429" in str(e))
+
+
+def _yahoo_call(fn):
+    """Run one live Yahoo call with retry + circuit breaker.
+
+    Returns (ok, value). Retries a rate-limited call with short backoff;
+    when retries are exhausted, opens the cooldown window and returns
+    (False, None). During cooldown every call short-circuits to (False, None)
+    without touching the network. Non-rate-limit exceptions propagate so
+    callers keep their existing error handling.
+    """
+    if _rate_limited_now():
+        return False, None
+    delays = list(RETRY_DELAYS)
+    while True:
+        try:
+            return True, fn()
+        except Exception as e:
+            if not _is_rate_limit(e):
+                raise
+            if not delays:
+                _note_rate_limited()
+                return False, None
+            time.sleep(delays.pop(0))
 
 
 def _num(v, default, lo, hi, cast=float):
@@ -217,13 +277,20 @@ def build_universe(p: dict, progress=print) -> list[str]:
     try:
         if p["include_us"]:
             for sector in p["sectors"]:
+                if _rate_limited_now():
+                    progress("  Yahoo rate limit hit — skipping remaining US sector queries")
+                    break
                 q = yf.EquityQuery("and", [
                     yf.EquityQuery("eq", ["region", "us"]),
                     yf.EquityQuery("eq", ["sector", sector]),
                     yf.EquityQuery("gt", ["intradaymarketcap", min_cap]),
                 ])
                 try:
-                    res = yf.screen(q, size=250, sortField="intradaymarketcap", sortAsc=False)
+                    ok, res = _yahoo_call(lambda q=q: yf.screen(
+                        q, size=250, sortField="intradaymarketcap", sortAsc=False))
+                    if not ok:
+                        progress(f"  us/{sector}: rate-limited")
+                        continue
                     got = [x["symbol"] for x in res.get("quotes", [])]
                     progress(f"  us/{sector}: {len(got)}")
                     us_syms += got
@@ -232,12 +299,19 @@ def build_universe(p: dict, progress=print) -> list[str]:
         if p["include_eu"]:
             # sector filtered later via info (Yahoo's EU sector tagging is spotty)
             for region in EU_REGIONS:
+                if _rate_limited_now():
+                    progress("  Yahoo rate limit hit — skipping remaining EU region queries")
+                    break
                 q = yf.EquityQuery("and", [
                     yf.EquityQuery("eq", ["region", region]),
                     yf.EquityQuery("gt", ["intradaymarketcap", min_cap]),
                 ])
                 try:
-                    res = yf.screen(q, size=100, sortField="intradaymarketcap", sortAsc=False)
+                    ok, res = _yahoo_call(lambda q=q: yf.screen(
+                        q, size=100, sortField="intradaymarketcap", sortAsc=False))
+                    if not ok:
+                        progress(f"  {region}: rate-limited")
+                        continue
                     got = [x["symbol"] for x in res.get("quotes", [])]
                     progress(f"  {region}: {len(got)}")
                     eu_syms += got
@@ -245,7 +319,17 @@ def build_universe(p: dict, progress=print) -> list[str]:
                     progress(f"  {region} failed: {e}")
     except AttributeError:
         progress("  yf.screen unavailable — update yfinance: pip install -U yfinance")
-    if not us_syms and not eu_syms:  # final fallback: static core list
+    if not us_syms and not eu_syms:
+        # Yahoo gave us nothing (usually a rate limit): a stale universe from a
+        # past run beats the static list, which beats failing outright.
+        hit, stale = cache_store.fetch(f"universe:{key}", STALE_OK)
+        if hit and stale:
+            progress(f"  Yahoo screener unavailable — reusing last known universe "
+                     f"from disk ({len(stale)} tickers, may be stale).")
+            _cache.update(universe_key=key, universe=stale, universe_ts=time.time())
+            return stale
+        progress(f"  Yahoo screener unavailable — using built-in fallback universe "
+                 f"({len(FALLBACK_UNIVERSE)} tickers).")
         us_syms = list(FALLBACK_UNIVERSE)
 
     def dedupe(lst, seen):
@@ -268,7 +352,8 @@ def build_universe(p: dict, progress=print) -> list[str]:
         progress(f"  universe capped at {cap} (largest caps kept: {len(us)} US, {len(eu)} EU)")
     out = us + eu
     _cache.update(universe_key=key, universe=out, universe_ts=time.time())
-    cache_store.put(f"universe:{key}", out)
+    if not _rate_limited_now():  # don't overwrite a full stale universe with a partial one
+        cache_store.put(f"universe:{key}", out)
     return out
 
 
@@ -291,8 +376,13 @@ def _get_ohlc(universe: list[str], progress=print):
     for ci in range(n_chunks):
         chunk = universe[ci * DOWNLOAD_CHUNK:(ci + 1) * DOWNLOAD_CHUNK]
         try:
-            d = yf.download(chunk, period="1y", auto_adjust=True,
-                            group_by="ticker", threads=8, progress=False)
+            ok, d = _yahoo_call(lambda chunk=chunk: yf.download(
+                chunk, period="1y", auto_adjust=True,
+                group_by="ticker", threads=8, progress=False))
+            if not ok:
+                failed += 1
+                progress(f"  chunk {ci+1}/{n_chunks}: skipped (Yahoo rate limit)")
+                continue
             if d is None or d.empty:
                 failed += 1
                 progress(f"  chunk {ci+1}/{n_chunks}: empty response (rate-limited?)")
@@ -305,6 +395,13 @@ def _get_ohlc(universe: list[str], progress=print):
             failed += 1
             progress(f"  chunk {ci+1}/{n_chunks} failed: {e}")
     if not parts:
+        # rate-limited into a corner: yesterday's prices still beat no scan
+        hit, stale = cache_store.fetch(f"ohlc:{key}", STALE_OK)
+        if hit and stale is not None and not getattr(stale, "empty", True):
+            progress("  every price download failed — reusing last cached OHLC "
+                     "from disk (stale; rerun later for fresh prices).")
+            _cache.update(ohlc_key=key, ohlc=stale, ohlc_ts=time.time())
+            return stale
         raise RuntimeError(
             "every price download failed — Yahoo Finance is likely rate-limiting "
             "or blocking this server right now; wait a few minutes and rerun")
@@ -318,8 +415,9 @@ def _get_ohlc(universe: list[str], progress=print):
                  + (" — Yahoo may be rate-limiting; rerun in a few minutes"
                     if n_empty > len(universe) * 0.2 else ""))
     _cache.update(ohlc_key=key, ohlc=data, ohlc_ts=time.time())
-    try:  # keep the disk cache off the hot path for very large frames (RAM)
-        if float(data.memory_usage().sum()) < 150e6:
+    try:  # keep the disk cache off the hot path for very large frames (RAM);
+        # never overwrite a complete stale set with a partial download
+        if failed == 0 and float(data.memory_usage().sum()) < 150e6:
             cache_store.put(f"ohlc:{key}", data)
     except Exception:
         pass
@@ -327,6 +425,13 @@ def _get_ohlc(universe: list[str], progress=print):
 
 
 def _get_info(ticker: str) -> dict:
+    """Fundamentals dict, or {} when Yahoo won't give us one right now.
+
+    Never raises — this runs inside portfolio valuation and stage 2 of the
+    scan, and a single rate-limited call must not abort the whole run. When
+    live fetch fails, serves the last disk-cached info at any age (sector and
+    market cap drift slowly enough for stale to be useful).
+    """
     mem = _cache["info"].get(ticker)
     if mem and _fresh(mem[0]):
         return mem[1]
@@ -334,10 +439,17 @@ def _get_info(ticker: str) -> dict:
     if hit:
         _cache["info"][ticker] = (time.time(), stored)
         return stored
-    info = yf.Ticker(ticker).info or {}
-    _cache["info"][ticker] = (time.time(), info)
-    cache_store.put(f"info:{ticker}", info)
-    return info
+    try:
+        ok, info = _yahoo_call(lambda: yf.Ticker(ticker).info)
+    except Exception:
+        ok, info = False, None
+    if ok:
+        info = info or {}
+        _cache["info"][ticker] = (time.time(), info)
+        cache_store.put(f"info:{ticker}", info)
+        return info
+    hit, stale = cache_store.fetch(f"info:{ticker}", STALE_OK)
+    return stale if hit and isinstance(stale, dict) else {}
 
 
 def _get_days_to_earnings(ticker: str) -> int | None:
@@ -348,12 +460,21 @@ def _get_days_to_earnings(ticker: str) -> int | None:
     if hit:
         _cache["earnings"][ticker] = (time.time(), stored)
         return stored
+    try:
+        ok, ed = _yahoo_call(lambda: yf.Ticker(ticker).get_earnings_dates(limit=4))
+    except Exception:
+        ok, ed = True, None  # genuine "no data" (e.g. ETFs) — cacheable as None
+    if not ok:
+        # rate-limited: serve any stale date, and don't cache the failure —
+        # a poisoned None would suppress the earnings gate for a full TTL
+        hit, stale = cache_store.fetch(f"earn:{ticker}", STALE_OK)
+        return stale if hit else None
     days = None
     try:
-        ed = yf.Ticker(ticker).get_earnings_dates(limit=4)
-        future = ed[ed.index > pd.Timestamp.now(tz=ed.index.tz)]
-        if len(future):
-            days = (future.index.min() - pd.Timestamp.now(tz=ed.index.tz)).days
+        if ed is not None:
+            future = ed[ed.index > pd.Timestamp.now(tz=ed.index.tz)]
+            if len(future):
+                days = (future.index.min() - pd.Timestamp.now(tz=ed.index.tz)).days
     except Exception:
         pass
     _cache["earnings"][ticker] = (time.time(), days)
@@ -369,21 +490,33 @@ def _get_benchmarks(progress=print) -> dict:
     if hit:
         _cache.update(bench=stored, bench_ts=time.time())
         return stored
-    bench = {}
+    bench, data = {}, None
     try:
-        data = yf.download(list(BENCHMARKS.values()), period="1y", auto_adjust=True,
-                           group_by="ticker", threads=True, progress=False)
+        ok, data = _yahoo_call(lambda: yf.download(
+            list(BENCHMARKS.values()), period="1y", auto_adjust=True,
+            group_by="ticker", threads=True, progress=False))
+        if not ok:
+            data = None
+    except Exception as e:
+        progress(f"  benchmark download failed ({e})")
+    if data is not None:
         for region, sym in BENCHMARKS.items():
             try:
                 close = data[sym]["Close"].dropna()
                 bench[region] = close if len(close) >= 200 else None
             except Exception:
                 bench[region] = None
-    except Exception as e:
-        progress(f"  benchmark download failed ({e}) — regime/RS checks disabled")
-        bench = {region: None for region in BENCHMARKS}
+    if not any(v is not None for v in bench.values()):
+        hit, stale = cache_store.fetch("bench", STALE_OK)
+        if hit and isinstance(stale, dict) and any(v is not None for v in stale.values()):
+            progress("  benchmark download unavailable — using last cached "
+                     "benchmarks (stale) for regime/RS checks")
+            bench = stale
+        else:
+            progress("  benchmark data unavailable — regime/RS checks disabled")
+            bench = {region: None for region in BENCHMARKS}
     _cache.update(bench=bench, bench_ts=time.time())
-    if any(v is not None for v in bench.values()):
+    if data is not None and any(v is not None for v in bench.values()):
         cache_store.put("bench", bench)
     return bench
 
@@ -503,12 +636,14 @@ def _portfolio_state(p: dict, data, universe: list[str], progress=print) -> dict
     missing = [h["ticker"] for h in p["holdings"] if h["ticker"] not in universe]
     if missing:
         try:
-            d2 = yf.download(missing, period="5d", auto_adjust=True,
-                             group_by="ticker", threads=True, progress=False)
-            for t in missing:
-                px = _last_close(d2, t)
-                if px is not None:
-                    extra[t] = px
+            ok, d2 = _yahoo_call(lambda: yf.download(
+                missing, period="5d", auto_adjust=True,
+                group_by="ticker", threads=True, progress=False))
+            if ok and d2 is not None:
+                for t in missing:
+                    px = _last_close(d2, t)
+                    if px is not None:
+                        extra[t] = px
         except Exception:
             pass
 
@@ -599,6 +734,11 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
     exclude = _exclude_set(p)
     allowed_sectors = set(p["sectors"])
     t0 = time.time()
+    rl_hits_start = _rl["hits"]
+    if _rate_limited_now():
+        progress(f"Note: Yahoo rate-limit cooldown active for another "
+                 f"{int(_rl['until'] - time.time())}s — this run will lean on "
+                 f"cached data where live calls would be throttled.")
 
     progress("Building universe via Yahoo sector screener...")
     universe = build_universe(p, progress)
@@ -690,6 +830,11 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             # ---- Stage 2: expensive per-ticker calls, survivors only ----
             progress(f"    [stage 2] {ticker}: technical setup found, fetching fundamentals...")
             info = _get_info(ticker)
+            if not info:
+                # Yahoo is rate-limiting (or has no record): the technical
+                # setup is real, so keep it with a flag and a score penalty
+                # instead of falsely rejecting on absent fundamentals.
+                flags.append("fundamentals_unavailable")
             mktcap = info.get("marketCap") or 0
             fwd_eps = info.get("forwardEps")
             sector = info.get("sector")
@@ -701,7 +846,7 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             if sector and sector not in allowed_sectors:
                 reject(ticker, f"sector not selected ({sector})")
                 continue
-            if mktcap < p["min_mkt_cap_b"] * 1e9:
+            if info and mktcap < p["min_mkt_cap_b"] * 1e9:
                 reject(ticker, f"mkt cap {mktcap/1e9:.1f}B < min")
                 continue
             # profitability gate with a free fallback: Yahoo's forwardEps is
@@ -711,7 +856,8 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             if eps_used is None and info.get("trailingEps") is not None:
                 eps_used = info["trailingEps"]
                 flags.append("eps_fallback")
-            if p["require_profitable"] and (eps_used is None or eps_used <= 0):
+            if (p["require_profitable"] and info
+                    and (eps_used is None or eps_used <= 0)):
                 reject(ticker, f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
                 continue
 
@@ -793,6 +939,12 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             reject(ticker, f"data error: {e}")
 
     elapsed = time.time() - t0
+    rl_hits = _rl["hits"] - rl_hits_start
+    if rl_hits:
+        progress(f"⚠ Yahoo rate-limited {rl_hits} call(s) this scan — served "
+                 f"cached/stale data where possible; affected results carry "
+                 f"'fundamentals_unavailable' or 'earnings_unverified' flags. "
+                 f"Rerun in a few minutes for fresh data.")
     progress(f"Scan complete in {elapsed:.0f}s total.")
     df = pd.DataFrame(rows)
     if len(df):
