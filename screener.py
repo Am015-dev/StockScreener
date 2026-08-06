@@ -119,7 +119,8 @@ RATE_LIMIT_COOLDOWN = 180  # once Yahoo hard-429s us, stop live calls this long
 # per-API cooldowns: the quote API often clears within a minute, and only a
 # handful of calls need it per scan — give it a short window plus a retry
 # pass at the end of the scan instead of writing off the whole run
-SCOPE_COOLDOWN = {"screen": 300, "chart": 180, "quote": 45, "quote_v7": 60}
+SCOPE_COOLDOWN = {"screen": 300, "chart": 180, "quote": 45, "quote_v7": 60,
+                  "crumb": 120}
 QUOTE_RETRY_MAX_WAIT = 60  # max seconds the end-of-scan fundamentals retry waits
 RETRY_DELAYS = (2, 5)      # backoff before giving up on a rate-limited call
 # ----------------------------------------------------------
@@ -425,6 +426,12 @@ def _get_info(ticker: str) -> dict:
         _cache["info"][ticker] = (time.time(), info)
         cache_store.put(f"info:{ticker}", info)
         return info
+    # yfinance's own crumb dance failed — ours may hold a persisted crumb
+    info = _quote_summary_direct(ticker)
+    if info:
+        _cache["info"][ticker] = (time.time(), info)
+        cache_store.put(f"info:{ticker}", info)
+        return info
     hit, stale = cache_store.fetch(f"info:{ticker}", STALE_OK)
     return stale if hit and isinstance(stale, dict) else {}
 
@@ -534,6 +541,120 @@ def pullback_volume_ratio(vol: pd.Series, recent: int = 10, base: int = 30) -> f
     r = float(vol.tail(recent).mean())
     b = float(vol.iloc[-(recent + base):-recent].mean())
     return round(r / b, 2) if b > 0 else None
+
+
+# The /diag/yahoo probe from the deploy host showed the real failure chain:
+# quoteSummary (fundamentals) answers 401 "Invalid Crumb" — it is NOT blocked;
+# only the tiny getcrumb token endpoint is throttled (429). yfinance refetches
+# a crumb on every cold start, at exactly the moment it is throttled. So:
+# acquire a crumb during any window Yahoo allows, persist cookie+crumb to
+# disk for a week, and call quoteSummary ourselves with the stored session.
+YAHOO_AUTH_TTL = 7 * 86400
+_yauth = {"session": None, "crumb": None, "ts": 0.0}
+
+
+def _yahoo_auth_session():
+    """(session, crumb) with a persisted Yahoo cookie+crumb, or (None, None)."""
+    if _yauth["session"] is not None and time.time() - _yauth["ts"] < YAHOO_AUTH_TTL:
+        return _yauth["session"], _yauth["crumb"]
+    hit, stored = cache_store.fetch("yahoo_auth", YAHOO_AUTH_TTL)
+    if hit and isinstance(stored, dict) and stored.get("crumb"):
+        s = requests.Session()
+        s.headers.update(_V7_UA)
+        s.cookies.update(stored["cookies"])
+        _yauth.update(session=s, crumb=stored["crumb"], ts=stored["ts"])
+        return s, stored["crumb"]
+    if _rate_limited_now("crumb"):
+        return None, None
+
+    def _valid(txt):
+        t = (txt or "").strip()
+        return t and len(t) < 30 and "<" not in t and "Too Many" not in t
+
+    s = requests.Session()
+    s.headers.update(_V7_UA)
+    crumb = None
+    try:
+        s.get("https://fc.yahoo.com", timeout=10)
+        for host in ("query1", "query2"):
+            r = s.get(f"https://{host}.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+            if r.status_code == 200 and _valid(r.text):
+                crumb = r.text.strip()
+                break
+        if crumb is None:
+            # richer first-party cookies sometimes pass where fc.yahoo's don't
+            s.get("https://finance.yahoo.com", timeout=15)
+            r = s.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+            if r.status_code == 200 and _valid(r.text):
+                crumb = r.text.strip()
+    except Exception:
+        crumb = None
+    if crumb:
+        _yauth.update(session=s, crumb=crumb, ts=time.time())
+        cache_store.put("yahoo_auth", {"cookies": s.cookies.get_dict(),
+                                       "crumb": crumb, "ts": time.time()})
+        return s, crumb
+    _note_rate_limited("crumb")
+    return None, None
+
+
+_QS_MODULES = "price,assetProfile,defaultKeyStatistics,financialData,calendarEvents"
+
+
+def _quote_summary_direct(ticker: str) -> dict:
+    """Fundamentals straight from quoteSummary using the persisted session.
+    Returns a yfinance-shaped info dict (so downstream code can't tell the
+    difference), {} when unavailable."""
+    sess, crumb = _yahoo_auth_session()
+    if sess is None:
+        return {}
+    try:
+        r = sess.get("https://query2.finance.yahoo.com/v10/finance/quoteSummary/"
+                     + ticker,
+                     params={"modules": _QS_MODULES, "crumb": crumb,
+                             "formatted": "false"}, timeout=10)
+        if r.status_code == 429:
+            _note_rate_limited("quote")
+            return {}
+        if r.status_code in (401, 403):   # crumb went stale — drop and re-earn
+            _yauth.update(session=None, crumb=None, ts=0.0)
+            cache_store.delete("yahoo_auth")
+            return {}
+        if r.status_code != 200:
+            return {}
+        res = ((r.json().get("quoteSummary") or {}).get("result") or [])
+        if not res:
+            return {}
+        m = res[0]
+
+        def g(mod, key):
+            v = (m.get(mod) or {}).get(key)
+            return v.get("raw") if isinstance(v, dict) else v
+
+        info = {}
+        for k, mod, key in [("marketCap", "price", "marketCap"),
+                            ("shortName", "price", "shortName"),
+                            ("sector", "assetProfile", "sector"),
+                            ("forwardEps", "defaultKeyStatistics", "forwardEps"),
+                            ("trailingEps", "defaultKeyStatistics", "trailingEps"),
+                            ("recommendationMean", "financialData", "recommendationMean"),
+                            ("numberOfAnalystOpinions", "financialData",
+                             "numberOfAnalystOpinions"),
+                            ("targetMeanPrice", "financialData", "targetMeanPrice")]:
+            v = g(mod, key)
+            if v is not None:
+                info[k] = v
+        try:
+            ed = ((m.get("calendarEvents") or {}).get("earnings") or {})                 .get("earningsDate") or []
+            ts_ = [e.get("raw") if isinstance(e, dict) else e for e in ed]
+            fut = [t for t in ts_ if t and t > time.time()]
+            if fut:
+                info["_earn_days"] = int((min(fut) - time.time()) // 86400)
+        except Exception:
+            pass
+        return info
+    except Exception:
+        return {}
 
 
 # Yahoo's v7 quote API is a separate, older endpoint from the (blocked)
@@ -865,6 +986,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
         progress(f"Note: Yahoo rate-limit cooldown active for {', '.join(cooling)} "
                  f"calls — this run will lean on cached data there.")
 
+    _yahoo_auth_session()   # cheap; persists a crumb whenever Yahoo allows one
     progress("Building universe via Yahoo sector screener...")
     universe = build_universe(p, progress)
     progress(f"Universe: {len(universe)} tickers  [{time.time()-t0:.0f}s]")
@@ -1073,6 +1195,9 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                       and abs(days_to_earnings - days_fh) > 2):
                     days_to_earnings = min(days_to_earnings, days_fh)  # conservative
                     flags.append("earnings_sources_disagree")
+                if days_to_earnings is None and info.get("_earn_days") is not None:
+                    days_to_earnings = info["_earn_days"]
+                    flags.append("earnings_from_quote")
                 if days_to_earnings is None and q7.get("earn_days") is not None:
                     days_to_earnings = q7["earn_days"]
                     flags.append("earnings_from_quote")

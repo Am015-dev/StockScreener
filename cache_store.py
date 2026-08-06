@@ -43,6 +43,14 @@ def put(key: str, value) -> None:
         pass
 
 
+def delete(key: str) -> None:
+    try:
+        with _conn() as c:
+            c.execute("DELETE FROM kv WHERE k = ?", (key,))
+    except Exception:
+        pass
+
+
 def clear() -> None:
     try:
         with _conn() as c:
