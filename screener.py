@@ -267,13 +267,14 @@ _cache: dict = {
     "info": {},       # ticker -> (ts, info dict)
     "earnings": {},   # ticker -> (ts, days_to_earnings | None)
     "finnhub": {},    # ticker -> (ts, days_to_earnings | None)
+    "fhf": {},        # ticker -> (ts, finnhub fundamentals dict | None)
 }
 
 
 def clear_cache():
     _cache.update(universe_key=None, universe=None, universe_ts=0.0,
                   ohlc_key=None, ohlc=None, ohlc_ts=0.0,
-                  bench=None, bench_ts=0.0, info={}, earnings={}, finnhub={})
+                  bench=None, bench_ts=0.0, info={}, earnings={}, finnhub={}, fhf={})
     cache_store.clear()
 
 
@@ -531,6 +532,50 @@ def pullback_volume_ratio(vol: pd.Series, recent: int = 10, base: int = 30) -> f
     r = float(vol.tail(recent).mean())
     b = float(vol.iloc[-(recent + base):-recent].mean())
     return round(r / b, 2) if b > 0 else None
+
+
+def _finnhub_fundamentals(ticker: str) -> dict | None:
+    """Free fallback for company basics + analyst consensus when Yahoo's
+    quote API is blocked (finnhub.io free tier; reliable mainly for US
+    symbols). Returns {"marketCap", "name", "rec_mean", "analysts_n"} or None.
+    """
+    if not FINNHUB_KEY:
+        return None
+    mem = _cache["fhf"].get(ticker)
+    if mem and _fresh(mem[0], INFO_TTL):
+        return mem[1]
+    hit, stored = cache_store.fetch(f"fhf:{ticker}", INFO_TTL)
+    if hit:
+        _cache["fhf"][ticker] = (time.time(), stored)
+        return stored
+    out = None
+    try:
+        r = requests.get("https://finnhub.io/api/v1/stock/profile2",
+                         params={"symbol": ticker, "token": FINNHUB_KEY}, timeout=10)
+        prof = r.json() if r.status_code == 200 else {}
+        r2 = requests.get("https://finnhub.io/api/v1/stock/recommendation",
+                          params={"symbol": ticker, "token": FINNHUB_KEY}, timeout=10)
+        recs = r2.json() if r2.status_code == 200 else []
+        rec_mean = analysts_n = None
+        if isinstance(recs, list) and recs:
+            latest = recs[0]
+            counts = [(1, latest.get("strongBuy") or 0), (2, latest.get("buy") or 0),
+                      (3, latest.get("hold") or 0), (4, latest.get("sell") or 0),
+                      (5, latest.get("strongSell") or 0)]
+            total = sum(n for _, n in counts)
+            if total:
+                rec_mean = round(sum(w * n for w, n in counts) / total, 2)
+                analysts_n = total
+        mc = (prof or {}).get("marketCapitalization")  # reported in millions
+        if mc or rec_mean is not None:
+            out = {"marketCap": mc * 1e6 if mc else None,
+                   "name": (prof or {}).get("name"),
+                   "rec_mean": rec_mean, "analysts_n": analysts_n}
+    except Exception:
+        out = None
+    _cache["fhf"][ticker] = (time.time(), out)
+    cache_store.put(f"fhf:{ticker}", out)
+    return out
 
 
 def _finnhub_days_to_earnings(ticker: str) -> int | None:
@@ -860,18 +905,23 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 # ---- Stage 2: expensive per-ticker calls, survivors only ----
                 progress(f"    [stage 2] {ticker}: technical setup found, fetching fundamentals...")
                 info = _get_info(ticker)
+                fh = None
                 if not info:
-                    # Yahoo is rate-limiting (or has no record): the technical
-                    # setup is real, so keep it with a flag and a score penalty
-                    # instead of falsely rejecting on absent fundamentals.
-                    flags.append("fundamentals_unavailable")
-                mktcap = info.get("marketCap") or 0
+                    # Yahoo quote API blocked: try the free Finnhub fallback
+                    # before flagging the pick as unverified. The technical
+                    # setup is real either way — never falsely reject it.
+                    fh = _finnhub_fundamentals(ticker)
+                    flags.append("fundamentals_via_finnhub" if fh
+                                 else "fundamentals_unavailable")
+                fh = fh or {}
+                mktcap = info.get("marketCap") or fh.get("marketCap") or 0
                 fwd_eps = info.get("forwardEps")
                 sector = info.get("sector")
                 # analyst consensus — the same indicator broker apps (Revolut
                 # etc.) show, via Yahoo's aggregation of sell-side research
-                rec_mean = info.get("recommendationMean")
-                analysts_n = info.get("numberOfAnalystOpinions")
+                rec_mean = info.get("recommendationMean") or fh.get("rec_mean")
+                analysts_n = (info.get("numberOfAnalystOpinions")
+                              or fh.get("analysts_n"))
                 rec_label = _analyst_label(rec_mean)
                 tgt_mean = info.get("targetMeanPrice")
                 tgt_up_pct = (round((tgt_mean / price - 1) * 100, 1)
@@ -898,7 +948,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                         row["analyst_target_up_pct"] = tgt_up_pct
                         near.append((row, list(misses)))
 
-                if info and mktcap < p["min_mkt_cap_b"] * 1e9:
+                if (info or fh) and mktcap and mktcap < p["min_mkt_cap_b"] * 1e9:
                     near_reject("mkt_cap", f"mkt cap {mktcap/1e9:.1f}B < min")
                     continue
                 # profitability gate with a free fallback: Yahoo's forwardEps is
@@ -976,7 +1026,8 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     continue
 
                 row = {
-                    "ticker": ticker, "name": info.get("shortName") or ticker,
+                    "ticker": ticker,
+                    "name": info.get("shortName") or fh.get("name") or ticker,
                     "sector": sector or "?",
                     "mktcap_b": round(mktcap / 1e9, 1) if mktcap else None,
                 "analyst": (f"{rec_label} ({analysts_n})" if rec_label and analysts_n
@@ -1120,6 +1171,16 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
         for row in near_rows:
             if row["sector"] == "?":
                 info = _get_info(row["ticker"])
+                if not info:
+                    fh = _finnhub_fundamentals(row["ticker"])
+                    if fh:
+                        row["name"] = fh.get("name") or row["name"]
+                        mc = fh.get("marketCap")
+                        row["mktcap_b"] = round(mc / 1e9, 1) if mc else None
+                        rm = fh.get("rec_mean")
+                        lbl, n_an = _analyst_label(rm), fh.get("analysts_n")
+                        row["analyst"] = f"{lbl} ({n_an})" if lbl and n_an else lbl
+                        row["analyst_mean"] = rm
                 if info:
                     row["name"] = info.get("shortName") or row["name"]
                     row["sector"] = info.get("sector") or "?"
@@ -1160,6 +1221,12 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
         progress(f"Nearly qualified: {len(near)} setup(s) failed at least one gate — "
                  f"showing the top {len(near_rows)} with reasons.")
 
+    if not FINNHUB_KEY and any("fundamentals_unavailable" in (r.get("flags") or "")
+                               for r in rows):
+        progress("Tip: Yahoo's fundamentals API is blocked from this server. Add a "
+                 "free FINNHUB_API_KEY (finnhub.io — free signup, no card) as an "
+                 "environment variable and the screener will pull company data and "
+                 "analyst ratings from Finnhub automatically.")
     progress(f"Scan complete in {elapsed:.0f}s total.")
     df = pd.DataFrame(rows)
     if len(df):
