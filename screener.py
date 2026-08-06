@@ -41,6 +41,7 @@ except Exception:  # older/newer yfinance layouts — fall back to message sniff
         pass
 
 import cache_store
+import universe_static
 
 # ----------------------- PARAMETERS -----------------------
 # All Yahoo sectors except Financial Services (the no-financials rule —
@@ -336,16 +337,32 @@ def build_universe(p: dict, progress=print) -> list[str]:
         progress("  yf.screen unavailable — update yfinance: pip install -U yfinance")
     if not us_syms and not eu_syms:
         # Yahoo gave us nothing (usually a rate limit): a stale universe from a
-        # past run beats the static list, which beats failing outright.
+        # past run beats the bundled list, which beats failing outright.
+        # the stale universe wins at any size: the disk-cached OHLC is keyed
+        # to it, so this chain is what keeps a full-Yahoo-outage scan alive
         hit, stale = cache_store.fetch(f"universe:{key}", STALE_OK)
         if hit and stale:
             progress(f"  Yahoo screener unavailable — reusing last known universe "
                      f"from disk ({len(stale)} tickers, may be stale).")
             _cache.update(universe_key=key, universe=stale, universe_ts=time.time())
             return stale
-        progress(f"  Yahoo screener unavailable — using built-in fallback universe "
-                 f"({len(FALLBACK_UNIVERSE)} tickers).")
-        us_syms = list(FALLBACK_UNIVERSE)
+        us_syms = list(universe_static.US_CORE) if p["include_us"] else []
+        eu_syms = list(universe_static.EU_CORE) if p["include_eu"] else []
+        progress(f"  Yahoo screener unavailable — using the built-in large-cap "
+                 f"universe ({len(us_syms) + len(eu_syms)} tickers; size/sector "
+                 f"re-checked from live data during the scan).")
+        if not us_syms and not eu_syms:
+            us_syms = list(FALLBACK_UNIVERSE)
+    elif _rate_limited_now("screen") and len(us_syms) + len(eu_syms) < 150:
+        # the screener died partway: top up the partial result with the
+        # bundled list so a half-blocked run doesn't shrink the scan
+        before = len(us_syms) + len(eu_syms)
+        if p["include_us"]:
+            us_syms += universe_static.US_CORE
+        if p["include_eu"]:
+            eu_syms += universe_static.EU_CORE
+        progress(f"  screener queries were cut short at {before} tickers — "
+                 f"topped up with the built-in large-cap universe.")
 
     def dedupe(lst, seen):
         out = []
@@ -855,6 +872,7 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                 shares = round(min(p["max_risk_eur"] * fx / risk_ps,
                                    p["ticket_eur"] * fx / price), 4)
                 row = {"ticker": ticker, "name": name or ticker, "sector": sector or "?",
+                       "mktcap_b": None,
                        "price": round(price, 2), "support": round(support, 2),
                        "stop": round(stop, 2), "resistance": round(resistance, 2),
                        "RR": round(rr, 2), "RSI": round(r, 1),
@@ -977,6 +995,7 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             row = {
                 "ticker": ticker, "name": info.get("shortName") or ticker,
                 "sector": sector or "?",
+                "mktcap_b": round(mktcap / 1e9, 1) if mktcap else None,
                 "price": round(price, 2),
                 "support": round(support, 2), "stop": round(stop, 2),
                 "resistance": round(resistance, 2),
@@ -1006,6 +1025,16 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
     if near:
         near.sort(key=lambda x: x[0]["score"], reverse=True)
         near_rows = [row for row, _ in near[:NEAR_MAX]]
+        # fundamentals for the board itself — only the shown rows, so at most
+        # NEAR_MAX quote calls, all behind the rate-limit breaker
+        for row in near_rows:
+            if row["sector"] == "?":
+                info = _get_info(row["ticker"])
+                if info:
+                    row["name"] = info.get("shortName") or row["name"]
+                    row["sector"] = info.get("sector") or "?"
+                    mc = info.get("marketCap")
+                    row["mktcap_b"] = round(mc / 1e9, 1) if mc else row["mktcap_b"]
         buckets: dict[str, list] = {}
         for row, m in near:
             if len(m) == 1:   # a single filter change would qualify these

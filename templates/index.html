@@ -343,6 +343,7 @@
 
   <section>
     <h2>All results <span id="resultCount"></span></h2>
+    <div id="verdict" style="display:none;font-size:1.05rem;font-weight:600;margin:0 0 .6rem"></div>
     <div class="secsub">Every stock that passed all filters, best score first.
       Hover a column header for what it means.</div>
     <div id="portSummary" class="hint" style="display:none;margin:0 0 .6rem"></div>
@@ -379,10 +380,11 @@
   </section>
 
   <section id="rejSection" style="display:none">
-    <h2>Why stocks were filtered out</h2>
-    <div class="secsub" id="rejIntro"></div>
-    <div class="tablewrap"><div id="rejections"></div></div>
-    <div id="nearMisses"></div>
+    <details id="rejDetails">
+      <summary>Why stocks were filtered out <span class="plain">— the funnel, reason by reason</span></summary>
+      <div class="secsub" id="rejIntro" style="margin-top:.6rem"></div>
+      <div class="tablewrap"><div id="rejections"></div></div>
+    </details>
   </section>
 
   <section>
@@ -400,6 +402,7 @@ const COLDEFS = [
   ["ticker",   "Stock",        "Ticker symbol — hover to see the company name.", fmtNum],
   ["status",   "Own it?",      "NEW = not in your portfolio. ADD (+x%) = you already hold it and are up/down x% on it.", fmtNum],
   ["sector",   "Sector",       "Industry the company is in.", fmtNum],
+  ["mktcap_b", "Size",         "Company size (market value) in billions of US dollars.", v => "$" + v + "B"],
   ["price",    "Price",        "Latest price — roughly where you'd buy.", fmtNum],
   ["stop",     "Stop-loss",    "Place a sell-stop here. If the price falls this far the idea failed; this caps your loss.", fmtNum],
   ["resistance","Target",      "The recent high the price could realistically climb back to — where you'd take profit.", fmtNum],
@@ -651,6 +654,8 @@ function renderNearBoard(nearRows, hints, nQualified) {
     `<th data-tip="Ticker — hover for the company name.">Stock</th>` +
     `<th data-tip="Quality score after a penalty for each failed filter.">Score</th>` +
     `<th data-tip="Exactly which of your filters this setup failed, with the numbers.">Why it didn't qualify</th>` +
+    `<th data-tip="Industry the company is in.">Sector</th>` +
+    `<th data-tip="Company size (market value) in billions of dollars.">Size</th>` +
     `<th data-tip="Latest price — roughly where you'd buy.">Price</th>` +
     `<th data-tip="Sell-stop level that caps your loss.">Stop-loss</th>` +
     `<th data-tip="The recent high — where you'd take profit.">Target</th>` +
@@ -663,6 +668,8 @@ function renderNearBoard(nearRows, hints, nQualified) {
       `<tr><td${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
       `<td class="score" style="color:${scoreColor(r.score)}">${esc(r.score)}</td>` +
       `<td class="whynot">${esc(r.why_not || "")}</td>` +
+      `<td>${esc(r.sector && r.sector !== "?" ? r.sector : "—")}</td>` +
+      `<td>${r.mktcap_b == null ? "—" : "$" + esc(r.mktcap_b) + "B"}</td>` +
       `<td>${esc(r.price)}</td><td>${esc(r.stop)}</td><td>${esc(r.resistance)}</td>` +
       `<td class="rr">${esc(r.RR)}</td><td>${esc(r.RSI)}</td>` +
       `<td>${esc(r.shares)}</td><td>€${esc(r.risk_EUR)}</td></tr>`).join("") +
@@ -797,6 +804,28 @@ async function refresh() {
 
   renderTopPicks(s.top_picks);
   renderNearBoard(s.near_board, s.relax_hints, (s.results || []).length);
+
+  // one-line takeaway so nobody has to interpret an empty table
+  const verdict = document.getElementById("verdict");
+  if (s.status === "done" && s.universe_size) {
+    verdict.style.display = "block";
+    const n = (s.results || []).length;
+    if (n) {
+      const top = s.results[0];
+      verdict.innerHTML = `✅ ${esc(n)} of ${esc(s.universe_size)} scanned stocks ` +
+        `qualify today — best: ${esc(top.ticker)} (score ${esc(top.score)}).`;
+    } else if ((s.near_board || []).length) {
+      verdict.textContent = `📭 None of the ${s.universe_size} scanned stocks fully ` +
+        `qualifies today. The closest are under "Best of the rest" below, each with ` +
+        `exactly what's missing — or click a blue suggestion to relax one filter.`;
+    } else {
+      verdict.textContent = `📭 None of the ${s.universe_size} scanned stocks ` +
+        `qualifies today, and nothing came close. Usually a falling market — ` +
+        `patience is a position too.`;
+    }
+  } else {
+    verdict.style.display = "none";
+  }
   renderJournal(s.journal);
   syncJournalBackup(s.journal);
 
@@ -872,16 +901,6 @@ async function refresh() {
       [...agg.entries()].sort((a, b) => b[1] - a[1]).map(([t, n]) =>
         `<tr><td style="text-align:left">${esc(t)}</td><td>${esc(n)}</td></tr>`).join("") +
       "</tbody></table>";
-    if (s.near_misses && s.near_misses.length) {
-      document.getElementById("nearMisses").innerHTML =
-        "<h2 style='margin-top:1rem'>Close calls</h2>" +
-        "<div class='secsub'>These had a real dip-setup but failed one final check — " +
-        "worth a look if you disagree with the gate.</div>" +
-        "<table><thead><tr><th>Stock</th><th>What stopped it</th></tr></thead><tbody>" +
-        s.near_misses.map(m =>
-          `<tr><td>${esc(m.ticker)}</td><td style="text-align:left">${esc(m.reason)}</td></tr>`).join("") +
-        "</tbody></table>";
-    }
   }
 
   if (s.status !== "running" && poller && s.status !== "idle") {
