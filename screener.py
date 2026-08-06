@@ -61,7 +61,7 @@ DEFAULTS = {
     "sectors": list(ALL_SECTORS),
     "min_mkt_cap_b": 10.0,       # $B
     "min_dollar_vol_m": 200.0,   # $M/day traded (price x volume)
-    "universe_max": 600,         # cap scan size: less rate-limit risk, less RAM
+    "universe_max": 1000,        # cap scan size: time/RAM guard, UI allows 5000
     "exclude": "AVGO, AMZN, GOOG, NVDA, AAL",  # held-at-cap or permanent passes
     # setup
     "rsi_low": 35.0,             # pullback zone, not collapse
@@ -302,50 +302,65 @@ def build_universe(p: dict, progress=print) -> list[str]:
     us_syms: list[str] = []
     eu_syms: list[str] = []
     try:
+        direct_dead = False
         if p["include_us"]:
             for sector in p["sectors"]:
-                if _rate_limited_now("screen"):
-                    progress("  Yahoo rate limit hit — skipping remaining US sector queries")
-                    break
-                q = yf.EquityQuery("and", [
-                    yf.EquityQuery("eq", ["region", "us"]),
-                    yf.EquityQuery("eq", ["sector", sector]),
-                    yf.EquityQuery("gt", ["intradaymarketcap", min_cap]),
-                ])
-                try:
-                    ok, res = _yahoo_call(lambda q=q: yf.screen(
-                        q, size=250, sortField="intradaymarketcap", sortAsc=False),
-                        scope="screen")
-                    if not ok:
-                        progress(f"  us/{sector}: rate-limited")
-                        continue
-                    got = [x["symbol"] for x in res.get("quotes", [])]
+                got = None
+                if not _rate_limited_now("screen"):
+                    q = yf.EquityQuery("and", [
+                        yf.EquityQuery("eq", ["region", "us"]),
+                        yf.EquityQuery("eq", ["sector", sector]),
+                        yf.EquityQuery("gt", ["intradaymarketcap", min_cap]),
+                    ])
+                    try:
+                        ok, res = _yahoo_call(lambda q=q: yf.screen(
+                            q, size=250, sortField="intradaymarketcap", sortAsc=False),
+                            scope="screen")
+                        if ok:
+                            got = [x["symbol"] for x in res.get("quotes", [])]
+                    except Exception as e:
+                        progress(f"  us/{sector} failed: {e}")
+                if got is None and not direct_dead:
+                    got = _screen_direct(
+                        {"operator": "and", "operands": [
+                            _q_eq("region", "us"), _q_eq("sector", sector),
+                            _q_gt("intradaymarketcap", min_cap)]}, 250)
+                    if not got and _yauth["session"] is None:
+                        direct_dead = True
+                if got:
                     progress(f"  us/{sector}: {len(got)}")
                     us_syms += got
-                except Exception as e:
-                    progress(f"  us/{sector} failed: {e}")
+                else:
+                    progress(f"  us/{sector}: unavailable")
         if p["include_eu"]:
             # sector filtered later via info (Yahoo's EU sector tagging is spotty)
             for region in EU_REGIONS:
-                if _rate_limited_now("screen"):
-                    progress("  Yahoo rate limit hit — skipping remaining EU region queries")
-                    break
-                q = yf.EquityQuery("and", [
-                    yf.EquityQuery("eq", ["region", region]),
-                    yf.EquityQuery("gt", ["intradaymarketcap", min_cap]),
-                ])
-                try:
-                    ok, res = _yahoo_call(lambda q=q: yf.screen(
-                        q, size=100, sortField="intradaymarketcap", sortAsc=False),
-                        scope="screen")
-                    if not ok:
-                        progress(f"  {region}: rate-limited")
-                        continue
-                    got = [x["symbol"] for x in res.get("quotes", [])]
+                got = None
+                if not _rate_limited_now("screen"):
+                    q = yf.EquityQuery("and", [
+                        yf.EquityQuery("eq", ["region", region]),
+                        yf.EquityQuery("gt", ["intradaymarketcap", min_cap]),
+                    ])
+                    try:
+                        ok, res = _yahoo_call(lambda q=q: yf.screen(
+                            q, size=100, sortField="intradaymarketcap", sortAsc=False),
+                            scope="screen")
+                        if ok:
+                            got = [x["symbol"] for x in res.get("quotes", [])]
+                    except Exception as e:
+                        progress(f"  {region} failed: {e}")
+                if got is None and not direct_dead:
+                    got = _screen_direct(
+                        {"operator": "and", "operands": [
+                            _q_eq("region", region),
+                            _q_gt("intradaymarketcap", min_cap)]}, 100)
+                    if not got and _yauth["session"] is None:
+                        direct_dead = True
+                if got:
                     progress(f"  {region}: {len(got)}")
                     eu_syms += got
-                except Exception as e:
-                    progress(f"  {region} failed: {e}")
+                else:
+                    progress(f"  {region}: unavailable")
     except AttributeError:
         progress("  yf.screen unavailable — update yfinance: pip install -U yfinance")
     if not us_syms and not eu_syms:
@@ -596,6 +611,47 @@ def _yahoo_auth_session():
         return s, crumb
     _note_rate_limited("crumb")
     return None, None
+
+
+def _q_eq(f, v):
+    return {"operator": "eq", "operands": [f, v]}
+
+
+def _q_gt(f, v):
+    return {"operator": "gt", "operands": [f, v]}
+
+
+def _screen_direct(query: dict, size: int) -> list[str]:
+    """Yahoo screener via the persisted cookie+crumb session — same unlock
+    that fixed fundamentals. Lets the universe be built dynamically (top
+    names by market cap per sector/region) when yfinance's own path 429s."""
+    sess, crumb = _yahoo_auth_session()
+    if sess is None:
+        return []
+    try:
+        r = sess.post("https://query2.finance.yahoo.com/v1/finance/screener",
+                      params={"crumb": crumb},
+                      json={"size": size, "offset": 0,
+                            "sortField": "intradaymarketcap", "sortType": "DESC",
+                            "quoteType": "EQUITY", "query": query,
+                            "userId": "", "userIdType": "guid"},
+                      timeout=15)
+        if r.status_code == 429:
+            _note_rate_limited("screen")
+            return []
+        if r.status_code in (401, 403):
+            _yauth.update(session=None, crumb=None, ts=0.0)
+            cache_store.delete("yahoo_auth")
+            return []
+        if r.status_code != 200:
+            return []
+        res = ((r.json().get("finance") or {}).get("result") or [])
+        if res:
+            return [q["symbol"] for q in (res[0].get("quotes") or [])
+                    if q.get("symbol")]
+    except Exception:
+        pass
+    return []
 
 
 _QS_MODULES = "price,assetProfile,defaultKeyStatistics,financialData,calendarEvents"
@@ -964,8 +1020,6 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
     bits.append("earnings date unknown" if dte is None else f"earnings in {dte}d")
     if row.get("analyst"):
         bits.append(f"analysts: {row['analyst']}")
-    if flags:
-        bits.append("⚠ " + ", ".join(flags))
     return score, " · ".join(bits)
 
 
