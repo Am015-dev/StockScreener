@@ -224,6 +224,44 @@ def status():
     return jsonify(_state)
 
 
+@app.route("/diag/yahoo")
+def diag_yahoo():
+    """Probe each Yahoo API from THIS server and report raw status codes —
+    evidence for which data paths are blocked from this host."""
+    import requests as rq
+    out = {}
+    s = rq.Session()
+    s.headers.update(screener._V7_UA)
+    crumb = ""
+    try:
+        r = s.get("https://fc.yahoo.com", timeout=10)
+        out["fc_cookie"] = f"{r.status_code}, cookies={len(s.cookies)}"
+    except Exception as e:
+        out["fc_cookie"] = f"ERR {type(e).__name__}: {e}"
+    try:
+        r = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        crumb = r.text.strip()
+        out["getcrumb"] = f"{r.status_code}, body={r.text[:80]!r}"
+    except Exception as e:
+        out["getcrumb"] = f"ERR {type(e).__name__}: {e}"
+    for name, url, params in [
+        ("chart", "https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
+         {"range": "1d", "interval": "1d"}),
+        ("v7_quote", "https://query1.finance.yahoo.com/v7/finance/quote",
+         {"symbols": "AAPL", "crumb": crumb}),
+        ("v7_quote_q2", "https://query2.finance.yahoo.com/v7/finance/quote",
+         {"symbols": "AAPL", "crumb": crumb}),
+        ("quoteSummary", "https://query2.finance.yahoo.com/v10/finance/quoteSummary/AAPL",
+         {"modules": "price,defaultKeyStatistics,financialData", "crumb": crumb}),
+    ]:
+        try:
+            r = s.get(url, params=params, timeout=10)
+            out[name] = f"{r.status_code}, body={r.text[:100]!r}"
+        except Exception as e:
+            out[name] = f"ERR {type(e).__name__}: {e}"
+    return jsonify(out)
+
+
 @app.route("/journal/export")
 def journal_export():
     """Full journal dump — the browser mirrors this to localStorage so the
