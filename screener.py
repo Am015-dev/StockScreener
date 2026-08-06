@@ -119,7 +119,7 @@ RATE_LIMIT_COOLDOWN = 180  # once Yahoo hard-429s us, stop live calls this long
 # per-API cooldowns: the quote API often clears within a minute, and only a
 # handful of calls need it per scan — give it a short window plus a retry
 # pass at the end of the scan instead of writing off the whole run
-SCOPE_COOLDOWN = {"screen": 300, "chart": 180, "quote": 45}
+SCOPE_COOLDOWN = {"screen": 300, "chart": 180, "quote": 45, "quote_v7": 60}
 QUOTE_RETRY_MAX_WAIT = 60  # max seconds the end-of-scan fundamentals retry waits
 RETRY_DELAYS = (2, 5)      # backoff before giving up on a rate-limited call
 # ----------------------------------------------------------
@@ -268,13 +268,15 @@ _cache: dict = {
     "earnings": {},   # ticker -> (ts, days_to_earnings | None)
     "finnhub": {},    # ticker -> (ts, days_to_earnings | None)
     "fhf": {},        # ticker -> (ts, finnhub fundamentals dict | None)
+    "qv7": {},        # ticker -> (ts, v7-quote fundamentals dict | None)
 }
 
 
 def clear_cache():
     _cache.update(universe_key=None, universe=None, universe_ts=0.0,
                   ohlc_key=None, ohlc=None, ohlc_ts=0.0,
-                  bench=None, bench_ts=0.0, info={}, earnings={}, finnhub={}, fhf={})
+                  bench=None, bench_ts=0.0, info={}, earnings={}, finnhub={}, fhf={},
+                  qv7={})
     cache_store.clear()
 
 
@@ -532,6 +534,86 @@ def pullback_volume_ratio(vol: pd.Series, recent: int = 10, base: int = 30) -> f
     r = float(vol.tail(recent).mean())
     b = float(vol.iloc[-(recent + base):-recent].mean())
     return round(r / b, 2) if b > 0 else None
+
+
+# Yahoo's v7 quote API is a separate, older endpoint from the (blocked)
+# quoteSummary fundamentals API. It needs the cookie+crumb handshake but
+# carries market cap, name, EPS, the next earnings date, and the average
+# analyst rating — enough to fill the gap with no third-party key at all.
+_V7_UA = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                         "AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Chrome/124.0 Safari/537.36")}
+_v7_state = {"session": None, "crumb": None, "ts": 0.0}
+
+
+def _v7_session():
+    """Session with a fresh Yahoo cookie + crumb (cached ~30 min)."""
+    if (_v7_state["session"] is not None and _v7_state["crumb"]
+            and time.time() - _v7_state["ts"] < 1800):
+        return _v7_state["session"], _v7_state["crumb"]
+    try:
+        s = requests.Session()
+        s.headers.update(_V7_UA)
+        s.get("https://fc.yahoo.com", timeout=10)  # only wanted for its cookie
+        crumb = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
+                      timeout=10).text.strip()
+        if crumb and len(crumb) < 30 and "<" not in crumb:
+            _v7_state.update(session=s, crumb=crumb, ts=time.time())
+            return s, crumb
+    except Exception:
+        pass
+    return None, None
+
+
+def _get_quote_v7(ticker: str) -> dict | None:
+    """Fundamentals via Yahoo's v7 quote endpoint. Returns
+    {"marketCap","name","rec_mean","fwd_eps","trail_eps","earn_days"} or None.
+    """
+    mem = _cache["qv7"].get(ticker)
+    if mem and _fresh(mem[0], INFO_TTL if mem[1] else 900):
+        return mem[1]
+    hit, stored = cache_store.fetch(f"qv7:{ticker}", INFO_TTL)
+    if hit and stored is not None:
+        _cache["qv7"][ticker] = (time.time(), stored)
+        return stored
+    out = None
+    if not _rate_limited_now("quote_v7"):
+        try:
+            sess, crumb = _v7_session()
+            if sess is not None:
+                r = sess.get("https://query1.finance.yahoo.com/v7/finance/quote",
+                             params={"symbols": ticker, "crumb": crumb}, timeout=10)
+                if r.status_code == 429:
+                    _note_rate_limited("quote_v7")
+                elif r.status_code in (401, 403):
+                    _v7_state.update(session=None, crumb=None, ts=0.0)
+                elif r.status_code == 200:
+                    res = (r.json().get("quoteResponse") or {}).get("result") or []
+                    if res:
+                        q = res[0]
+                        rec_mean = None
+                        aar = q.get("averageAnalystRating")  # e.g. "1.9 - Buy"
+                        if aar:
+                            try:
+                                rec_mean = float(str(aar).split("-")[0].strip())
+                            except (ValueError, TypeError):
+                                pass
+                        earn_days = None
+                        ets = q.get("earningsTimestampStart") or q.get("earningsTimestamp")
+                        if ets and ets > time.time():
+                            earn_days = int((ets - time.time()) // 86400)
+                        out = {"marketCap": q.get("marketCap"),
+                               "name": q.get("shortName") or q.get("longName"),
+                               "rec_mean": rec_mean,
+                               "fwd_eps": q.get("epsForward"),
+                               "trail_eps": q.get("epsTrailingTwelveMonths"),
+                               "earn_days": earn_days}
+        except Exception:
+            out = None
+    _cache["qv7"][ticker] = (time.time(), out)
+    if out is not None:
+        cache_store.put(f"qv7:{ticker}", out)
+    return out
 
 
 def _finnhub_fundamentals(ticker: str) -> dict | None:
@@ -907,21 +989,29 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 # ---- Stage 2: expensive per-ticker calls, survivors only ----
                 progress(f"    [stage 2] {ticker}: technical setup found, fetching fundamentals...")
                 info = _get_info(ticker)
-                fh = None
+                fh = q7 = None
                 if not info:
-                    # Yahoo quote API blocked: try the free Finnhub fallback
-                    # before flagging the pick as unverified. The technical
-                    # setup is real either way — never falsely reject it.
+                    # Yahoo's fundamentals API blocked: try Finnhub (if a key
+                    # is set), then Yahoo's separate v7 quote endpoint (no key
+                    # needed) before flagging the pick as unverified. The
+                    # technical setup is real either way — never reject it.
                     fh = _finnhub_fundamentals(ticker)
-                    flags.append("fundamentals_via_finnhub" if fh
-                                 else "fundamentals_unavailable")
-                fh = fh or {}
-                mktcap = info.get("marketCap") or fh.get("marketCap") or 0
-                fwd_eps = info.get("forwardEps")
+                    q7 = _get_quote_v7(ticker)
+                    if fh:
+                        flags.append("fundamentals_via_finnhub")
+                    elif q7:
+                        flags.append("fundamentals_via_quote")
+                    else:
+                        flags.append("fundamentals_unavailable")
+                fh, q7 = fh or {}, q7 or {}
+                mktcap = (info.get("marketCap") or fh.get("marketCap")
+                          or q7.get("marketCap") or 0)
+                fwd_eps = info.get("forwardEps") or q7.get("fwd_eps")
                 sector = info.get("sector")
                 # analyst consensus — the same indicator broker apps (Revolut
                 # etc.) show, via Yahoo's aggregation of sell-side research
-                rec_mean = info.get("recommendationMean") or fh.get("rec_mean")
+                rec_mean = (info.get("recommendationMean") or fh.get("rec_mean")
+                            or q7.get("rec_mean"))
                 analysts_n = (info.get("numberOfAnalystOpinions")
                               or fh.get("analysts_n"))
                 rec_label = _analyst_label(rec_mean)
@@ -950,17 +1040,21 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                         row["analyst_target_up_pct"] = tgt_up_pct
                         near.append((row, list(misses)))
 
-                if (info or fh) and mktcap and mktcap < p["min_mkt_cap_b"] * 1e9:
+                if (info or fh or q7) and mktcap and mktcap < p["min_mkt_cap_b"] * 1e9:
                     near_reject("mkt_cap", f"mkt cap {mktcap/1e9:.1f}B < min")
                     continue
                 # profitability gate with a free fallback: Yahoo's forwardEps is
                 # often missing for EU names — fall back to trailing EPS (flagged)
                 # instead of falsely rejecting as "unprofitable".
                 eps_used = fwd_eps
-                if eps_used is None and info.get("trailingEps") is not None:
-                    eps_used = info["trailingEps"]
+                trail = info.get("trailingEps")
+                if trail is None:
+                    trail = q7.get("trail_eps")
+                if eps_used is None and trail is not None:
+                    eps_used = trail
                     flags.append("eps_fallback")
-                if (p["require_profitable"] and info
+                eps_known = bool(info) or fwd_eps is not None or trail is not None
+                if (p["require_profitable"] and eps_known
                         and (eps_used is None or eps_used <= 0)):
                     near_reject("profitable", f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
                     continue
@@ -979,6 +1073,9 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                       and abs(days_to_earnings - days_fh) > 2):
                     days_to_earnings = min(days_to_earnings, days_fh)  # conservative
                     flags.append("earnings_sources_disagree")
+                if days_to_earnings is None and q7.get("earn_days") is not None:
+                    days_to_earnings = q7["earn_days"]
+                    flags.append("earnings_from_quote")
                 if days_to_earnings is None:
                     flags.append("earnings_unverified")
                 if days_to_earnings is not None and days_to_earnings <= p["earnings_drop_days"]:
@@ -1029,7 +1126,8 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
 
                 row = {
                     "ticker": ticker,
-                    "name": info.get("shortName") or fh.get("name") or ticker,
+                    "name": (info.get("shortName") or fh.get("name")
+                             or q7.get("name") or ticker),
                     "sector": sector or "?",
                     "mktcap_b": round(mktcap / 1e9, 1) if mktcap else None,
                 "analyst": (f"{rec_label} ({analysts_n})" if rec_label and analysts_n
@@ -1174,7 +1272,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
             if row["sector"] == "?":
                 info = _get_info(row["ticker"])
                 if not info:
-                    fh = _finnhub_fundamentals(row["ticker"])
+                    fh = _finnhub_fundamentals(row["ticker"]) or _get_quote_v7(row["ticker"])
                     if fh:
                         row["name"] = fh.get("name") or row["name"]
                         mc = fh.get("marketCap")
