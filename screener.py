@@ -1269,6 +1269,8 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                         misses.append((gate, reason))
                         row = near_row(extra_flags=flags, sector=sector,
                                        name=info.get("shortName"))
+                        if gate == "unverified":
+                            row["blocked"] = "unverified"
                         # fundamentals are already in hand at stage 2 — show them
                         row["mktcap_b"] = round(mktcap / 1e9, 1) if mktcap else None
                         row["analyst"] = (f"{rec_label} ({analysts_n})"
@@ -1404,7 +1406,10 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
     def emit_partial():
         if on_partial is not None:
             try:
-                on_partial([dict(r) for r in rows], scanned_n[0], len(universe))
+                pend = sorted((dict(row) for row, m in near
+                               if any(g == "unverified" for g, _r in m)),
+                              key=lambda r: r.get("score", 0), reverse=True)[:30]
+                on_partial([dict(r) for r in rows], scanned_n[0], len(universe), pend)
             except Exception:
                 pass
 
@@ -1617,12 +1622,13 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 row["hist"] = f"{e['win_rate']:.0f}% of {e['n']}"
                 row["hist_avg_r"] = e["avg_r"]
 
-    blocked_unverified = sum(1 for _row, m in near
-                             if any(g == "unverified" for g, _r in m))
+    pending = sorted((row for row, m in near
+                      if any(g == "unverified" for g, _r in m)),
+                     key=lambda r: r.get("score", 0), reverse=True)[:30]
     return {"df": df, "rejections": rejections, "universe_size": len(universe),
             "elapsed_s": elapsed, "params": p, "portfolio": port_summary,
-            "near": near_rows, "relax_hints": relax_hints,
-            "health": {"blocked_unverified": blocked_unverified}}
+            "near": near_rows, "relax_hints": relax_hints, "pending": pending,
+            "health": {"blocked_unverified": len(pending)}}
 
 
 def summarize_rejections(rejections: dict[str, str], progress=print):

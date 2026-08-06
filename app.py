@@ -51,6 +51,7 @@ _state = {
     "scanned": None,           # live progress: tickers checked so far this run
     "bt_status": "idle",       # simulation: idle | running | done | error
     "backtest": None,          # simulation results (see backtest.py)
+    "pending": [],             # qualified technically, awaiting verification
     "results_ts": None,        # when the shown results were produced
     "health": None,            # {"blocked_unverified": n} from the last scan
     "error": None,
@@ -138,14 +139,16 @@ def _progress(msg):
         _state["log"][:] = _state["log"][-500:]
 
 
-def _on_partial(rows, scanned, total):
-    """Stream qualified picks to the UI while later batches still download."""
+def _on_partial(rows, scanned, total, pending=None):
+    """Stream qualified AND pending-verification picks while the scan runs."""
     recs = sorted(rows, key=lambda r: r.get("score", 0), reverse=True)
     _state["results"] = recs
     _state["top_picks"] = recs[:TOP_N]
     _state["scanned"] = scanned
     _state["universe_size"] = total
     _state["results_ts"] = time.time()
+    if pending is not None:
+        _state["pending"] = pending
 
 
 def _run_scan(params):
@@ -173,6 +176,7 @@ def _run_scan(params):
         _state["near_board"] = result.get("near") or []
         _state["relax_hints"] = result.get("relax_hints") or {}
         _state["health"] = result.get("health")
+        _state["pending"] = result.get("pending") or []
         _state["results_ts"] = time.time()
         if len(df):
             df.to_csv(RESULTS_CSV, index=False)
@@ -189,6 +193,8 @@ def _run_scan(params):
             _progress(f"Journal update failed (results unaffected): {e}")
 
         _state["status"] = "done"
+        if _state["pending"]:
+            _start_auto_reverify(dict(params or {}))
     except Exception as e:
         _state["error"] = f"{type(e).__name__}: {e}"
         _state["status"] = "error"
@@ -196,6 +202,46 @@ def _run_scan(params):
     finally:
         _state["scanned"] = None
         _state["finished_at"] = time.time()
+
+
+_auto = {"running": False}
+
+
+def _start_auto_reverify(params):
+    with _lock:
+        if _auto["running"]:
+            return
+        _auto["running"] = True
+    threading.Thread(target=_auto_reverify, args=(params,), daemon=True).start()
+
+
+def _auto_reverify(params, attempts=12, wait=30):
+    """Picks blocked only for unverifiable data shouldn't need a human retry:
+    poll for the fundamentals source, then rerun the scan automatically
+    (prices are cached, so the rerun takes seconds)."""
+    try:
+        _progress(f"{len(_state['pending'])} pick(s) are awaiting verification — "
+                  f"will re-verify automatically when the data source responds "
+                  f"(checking every {wait}s)...")
+        for _ in range(attempts):
+            time.sleep(wait)
+            if _state["status"] == "running" or _state["bt_status"] == "running":
+                return          # user is driving; stand down
+            if not _state["pending"]:
+                return          # already resolved (manual rerun)
+            sess, _crumb = screener._yahoo_auth_session()
+            if sess is None:
+                continue
+            with _lock:
+                if _state["status"] == "running":
+                    return
+                _state["status"] = "running"
+            _progress("Fundamentals source is back — re-verifying pending picks...")
+            _auto["running"] = False   # allow a follow-up cycle if still blocked
+            _run_scan(params)
+            return
+    finally:
+        _auto["running"] = False
 
 
 @app.route("/")
@@ -218,7 +264,8 @@ def run():
         _state.update(status="running", log=[], error=None,
                       started_at=time.time(), finished_at=None,
                       rejection_summary=[], near_misses=[], params_used=params,
-                      near_board=[], relax_hints={}, scanned=None, health=None)
+                      near_board=[], relax_hints={}, scanned=None, health=None,
+                      pending=[])
         threading.Thread(target=_run_scan, args=(params,), daemon=True).start()
     return jsonify({"ok": True, "params": params})
 

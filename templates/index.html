@@ -245,8 +245,9 @@
   <div id="healthBox" style="display:none;background:rgba(232,182,76,.08);border:1px solid var(--amber);border-radius:10px;padding:.9rem 1.1rem;margin-bottom:1rem">
     <b style="color:var(--amber)">Safety checks degraded this scan.</b>
     <span id="healthText"></span>
-    <div class="hint">Fail-closed: unverifiable picks are blocked and listed under
-      "Best of the rest" with the reason — never shown as if they passed.</div>
+    <div class="hint">Fail-closed: unverifiable picks are shown as "awaiting
+      verification" above the results — never as if they passed. The server
+      re-verifies them automatically once the data source responds.</div>
   </div>
 
   <section>
@@ -384,6 +385,14 @@
     <div class="secsub">Every stock that passed all filters, best score first.
       Hover a column header for what it means.</div>
     <div id="portSummary" class="hint" style="display:none;margin:0 0 .6rem"></div>
+    <div id="pendingWrap" style="display:none;margin:0 0 .8rem">
+      <div style="color:var(--amber);font-weight:600;margin-bottom:.35rem" id="pendingTitle"></div>
+      <div class="hint" style="margin:0 0 .5rem">These passed <b>every technical test</b> —
+        entry, stop, target and sizing are ready — but their safety checks (profitability,
+        earnings date) couldn't get data yet. They verify automatically within minutes;
+        nothing is published unchecked.</div>
+      <div class="tablewrap"><div id="pendingTable"></div></div>
+    </div>
     <div id="relaxHints" class="chips" style="display:none"></div>
     <div class="tablewrap"><div id="results" class="empty">No scan yet — press
       <b>▶ Run scan</b> above. The first scan takes a few minutes; you can watch it work
@@ -853,6 +862,33 @@ function drawCurve(pts) {
   };
 }
 
+// ---- pending-verification picks: visible immediately, never hidden ----
+function renderPending(pending) {
+  const wrap = document.getElementById("pendingWrap");
+  if (!pending || !pending.length) { wrap.style.display = "none"; return; }
+  wrap.style.display = "block";
+  document.getElementById("pendingTitle").textContent =
+    `⏳ ${pending.length} pick(s) awaiting safety verification`;
+  document.getElementById("pendingTable").innerHTML =
+    "<table class=\"rsp\"><thead><tr>" +
+    `<th data-tip="Ticker — hover for the company name.">Stock</th>` +
+    `<th data-tip="Quality score of the technical setup.">Score</th>` +
+    `<th data-tip="Latest price — roughly where you'd buy.">Price</th>` +
+    `<th data-tip="Sell-stop level that caps your loss.">Stop-loss</th>` +
+    `<th data-tip="The recent high — where you'd take profit.">Target</th>` +
+    `<th data-tip="Possible gain vs possible loss.">Reward:Risk</th>` +
+    `<th data-tip="Suggested share count for your risk settings.">Buy (shares)</th>` +
+    `<th data-tip="Your worst case if the stop-loss is hit.">€ at risk</th>` +
+    "</tr></thead><tbody>" +
+    pending.map(r =>
+      `<tr><td data-l="Stock"${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
+      `<td class="score" style="color:${scoreColor(r.score)}" data-l="Score">${esc(r.score)}</td>` +
+      `<td data-l="Price">${esc(r.price)}</td><td data-l="Stop-loss">${esc(r.stop)}</td>` +
+      `<td data-l="Target">${esc(r.resistance)}</td><td class="rr" data-l="Reward:Risk">${esc(r.RR)}</td>` +
+      `<td data-l="Buy (shares)">${esc(r.shares)}</td><td data-l="€ at risk">€${esc(r.risk_EUR)}</td></tr>`)
+      .join("") + "</tbody></table>";
+}
+
 // ---- edge mirror: simulation win-rates survive server disk wipes ----
 let edgeSynced = false;
 async function syncEdgeBackup(btStatus) {
@@ -1025,6 +1061,7 @@ async function refresh() {
   renderTopPicks(s.top_picks);
   renderNearBoard(s.near_board, s.relax_hints, (s.results || []).length);
   renderBacktest(s.backtest, s.bt_status || "idle");
+  renderPending(s.pending);
 
   // never let picks masquerade as fresh: always show their age
   const ageEl = document.getElementById("resultsAge");
@@ -1051,8 +1088,11 @@ async function refresh() {
   const verdict = document.getElementById("verdict");
   if (s.status === "running" && s.scanned != null && s.universe_size) {
     verdict.style.display = "block";
+    const pn = (s.pending || []).length;
     verdict.textContent = `⏳ Scanning… ${s.scanned} of ${s.universe_size} checked · ` +
-      `${(s.results || []).length} qualified so far — results update live below.`;
+      `${(s.results || []).length} verified` +
+      (pn ? ` · ${pn} awaiting verification` : "") +
+      ` — updates live below.`;
   } else if (s.status === "done" && s.universe_size) {
     verdict.style.display = "block";
     const n = (s.results || []).length;
@@ -1060,6 +1100,10 @@ async function refresh() {
       const top = s.results[0];
       verdict.innerHTML = `✅ ${esc(n)} of ${esc(s.universe_size)} scanned stocks ` +
         `qualify today — best: ${esc(top.ticker)} (score ${esc(top.score)}).`;
+    } else if ((s.pending || []).length) {
+      verdict.textContent = `⏳ ${s.pending.length} pick(s) passed every technical test ` +
+        `and are awaiting safety verification below — this completes automatically ` +
+        `within a few minutes.`;
     } else if ((s.near_board || []).length) {
       verdict.textContent = `📭 None of the ${s.universe_size} scanned stocks fully ` +
         `qualifies today. The closest are under "Best of the rest" below, each with ` +
