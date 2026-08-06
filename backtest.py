@@ -15,14 +15,74 @@ Honest scope (stated in the UI too):
     at a time — the same conventions as the live track record.
 """
 
+import hashlib
+import time
+
 import numpy as np
 import pandas as pd
+import yfinance as yf
 
+import cache_store
 import screener
 
 EXPIRE_BARS = 40      # same as the live journal
-MIN_HISTORY = 220     # bars needed before the first eligible signal day
+MIN_HISTORY = 260     # bars needed before the first eligible signal day
 CURVE_POINTS = 200    # cap for the equity-curve payload
+HIST_PERIOD = "5y"    # simulation depth — a 1y sample only yields biased
+                      # quick-resolution trades (stops), so go deep
+HIST_TTL = 86400      # 5y download cached for a day
+BT_CHUNK = 150
+
+
+def _get_history(universe: list[str], progress=print):
+    """5 years of daily bars for the universe — downloaded once, cached."""
+    key = hashlib.md5((HIST_PERIOD + ":" + ",".join(universe)).encode()).hexdigest()
+    mem = screener._cache.get("bt_ohlc")
+    if mem and mem[0] == key and time.time() - mem[2] < HIST_TTL:
+        progress("Reusing today's cached 5-year history.")
+        return mem[1]
+    hit, stored = cache_store.fetch(f"btohlc:{key}", HIST_TTL)
+    if hit and stored is not None:
+        screener._cache["bt_ohlc"] = (key, stored, time.time())
+        progress("Loaded 5-year history from disk cache.")
+        return stored
+    n_chunks = (len(universe) + BT_CHUNK - 1) // BT_CHUNK
+    progress(f"Downloading {HIST_PERIOD} of history for {len(universe)} stocks "
+             f"in {n_chunks} batches (one-time today; a few minutes)...")
+    parts, failed = [], 0
+    for ci in range(n_chunks):
+        chunk = universe[ci * BT_CHUNK:(ci + 1) * BT_CHUNK]
+        if ci:
+            time.sleep(1)
+        d = None
+        try:
+            ok, d = screener._yahoo_call(lambda chunk=chunk: yf.download(
+                chunk, period=HIST_PERIOD, auto_adjust=True,
+                group_by="ticker", threads=16, progress=False), scope="chart")
+            if not ok:
+                d = None
+        except Exception as e:
+            progress(f"  batch {ci + 1}/{n_chunks} failed: {e}")
+        if d is None or d.empty:
+            failed += 1
+            progress(f"  batch {ci + 1}/{n_chunks}: no data — skipped")
+            continue
+        if not isinstance(d.columns, pd.MultiIndex):
+            d = pd.concat({chunk[0]: d}, axis=1)
+        parts.append(d)
+        progress(f"  batch {ci + 1}/{n_chunks}: ok")
+    if not parts:
+        raise RuntimeError("could not download the 5-year history — Yahoo is "
+                           "throttling price data right now; try again in a "
+                           "few minutes")
+    data = pd.concat(parts, axis=1) if len(parts) > 1 else parts[0]
+    screener._cache["bt_ohlc"] = (key, data, time.time())
+    try:
+        if failed == 0 and float(data.memory_usage().sum()) < 120e6:
+            cache_store.put(f"btohlc:{key}", data)
+    except Exception:
+        pass
+    return data
 
 
 def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
@@ -34,7 +94,10 @@ def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
 
 
 def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
-    """Simulate params `p` (already clean_params'd) over the cached frame."""
+    """Simulate params `p` (already clean_params'd). When `data` is None the
+    5-year history is downloaded/cached automatically."""
+    if data is None:
+        data = _get_history(universe, progress)
     trades: list[dict] = []
     scanned = 0
     for i, ticker in enumerate(universe, 1):
@@ -62,7 +125,9 @@ def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
         c_v, o_v = close.values, opens.values
         h_v, l_v = high.values, low.values
         busy_until = -1
-        for ti in range(210, len(hist) - 1):
+        # entries need a FULL resolution window ahead — otherwise the sample
+        # only contains trades that resolved fast, i.e. mostly stop-outs
+        for ti in range(210, len(hist) - EXPIRE_BARS):
             if ti <= busy_until:
                 continue                       # one open trade per ticker
             price = float(c_v[ti])
@@ -92,7 +157,7 @@ def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
             # replay forward — identical conventions to the live journal
             out_r = exit_i = None
             status = None
-            last_j = min(ti + EXPIRE_BARS, len(hist) - 1)
+            last_j = ti + EXPIRE_BARS
             for j in range(ti + 1, last_j + 1):
                 o, h, l = float(o_v[j]), float(h_v[j]), float(l_v[j])
                 if o <= stop:
@@ -108,12 +173,9 @@ def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
                     out_r, status, exit_i = rr, "target", j
                     break
             if out_r is None:
-                if ti + EXPIRE_BARS <= len(hist) - 1:
-                    exit_i = last_j
-                    out_r = (float(c_v[exit_i]) - price) / risk_ps
-                    status = "expired"
-                else:
-                    continue        # still open at the end of data — no verdict
+                exit_i = last_j
+                out_r = (float(c_v[exit_i]) - price) / risk_ps
+                status = "expired"
             busy_until = exit_i
             trades.append({"ticker": ticker,
                            "date": str(hist.index[ti])[:10],

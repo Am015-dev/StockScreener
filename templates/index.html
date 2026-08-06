@@ -408,8 +408,9 @@
   <section id="btSection">
     <h2>🧪 Simulation — would these rules have made money?</h2>
     <div class="secsub">Replays your exact filter settings over <b>every stock and every
-      trading day</b> in the last scan's downloaded history, and grades each signal the
-      same way as the track record: did it hit the target or the stop first?</div>
+      trading day of the last 5 years</b> for the scanned stocks, and grades each signal
+      the same way as the track record: did it hit the target or the stop first?
+      The first run downloads the deep history (a few minutes); it is cached for the day.</div>
     <div class="bar" style="margin-bottom:.5rem">
       <button id="btBtn" onclick="runBacktest()">▶ Run simulation</button>
       <span id="btPill" class="pill">idle</span>
@@ -423,8 +424,8 @@
       <div class="hint">Honest limits: technical rules only (profitability/earnings/analyst
         gates need data that doesn't exist historically on a free feed) · entry at the signal
         day's close, exit exactly at stop/target (at the open when the price gaps past) ·
-        no trading costs · positions expire after 40 trading days · sample = the price
-        history in the current cache.</div>
+        no trading costs · positions expire after 40 trading days · only signals with a
+        full 40-day resolution window count (prevents a bias toward quick stop-outs).</div>
     </div>
   </section>
 

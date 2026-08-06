@@ -225,7 +225,7 @@ def parse_portfolio():
 
 def _run_backtest_thread(params):
     try:
-        bt = backtest_mod.run_backtest(params, screener._cache.get("ohlc"),
+        bt = backtest_mod.run_backtest(params, None,
                                        screener._cache.get("universe") or [],
                                        progress=_progress)
         _state["backtest"] = bt
@@ -241,10 +241,10 @@ def _run_backtest_thread(params):
 def run_backtest_route():
     overrides = request.get_json(silent=True) or {}
     params = screener.clean_params(overrides)
-    if screener._cache.get("ohlc") is None or not screener._cache.get("universe"):
+    if not screener._cache.get("universe"):
         return jsonify({"ok": False, "message":
-                        "Run a scan first — the simulation replays the prices "
-                        "the scan downloaded."}), 400
+                        "Run a scan first — the simulation uses the scan's "
+                        "stock universe."}), 400
     with _lock:
         if _state["bt_status"] == "running" or _state["status"] == "running":
             return jsonify({"ok": False, "message": "Something is already running."}), 409
