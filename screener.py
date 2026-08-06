@@ -542,7 +542,8 @@ def _finnhub_fundamentals(ticker: str) -> dict | None:
     if not FINNHUB_KEY:
         return None
     mem = _cache["fhf"].get(ticker)
-    if mem and _fresh(mem[0], INFO_TTL):
+    # a successful lookup is good for a day; a failed one retries in 15 min
+    if mem and _fresh(mem[0], INFO_TTL if mem[1] else 900):
         return mem[1]
     hit, stored = cache_store.fetch(f"fhf:{ticker}", INFO_TTL)
     if hit:
@@ -574,7 +575,8 @@ def _finnhub_fundamentals(ticker: str) -> dict | None:
     except Exception:
         out = None
     _cache["fhf"][ticker] = (time.time(), out)
-    cache_store.put(f"fhf:{ticker}", out)
+    if out is not None:   # never poison the disk cache with a transient failure
+        cache_store.put(f"fhf:{ticker}", out)
     return out
 
 
