@@ -111,10 +111,16 @@ FALLBACK_UNIVERSE = [
     "NOVN.SW","RHHBY","AZN.L","SHEL.L","ULVR.L","NOVO-B.CO","RACE.MI",
 ]
 
-CACHE_TTL = 3600      # reuse universe/OHLC/fundamentals for an hour
+CACHE_TTL = 3600      # reuse universe/OHLC for an hour
+INFO_TTL = 86400      # fundamentals/earnings drift slowly — reuse for a day
 STALE_OK = float("inf")  # cache_store TTL meaning "any age beats no data"
 DOWNLOAD_CHUNK = 150  # tickers per batch: small enough for live partial results
 RATE_LIMIT_COOLDOWN = 180  # once Yahoo hard-429s us, stop live calls this long
+# per-API cooldowns: the quote API often clears within a minute, and only a
+# handful of calls need it per scan — give it a short window plus a retry
+# pass at the end of the scan instead of writing off the whole run
+SCOPE_COOLDOWN = {"screen": 300, "chart": 180, "quote": 45}
+QUOTE_RETRY_MAX_WAIT = 60  # max seconds the end-of-scan fundamentals retry waits
 RETRY_DELAYS = (2, 5)      # backoff before giving up on a rate-limited call
 # ----------------------------------------------------------
 
@@ -139,8 +145,9 @@ def _rate_limited_now(scope: str = "chart") -> bool:
 
 def _note_rate_limited(scope: str):
     _rl["hits"] += 1
+    cooldown = SCOPE_COOLDOWN.get(scope, RATE_LIMIT_COOLDOWN)
     _rl["until"][scope] = max(_rl["until"].get(scope, 0.0),
-                              time.time() + RATE_LIMIT_COOLDOWN)
+                              time.time() + cooldown)
 
 
 def _is_rate_limit(e: Exception) -> bool:
@@ -270,8 +277,8 @@ def clear_cache():
     cache_store.clear()
 
 
-def _fresh(ts: float) -> bool:
-    return time.time() - ts < CACHE_TTL
+def _fresh(ts: float, ttl: float = CACHE_TTL) -> bool:
+    return time.time() - ts < ttl
 
 
 def build_universe(p: dict, progress=print) -> list[str]:
@@ -400,9 +407,9 @@ def _get_info(ticker: str) -> dict:
     market cap drift slowly enough for stale to be useful).
     """
     mem = _cache["info"].get(ticker)
-    if mem and _fresh(mem[0]):
+    if mem and _fresh(mem[0], INFO_TTL):
         return mem[1]
-    hit, stored = cache_store.fetch(f"info:{ticker}", CACHE_TTL)
+    hit, stored = cache_store.fetch(f"info:{ticker}", INFO_TTL)
     if hit:
         _cache["info"][ticker] = (time.time(), stored)
         return stored
@@ -421,9 +428,9 @@ def _get_info(ticker: str) -> dict:
 
 def _get_days_to_earnings(ticker: str) -> int | None:
     mem = _cache["earnings"].get(ticker)
-    if mem and _fresh(mem[0]):
+    if mem and _fresh(mem[0], INFO_TTL):
         return mem[1]
-    hit, stored = cache_store.fetch(f"earn:{ticker}", CACHE_TTL)
+    hit, stored = cache_store.fetch(f"earn:{ticker}", INFO_TTL)
     if hit:
         _cache["earnings"][ticker] = (time.time(), stored)
         return stored
@@ -532,9 +539,9 @@ def _finnhub_days_to_earnings(ticker: str) -> int | None:
     if not FINNHUB_KEY or _region(ticker) != "US":
         return None
     mem = _cache["finnhub"].get(ticker)
-    if mem and _fresh(mem[0]):
+    if mem and _fresh(mem[0], INFO_TTL):
         return mem[1]
-    hit, stored = cache_store.fetch(f"fh:{ticker}", CACHE_TTL)
+    hit, stored = cache_store.fetch(f"fh:{ticker}", INFO_TTL)
     if hit:
         _cache["finnhub"][ticker] = (time.time(), stored)
         return stored
@@ -1080,6 +1087,28 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                  f"cached/stale data where possible; affected results carry "
                  f"'fundamentals_unavailable' or 'earnings_unverified' flags. "
                  f"Rerun in a few minutes for fresh data.")
+    # ---- second chance for fundamentals: the quote throttle usually clears
+    # ---- within a minute and survivors are few, so retry them once instead
+    # ---- of shipping a page full of 'not verified' flags
+    flagged = [r["ticker"] for r in rows
+               if "fundamentals_unavailable" in (r.get("flags") or "")]
+    if data is not None and flagged and len(flagged) <= 30:
+        wait = _rl["until"].get("quote", 0.0) - time.time()
+        if 0 < wait <= QUOTE_RETRY_MAX_WAIT:
+            progress(f"Fundamentals were throttled for {len(flagged)} pick(s) — "
+                     f"waiting {int(wait) + 1}s for Yahoo's quote window to reset, "
+                     f"then re-verifying...")
+            time.sleep(wait + 1)
+        if not _rate_limited_now("quote"):
+            keep = set(flagged)
+            rows[:] = [r for r in rows if r["ticker"] not in keep]
+            near[:] = [(row, m) for row, m in near if row["ticker"] not in keep]
+            for t in keep:
+                rejections.pop(t, None)
+            progress(f"Re-verifying fundamentals for {len(keep)} pick(s)...")
+            scan_block(sorted(keep), data)
+            emit_partial()
+
     # ---- "closest to qualifying" board + one-click relaxation hints ----
     near_rows: list[dict] = []
     relax_hints: dict = {}
