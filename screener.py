@@ -71,9 +71,11 @@ DEFAULTS = {
     "pivot_k": 3,                # bars each side for a pivot low
     "stop_buffer_pct": 1.5,      # stop % below support
     "min_stop_atr": 1.0,         # stop must sit >= this many ATRs away (noise gate)
+    "max_support_dist_pct": 8.0,  # entry at most this % above support (0 = off)
     # policy gates
     "require_profitable": True,  # forward EPS > 0  (the anti-AAL gate)
     "require_analyst_buy": False,  # analyst consensus Buy or better (Yahoo data)
+    "strict_gates": True,        # gates that can't verify BLOCK the pick (fail closed)
     "earnings_drop_days": 10,    # no entries into binary events
     "require_market_uptrend": True,  # benchmark (SPY / STOXX50) above its SMA200
     # sizing
@@ -94,7 +96,58 @@ DEFAULTS = {
 }
 NEAR_MAX = 10          # near-miss board size
 NEAR_MISS_PENALTY = 8  # score points per failed gate on the near-miss board
-EURUSD = 1.08                    # rough conversion for sizing math
+# Listing currencies by yfinance suffix. London quotes in PENCE (GBp) —
+# treating it as EUR understated risk ~100x, the worst bug this tool had.
+CCY_SUFFIX = {"L": "GBp", "SW": "CHF", "CO": "DKK", "ST": "SEK", "OL": "NOK"}
+FX_FALLBACK = {"USD": 1.08, "GBP": 0.85, "CHF": 0.94,
+               "DKK": 7.46, "SEK": 11.3, "NOK": 11.6}  # EUR -> ccy, static floor
+_fx = {"rates": None, "ts": 0.0}
+
+
+def _ccy(ticker: str) -> str:
+    if "." not in ticker:
+        return "USD"
+    return CCY_SUFFIX.get(ticker.rsplit(".", 1)[1].upper(), "EUR")
+
+
+def _fx_rates() -> dict:
+    """EUR->currency rates, live via the chart API when possible (cached a
+    day), static fallback otherwise. Sizing must never divide by fiction."""
+    if _fx["rates"] and time.time() - _fx["ts"] < 86400:
+        return _fx["rates"]
+    hit, stored = cache_store.fetch("fx", 86400)
+    if hit and isinstance(stored, dict):
+        _fx.update(rates=stored, ts=time.time())
+        return stored
+    rates = dict(FX_FALLBACK)
+    syms = {c: f"EUR{c}=X" for c in FX_FALLBACK}
+    try:
+        ok, d = _yahoo_call(lambda: yf.download(
+            list(syms.values()), period="5d", auto_adjust=True,
+            group_by="ticker", threads=True, progress=False), scope="chart")
+        if ok and d is not None and not d.empty:
+            for c, s in syms.items():
+                try:
+                    v = float(d[s]["Close"].dropna().iloc[-1])
+                    if v > 0:
+                        rates[c] = v
+                except Exception:
+                    pass
+            cache_store.put("fx", rates)
+    except Exception:
+        pass
+    _fx.update(rates=rates, ts=time.time())
+    return rates
+
+
+def _eur_to_listing(ticker: str) -> float:
+    """Multiplier from a EUR amount to the ticker's quoted unit."""
+    ccy = _ccy(ticker)
+    if ccy == "EUR":
+        return 1.0
+    if ccy == "GBp":
+        return _fx_rates()["GBP"] * 100.0   # pounds -> pence
+    return _fx_rates()[ccy]
 
 BENCHMARKS = {"US": "SPY", "EU": "^STOXX50E"}  # regime + relative-strength references
 
@@ -218,8 +271,11 @@ def clean_params(overrides: dict | None) -> dict:
     p["pivot_k"] = _num(o.get("pivot_k"), p["pivot_k"], 1, 10, int)
     p["stop_buffer_pct"] = _num(o.get("stop_buffer_pct"), p["stop_buffer_pct"], 0, 10)
     p["min_stop_atr"] = _num(o.get("min_stop_atr"), p["min_stop_atr"], 0, 5)
+    p["max_support_dist_pct"] = _num(o.get("max_support_dist_pct"),
+                                     p["max_support_dist_pct"], 0, 50)
     p["require_profitable"] = bool(o.get("require_profitable", p["require_profitable"]))
     p["require_analyst_buy"] = bool(o.get("require_analyst_buy", p["require_analyst_buy"]))
+    p["strict_gates"] = bool(o.get("strict_gates", p["strict_gates"]))
     p["require_market_uptrend"] = bool(o.get("require_market_uptrend", p["require_market_uptrend"]))
     p["earnings_drop_days"] = _num(o.get("earnings_drop_days"), p["earnings_drop_days"], 0, 60, int)
     p["ticket_eur"] = _num(o.get("ticket_eur"), p["ticket_eur"], 1, 1e7)
@@ -893,9 +949,8 @@ def last_pivot_low(low: pd.Series, k: int) -> float | None:
 
 # ----------------------- portfolio -----------------------
 def _to_eur(value: float, ticker: str) -> float:
-    """Rough currency normalization: US listings are USD, EU listings are
-    treated as EUR-equivalent (CHF/GBP/DKK strays accepted as approximation)."""
-    return value / EURUSD if _region(ticker) == "US" else value
+    """Quoted-unit amount -> EUR via real per-currency rates (GBp = pence)."""
+    return value / _eur_to_listing(ticker)
 
 
 def _last_close(container, ticker: str) -> float | None:
@@ -1129,6 +1184,11 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     misses.append(("min_rr", f"R:R {rr:.1f} < {p['min_rr']:.1f}"))
                 if stop_atr is not None and stop_atr < p["min_stop_atr"]:
                     misses.append(("stop_atr", f"stop inside noise ({stop_atr:.1f} ATR < {p['min_stop_atr']:.1f})"))
+                sup_dist_pct = (price / support - 1) * 100
+                if p["max_support_dist_pct"] > 0 and sup_dist_pct > p["max_support_dist_pct"]:
+                    misses.append(("support_dist",
+                                   f"entry {sup_dist_pct:.1f}% above support "
+                                   f"(max {p['max_support_dist_pct']:.0f}%) — a chase, not a pullback"))
 
                 rs_3m = rel_strength(hist["Close"], bench.get(region))
                 vol_ratio = pullback_volume_ratio(hist["Volume"])
@@ -1136,7 +1196,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
 
                 def near_row(extra_flags=(), sector=None, name=None):
                     """Slim row for the near-miss board (no expensive calls)."""
-                    fx = EURUSD if region == "US" else 1.0
+                    fx = _eur_to_listing(ticker)
                     shares = round(min(p["max_risk_eur"] * fx / risk_ps,
                                        p["ticket_eur"] * fx / price), 4)
                     row = {"ticker": ticker, "name": name or ticker, "sector": sector or "?",
@@ -1234,6 +1294,11 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                         and (eps_used is None or eps_used <= 0)):
                     near_reject("profitable", f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
                     continue
+                if p["strict_gates"] and "fundamentals_unavailable" in flags:
+                    near_reject("unverified",
+                                "profitability/size/sector can't be verified right "
+                                "now — blocked instead of guessed (fail-closed)")
+                    continue
                 if (p["require_analyst_buy"] and rec_mean is not None
                         and rec_mean > 2.5):
                     near_reject("analyst", f"analyst consensus {rec_label} ({rec_mean:.1f})")
@@ -1256,13 +1321,19 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     days_to_earnings = q7["earn_days"]
                     flags.append("earnings_from_quote")
                 if days_to_earnings is None:
+                    if p["strict_gates"] and p["earnings_drop_days"] > 0:
+                        near_reject("unverified",
+                                    f"earnings date can't be verified while your "
+                                    f"{p['earnings_drop_days']}-day earnings gate is "
+                                    f"on — blocked (fail-closed)")
+                        continue
                     flags.append("earnings_unverified")
                 if days_to_earnings is not None and days_to_earnings <= p["earnings_drop_days"]:
                     near_reject("earnings", f"earnings in {days_to_earnings}d")
                     continue
 
                 # ---- sizing off YOUR risk, not a fixed ticket ----
-                fx = EURUSD if region == "US" else 1.0  # EUR budget -> listing currency
+                fx = _eur_to_listing(ticker)  # EUR budget -> quoted unit (GBp aware)
                 shares_by_risk = p["max_risk_eur"] * fx / risk_ps
                 shares_by_ticket = p["ticket_eur"] * fx / price
                 shares = min(shares_by_risk, shares_by_ticket)
@@ -1497,6 +1568,13 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
             relax_hints["regime"] = {"n": len(buckets["regime"])}
         if "analyst" in buckets:
             relax_hints["analyst"] = {"n": len(buckets["analyst"])}
+        if "support_dist" in buckets:
+            best = max((r["price"] / r["support"] - 1) * 100
+                       for r in buckets["support_dist"])
+            relax_hints["support_dist"] = {"n": len(buckets["support_dist"]),
+                                           "set_to": min(50, int(best) + 1)}
+        if "unverified" in buckets:
+            relax_hints["strict"] = {"n": len(buckets["unverified"])}
         progress(f"Nearly qualified: {len(near)} setup(s) failed at least one gate — "
                  f"showing the top {len(near_rows)} with reasons.")
 
@@ -1525,9 +1603,12 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                         "risk_budget_eur": port["risk_budget_eur"],
                         "n_positions": len(port["positions"]),
                         "sector_weights": port["sector_weights"]}
+    blocked_unverified = sum(1 for _row, m in near
+                             if any(g == "unverified" for g, _r in m))
     return {"df": df, "rejections": rejections, "universe_size": len(universe),
             "elapsed_s": elapsed, "params": p, "portfolio": port_summary,
-            "near": near_rows, "relax_hints": relax_hints}
+            "near": near_rows, "relax_hints": relax_hints,
+            "health": {"blocked_unverified": blocked_unverified}}
 
 
 def summarize_rejections(rejections: dict[str, str], progress=print):

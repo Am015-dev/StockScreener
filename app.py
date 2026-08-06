@@ -50,6 +50,8 @@ _state = {
     "scanned": None,           # live progress: tickers checked so far this run
     "bt_status": "idle",       # simulation: idle | running | done | error
     "backtest": None,          # simulation results (see backtest.py)
+    "results_ts": None,        # when the shown results were produced
+    "health": None,            # {"blocked_unverified": n} from the last scan
     "error": None,
 }
 
@@ -95,15 +97,26 @@ def _records(df: pd.DataFrame) -> list[dict]:
 
 
 def _load_cached_csv():
+    """Reload the previous run's picks — but never serve stale levels as if
+    they were fresh: results older than a day are refused outright."""
     if os.path.exists(RESULTS_CSV):
         try:
+            mtime = os.path.getmtime(RESULTS_CSV)
+            age_h = (time.time() - mtime) / 3600
+            if age_h > 24:
+                _state["log"] = [f"Previous results are {age_h:.0f}h old — "
+                                 f"discarded (entry/stop levels go stale). "
+                                 f"Run a fresh scan."]
+                return
             df = pd.read_csv(RESULTS_CSV)
             records = _records(df)
             _state["results"] = records
             _state["top_picks"] = records[:TOP_N]
             _state["status"] = "done"
-            _state["finished_at"] = os.path.getmtime(RESULTS_CSV)
-            _state["log"] = ["Loaded cached results from previous run."]
+            _state["finished_at"] = mtime
+            _state["results_ts"] = mtime
+            _state["log"] = [f"Loaded results from the scan {age_h:.1f}h ago — "
+                             f"prices have moved since; rerun before acting."]
         except Exception:
             pass
 
@@ -131,6 +144,7 @@ def _on_partial(rows, scanned, total):
     _state["top_picks"] = recs[:TOP_N]
     _state["scanned"] = scanned
     _state["universe_size"] = total
+    _state["results_ts"] = time.time()
 
 
 def _run_scan(params):
@@ -157,6 +171,8 @@ def _run_scan(params):
         _state["portfolio"] = result.get("portfolio")
         _state["near_board"] = result.get("near") or []
         _state["relax_hints"] = result.get("relax_hints") or {}
+        _state["health"] = result.get("health")
+        _state["results_ts"] = time.time()
         if len(df):
             df.to_csv(RESULTS_CSV, index=False)
 
@@ -201,7 +217,7 @@ def run():
         _state.update(status="running", log=[], error=None,
                       started_at=time.time(), finished_at=None,
                       rejection_summary=[], near_misses=[], params_used=params,
-                      near_board=[], relax_hints={}, scanned=None)
+                      near_board=[], relax_hints={}, scanned=None, health=None)
         threading.Thread(target=_run_scan, args=(params,), daemon=True).start()
     return jsonify({"ok": True, "params": params})
 
@@ -360,7 +376,11 @@ def results_csv():
     if not _state["results"]:
         return Response("no results yet\n", status=404, mimetype="text/plain")
     buf = io.StringIO()
-    pd.DataFrame(_state["results"]).to_csv(buf, index=False)
+    df = pd.DataFrame(_state["results"])
+    if _state.get("results_ts"):   # every exported row carries its scan time
+        stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(_state["results_ts"]))
+        df.insert(0, "scan_time", stamp)
+    df.to_csv(buf, index=False)
     return Response(buf.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=screener_results.csv"})
 

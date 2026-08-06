@@ -242,6 +242,13 @@
     <div class="hint" id="errorHint"></div>
   </div>
 
+  <div id="healthBox" style="display:none;background:rgba(232,182,76,.08);border:1px solid var(--amber);border-radius:10px;padding:.9rem 1.1rem;margin-bottom:1rem">
+    <b style="color:var(--amber)">Safety checks degraded this scan.</b>
+    <span id="healthText"></span>
+    <div class="hint">Fail-closed: unverifiable picks are blocked and listed under
+      "Best of the rest" with the reason — never shown as if they passed.</div>
+  </div>
+
   <section>
     <details id="filterBox">
       <summary>Filters <span class="plain">— sensible defaults, only open if you want to tune</span></summary>
@@ -285,6 +292,8 @@
             <input type="number" id="stop_buffer_pct" min="0" max="10" step="0.5"></div>
           <div class="field"><label data-tip="The stop must be at least this many ATRs away. ATR = the stock's average daily wiggle; a stop inside the daily wiggle gets hit by pure noise.">Min stop distance (ATRs)</label>
             <input type="number" id="min_stop_atr" min="0" max="5" step="0.25"></div>
+          <div class="field"><label data-tip="A pullback entry belongs NEAR support. Entries further above it than this are chases with inflated reward:risk — blocked. 0 switches the check off.">Max entry above support (%)</label>
+            <input type="number" id="max_support_dist_pct" min="0" max="50" step="1"></div>
         </div>
       </div>
 
@@ -294,6 +303,7 @@
         <div class="checks">
           <label data-tip="Skip companies that are losing money (uses forward earnings estimates, falls back to last year's)."><input type="checkbox" id="require_profitable"> Only profitable companies</label>
           <label data-tip="When the overall market (S&amp;P 500 / Euro Stoxx 50) is below its 200-day average, most dip-buys fail — skip everything."><input type="checkbox" id="require_market_uptrend"> Only when the overall market is rising</label>
+          <label data-tip="When a safety check (profitability, earnings date) can't get its data, BLOCK the pick instead of passing it with a footnote. Strongly recommended — untick only if you accept unverified picks."><input type="checkbox" id="strict_gates"> Block picks when safety data can't be verified</label>
           <label data-tip="Keep only stocks Wall Street analysts rate Buy or Strong Buy on average — the same consensus rating broker apps like Revolut show (here via Yahoo's aggregation of bank research)."><input type="checkbox" id="require_analyst_buy"> Only analyst Buy-rated or better</label>
           <label data-tip="Below the main results, also rank the best setups that failed one or more filters — with the exact reason, so you can judge for yourself."><input type="checkbox" id="show_near"> Show closest non-qualifying setups too</label>
         </div>
@@ -370,6 +380,7 @@
   <section>
     <h2>All results <span id="resultCount"></span></h2>
     <div id="verdict" style="display:none;font-size:1.05rem;font-weight:600;margin:0 0 .6rem"></div>
+    <div id="resultsAge" class="hint" style="display:none;margin:0 0 .6rem"></div>
     <div class="secsub">Every stock that passed all filters, best score first.
       Hover a column header for what it means.</div>
     <div id="portSummary" class="hint" style="display:none;margin:0 0 .6rem"></div>
@@ -513,6 +524,9 @@ const REASONS = [
   ["unprofitable",            "Losing money, or no profit data"],
   ["earnings in",             "Earnings report too close"],
   ["friction",                "Trading costs would eat too much of the profit"],
+  ["entry ",                  "Too far above support — a chase, not a pullback"],
+  ["profitability/size/sector can't", "Safety data unavailable — blocked, not guessed (fail-closed)"],
+  ["earnings date can't",     "Earnings date unverifiable while the earnings gate is on — blocked"],
   ["data error",              "Data error while processing"],
 ];
 function reasonText(reason) {
@@ -522,12 +536,12 @@ function reasonText(reason) {
 }
 
 const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","universe_max","rsi_low","rsi_high","min_rr",
-                    "swing_lookback","pivot_k","stop_buffer_pct","min_stop_atr",
+                    "swing_lookback","pivot_k","stop_buffer_pct","min_stop_atr","max_support_dist_pct",
                     "earnings_drop_days","ticket_eur","max_risk_eur",
                     "cash_eur","current_open_risk_eur","sector_cap_pct","max_open_risk_pct",
                     "commission_eur","spread_bps","max_friction_pct"];
 const BOOL_FIELDS = ["include_us","include_eu","require_profitable","require_market_uptrend",
-                     "require_analyst_buy","show_near"];
+                     "require_analyst_buy","strict_gates","show_near"];
 const SAVED_FIELDS = ["holdingsText","cash_eur","current_open_risk_eur","sector_cap_pct",
                       "max_open_risk_pct","commission_eur","spread_bps","max_friction_pct"];
 
@@ -694,6 +708,10 @@ function renderNearBoard(nearRows, hints, nQualified) {
                             {require_market_uptrend: false}]);
   if (h.analyst) chips.push([`▸ ${h.analyst.n} blocked only by the analyst-rating gate — show them`,
                              {require_analyst_buy: false}]);
+  if (h.support_dist) chips.push([`▸ See ${h.support_dist.n} more — allow entries up to ${h.support_dist.set_to}% above support`,
+                                  {max_support_dist_pct: h.support_dist.set_to}]);
+  if (h.strict) chips.push([`▸ ${h.strict.n} blocked because safety data was unavailable — show anyway (less safe)`,
+                            {strict_gates: false}]);
   // offer the one-click relaxations only while results are thin
   if (chips.length && (nQualified || 0) < 5) {
     chipsEl.style.display = "";
@@ -981,6 +999,27 @@ async function refresh() {
   renderTopPicks(s.top_picks);
   renderNearBoard(s.near_board, s.relax_hints, (s.results || []).length);
   renderBacktest(s.backtest, s.bt_status || "idle");
+
+  // never let picks masquerade as fresh: always show their age
+  const ageEl = document.getElementById("resultsAge");
+  if ((s.results || []).length && s.results_ts) {
+    const mins = Math.max(0, Math.round(Date.now() / 1000 / 60 - s.results_ts / 60));
+    ageEl.style.display = "block";
+    ageEl.textContent = s.status === "running"
+      ? "⏱ Live scan in progress — rows update as they are found."
+      : `⏱ These picks are from the scan ${mins < 60 ? mins + " min" : (mins / 60).toFixed(1) + " h"} ago. ` +
+        `Entry/stop/target levels move with the market — rerun before acting.`;
+    ageEl.style.color = (mins > 120 && s.status !== "running") ? "var(--amber)" : "var(--muted)";
+  } else ageEl.style.display = "none";
+
+  // degraded-safety banner: broken gates must be loud, not a CSV footnote
+  const hb = document.getElementById("healthBox");
+  if (s.health && s.health.blocked_unverified > 0 && s.status === "done") {
+    hb.style.display = "block";
+    document.getElementById("healthText").textContent =
+      ` ${s.health.blocked_unverified} setup(s) could not have their ` +
+      `profitability or earnings dates verified (data source down) and were blocked.`;
+  } else hb.style.display = "none";
 
   // one-line takeaway so nobody has to interpret an empty table
   const verdict = document.getElementById("verdict");
