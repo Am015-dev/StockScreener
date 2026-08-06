@@ -1,0 +1,21 @@
+# Free-tier scheduler: wakes the Render app before US market close and runs
+# the saved filter profile; the app pushes top picks to Telegram/Discord
+# (configure ALERT_TELEGRAM_TOKEN + ALERT_TELEGRAM_CHAT and/or
+# ALERT_DISCORD_WEBHOOK as environment variables on the Render service).
+#
+# 19:45 UTC = 3:45 PM New York in summer (DST). In winter that becomes
+# 2:45 PM — adjust to "45 20 * * 1-5" each November if the pre-close
+# timing matters to you.
+name: Daily pre-close alert
+on:
+  schedule:
+    - cron: "45 19 * * 1-5"
+  workflow_dispatch: {}
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the app, run the alert scan, push picks
+        run: |
+          curl -sS --max-time 90 https://pullback-screener.onrender.com/ > /dev/null || true
+          curl -sS --max-time 540 -X POST https://pullback-screener.onrender.com/alert

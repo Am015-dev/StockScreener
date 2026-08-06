@@ -10,6 +10,7 @@ page reloads (but not a full spin-down — just press Run again).
 """
 
 import io
+import json
 import os
 import threading
 import time
@@ -29,6 +30,7 @@ import screener
 app = Flask(__name__)
 
 RESULTS_CSV = os.environ.get("RESULTS_CSV", "/tmp/screener_results.csv")
+ALERT_PROFILE = os.environ.get("ALERT_PROFILE", "/tmp/alert_profile.json")
 TOP_N = 3
 
 _lock = threading.Lock()
@@ -52,6 +54,7 @@ _state = {
     "bt_status": "idle",       # simulation: idle | running | done | error
     "backtest": None,          # simulation results (see backtest.py)
     "pending": [],             # qualified technically, awaiting verification
+    "breadth": None,           # {"pct": .., "risk_factor": ..} market health
     "results_ts": None,        # when the shown results were produced
     "health": None,            # {"blocked_unverified": n} from the last scan
     "error": None,
@@ -177,6 +180,7 @@ def _run_scan(params):
         _state["relax_hints"] = result.get("relax_hints") or {}
         _state["health"] = result.get("health")
         _state["pending"] = result.get("pending") or []
+        _state["breadth"] = result.get("breadth")
         _state["results_ts"] = time.time()
         if len(df):
             df.to_csv(RESULTS_CSV, index=False)
@@ -266,6 +270,11 @@ def run():
                       rejection_summary=[], near_misses=[], params_used=params,
                       near_board=[], relax_hints={}, scanned=None, health=None,
                       pending=[])
+        try:   # the latest scan's filters double as the daily-alert profile
+            with open(ALERT_PROFILE, "w") as f:
+                json.dump(params, f)
+        except Exception:
+            pass
         threading.Thread(target=_run_scan, args=(params,), daemon=True).start()
     return jsonify({"ok": True, "params": params})
 
@@ -388,6 +397,73 @@ threading.Thread(target=_crumb_hunter, daemon=True).start()
 @app.route("/status")
 def status():
     return jsonify(_state)
+
+
+def _send_alert(text: str) -> list[str]:
+    """Deliver to whichever channels are configured via env vars."""
+    import requests as rq
+    sent = []
+    tok = os.environ.get("ALERT_TELEGRAM_TOKEN")
+    chat = os.environ.get("ALERT_TELEGRAM_CHAT")
+    if tok and chat:
+        try:
+            r = rq.post(f"https://api.telegram.org/bot{tok}/sendMessage",
+                        json={"chat_id": chat, "text": text}, timeout=15)
+            if r.status_code == 200:
+                sent.append("telegram")
+        except Exception:
+            pass
+    hook = os.environ.get("ALERT_DISCORD_WEBHOOK")
+    if hook:
+        try:
+            r = rq.post(hook, json={"content": text[:1900]}, timeout=15)
+            if r.status_code in (200, 204):
+                sent.append("discord")
+        except Exception:
+            pass
+    return sent
+
+
+@app.route("/alert", methods=["GET", "POST"])
+def alert():
+    """Scheduled entry point (GitHub Actions cron): rerun the saved filter
+    profile and push the verified top picks to the configured channels."""
+    with _lock:
+        if _state["status"] == "running" or _state["bt_status"] == "running":
+            return jsonify({"ok": False, "message": "busy"}), 409
+        _state["status"] = "running"
+    params = {}
+    try:
+        with open(ALERT_PROFILE) as f:
+            params = json.load(f)
+    except Exception:
+        pass
+    _run_scan(params)
+    res = _state["results"] or []
+    pend = _state["pending"] or []
+    lines = [f"📈 Dip Finder — {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}"]
+    br = _state.get("breadth") or {}
+    if br.get("risk_factor", 1) < 1:
+        lines.append(f"⚠ defensive market (breadth {br.get('pct')}%) — "
+                     f"sizes throttled to {br['risk_factor']:g}x")
+    if res:
+        lines.append(f"{len(res)} verified pick(s):")
+        for r in res[:TOP_N]:
+            lines.append(f"  {r['ticker']}: buy ≈{r['price']}, stop {r['stop']}, "
+                         f"target {r['resistance']}, {r['shares']} sh, "
+                         f"risk €{r['risk_EUR']} (R:R {r['RR']}, score {r['score']})")
+    else:
+        lines.append("no verified picks today"
+                     + (f" ({len(pend)} awaiting data verification)" if pend else ""))
+    lines.append("https://pullback-screener.onrender.com")
+    text = "\n".join(lines)
+    sent = _send_alert(text)
+    if not sent:
+        return jsonify({"ok": True, "sent": [], "verified": len(res),
+                        "note": "no channels configured — set ALERT_TELEGRAM_TOKEN"
+                                "+ALERT_TELEGRAM_CHAT and/or ALERT_DISCORD_WEBHOOK"})
+    return jsonify({"ok": True, "sent": sent, "verified": len(res),
+                    "pending": len(pend)})
 
 
 @app.route("/diag/yahoo")

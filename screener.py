@@ -1122,6 +1122,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
 
     t1 = time.time()
     scanned_n = [0]
+    breadth = [0, 0]   # [stocks measured, stocks above their 50-day average]
 
     def scan_block(tickers, frame):
         """Run every gate for one batch of tickers against its price frame."""
@@ -1146,6 +1147,10 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 sma200 = float(hist["Close"].rolling(200).mean().iloc[-1])
                 avg_vol = float(hist["Volume"].tail(30).mean())
                 region = _region(ticker)
+                sma50 = float(hist["Close"].rolling(50).mean().iloc[-1])
+                breadth[0] += 1
+                if price > sma50:
+                    breadth[1] += 1
 
                 # ---- hard gates: without these there is no trade plan at all ----
                 if price <= sma200:
@@ -1194,6 +1199,11 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 rs_3m = rel_strength(hist["Close"], bench.get(region))
                 vol_ratio = pullback_volume_ratio(hist["Volume"])
                 flags: list[str] = []
+                # weekly-trend trap check: the daily dip can look mild while
+                # the ~30-week average has already given way underneath it
+                sma150 = float(hist["Close"].rolling(150).mean().iloc[-1])
+                if price < sma150:
+                    flags.append("weekly_soft")
 
                 def near_row(extra_flags=(), sector=None, name=None):
                     """Slim row for the near-miss board (no expensive calls)."""
@@ -1516,6 +1526,27 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
             scan_block(sorted(keep), data)
             emit_partial()
 
+    # ---- market-breadth risk throttle: defensive sizing when the tape is
+    # ---- weak, applied to everything actionable (picks, pending, board)
+    breadth_pct = round(breadth[1] / breadth[0] * 100) if breadth[0] else None
+    risk_factor = 1.0
+    if breadth_pct is not None:
+        if breadth_pct < 35:
+            risk_factor = 0.25
+        elif breadth_pct < 55:
+            risk_factor = 0.5
+    if risk_factor < 1.0:
+        progress(f"Market breadth: only {breadth_pct}% of scanned stocks are above "
+                 f"their 50-day average — defensive mode, suggested position sizes "
+                 f"throttled to {risk_factor:g}x.")
+        for row in rows + [r for r, _m in near]:
+            row["shares"] = round(row["shares"] * risk_factor, 4)
+            row["risk_EUR"] = round(row["risk_EUR"] * risk_factor, 2)
+            row["flags"] = ((row.get("flags") or "") + ("," if row.get("flags") else "")
+                            + "risk_throttled")
+    elif breadth_pct is not None:
+        progress(f"Market breadth {breadth_pct}% — full position sizing.")
+
     # ---- "closest to qualifying" board + one-click relaxation hints ----
     near_rows: list[dict] = []
     relax_hints: dict = {}
@@ -1628,6 +1659,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
     return {"df": df, "rejections": rejections, "universe_size": len(universe),
             "elapsed_s": elapsed, "params": p, "portfolio": port_summary,
             "near": near_rows, "relax_hints": relax_hints, "pending": pending,
+            "breadth": {"pct": breadth_pct, "risk_factor": risk_factor},
             "health": {"blocked_unverified": len(pending)}}
 
 

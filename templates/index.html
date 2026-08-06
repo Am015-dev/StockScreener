@@ -508,6 +508,8 @@ const FLAG_TEXT = {
   fundamentals_via_quote: "company data via Yahoo's quote API (its fundamentals API was blocked)",
   earnings_from_quote: "earnings date via Yahoo's quote API",
   gates_skipped: "profitability/earnings checks skipped (setup didn't qualify)",
+  weekly_soft: "below its 30-week average — the larger weekly trend is softening",
+  risk_throttled: "position size reduced — weak market breadth (defensive mode)",
   no_cash: "no free cash in your portfolio to fund this",
   cash_capped: "position size reduced to fit your available cash",
   sector_cap: "would push this sector above your portfolio cap",
@@ -692,7 +694,27 @@ function renderTopPicks(picks) {
       </div>
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
       ${p.flags ? `<div class="warn">⚠ ${esc(flagText(p.flags))}</div>` : ""}
+      <button type="button" class="ghost" style="margin-top:.6rem;font-size:.78rem;padding:.3rem .8rem"
+        data-tip="Copies the complete bracket order — buy, stop-loss, take-profit, share count — ready to paste into your broker."
+        onclick="copyTicket(${i}, this)">📋 Copy order ticket</button>
     </div>`).join("");
+  window.__topPicks = picks;
+}
+
+function copyTicket(i, btn) {
+  const p = (window.__topPicks || [])[i];
+  if (!p) return;
+  const t = [
+    `BUY ${p.ticker} — ${p.shares} shares @ limit ≤ ${p.price}`,
+    `STOP-LOSS (sell stop) @ ${p.stop}`,
+    `TAKE-PROFIT (sell limit) @ ${p.resistance}`,
+    `max risk ≈ €${p.risk_EUR} · reward:risk ${p.RR} · ${new Date().toISOString().slice(0, 10)}`,
+    `(bracket/OCO order — from Dip Finder, verify before sending)`,
+  ].join("\n");
+  navigator.clipboard.writeText(t).then(() => {
+    btn.textContent = "✓ copied";
+    setTimeout(() => { btn.textContent = "📋 Copy order ticket"; }, 1500);
+  }).catch(() => { btn.textContent = "⚠ copy failed"; });
 }
 
 // ---- best of the rest (near-miss board + one-click filter relaxations) ----
@@ -1098,8 +1120,11 @@ async function refresh() {
     const n = (s.results || []).length;
     if (n) {
       const top = s.results[0];
+      const br = s.breadth || {};
       verdict.innerHTML = `✅ ${esc(n)} of ${esc(s.universe_size)} scanned stocks ` +
-        `qualify today — best: ${esc(top.ticker)} (score ${esc(top.score)}).`;
+        `qualify today — best: ${esc(top.ticker)} (score ${esc(top.score)}).` +
+        (br.risk_factor < 1 ? ` <span style="color:var(--amber)">⚠ weak market ` +
+         `breadth (${esc(br.pct)}%) — position sizes throttled to ${esc(br.risk_factor)}×.</span>` : "");
     } else if ((s.pending || []).length) {
       verdict.textContent = `⏳ ${s.pending.length} pick(s) passed every technical test ` +
         `and are awaiting safety verification below — this completes automatically ` +
