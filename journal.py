@@ -51,7 +51,14 @@ def _conn():
 
 def record_picks(rows: list[dict], scan_ts: float | None = None) -> int:
     """Store today's picks. A ticker with a still-open pick is not re-recorded
-    (the same setup persisting across days is one trade idea, not many)."""
+    (the same setup persisting across days is one trade idea, not many).
+
+    Picks whose safety gates could not verify (unverified/unavailable flags)
+    are NEVER journaled — a track record polluted with trades the methodology
+    itself would have blocked measures the plumbing, not the method."""
+    rows = [r for r in rows
+            if not any(bad in (r.get("flags") or "")
+                       for bad in ("unverified", "unavailable"))]
     ts = scan_ts or time.time()
     day = date.fromtimestamp(ts).isoformat()
     added = 0
