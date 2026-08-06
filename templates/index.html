@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pullback-in-Uptrend Screener</title>
+<title>Dip Finder — buy strong stocks on a pullback</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --panel2: #1d222c; --border: #262b36;
@@ -17,7 +17,7 @@
   }
   main { max-width: 1100px; margin: 0 auto; }
   h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  .sub { color: var(--muted); margin-bottom: 1.5rem; }
+  .sub { color: var(--muted); margin-bottom: 1.25rem; }
   .bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
   button {
     background: var(--accent); color: #fff; border: 0; border-radius: 8px;
@@ -36,14 +36,39 @@
   .pill.error { color: var(--red); border-color: var(--red); }
   section { background: var(--panel); border: 1px solid var(--border);
             border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
-  h2 { font-size: 1rem; margin: 0 0 .75rem; color: var(--muted);
+  h2 { font-size: 1rem; margin: 0 0 .35rem; color: var(--muted);
        text-transform: uppercase; letter-spacing: .05em; }
+  .secsub { font-size: .85rem; color: var(--muted); margin: 0 0 .75rem; }
+  /* --- anything with a data-tip explains itself on hover/tap --- */
+  [data-tip] { cursor: help; text-decoration: underline dotted var(--muted);
+               text-underline-offset: 3px; position: relative; }
+  [data-tip]:hover::after, [data-tip]:focus::after {
+    content: attr(data-tip); position: absolute; left: 0; top: 100%; z-index: 30;
+    margin-top: .35rem; width: max-content; max-width: 280px; white-space: normal;
+    background: #0a0c10; color: var(--text); border: 1px solid var(--accent);
+    border-radius: 8px; padding: .5rem .65rem; font-size: .8rem; line-height: 1.4;
+    font-weight: 400; text-transform: none; letter-spacing: 0; text-align: left;
+    box-shadow: 0 6px 18px rgba(0,0,0,.5); pointer-events: none;
+  }
+  th[data-tip]:hover::after, td.notes[data-tip]:hover::after { left: auto; right: 0; }
+  /* --- help panel --- */
+  .helpcols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+              gap: 1rem; margin-top: .75rem; }
+  .helpcols h3 { font-size: .85rem; margin: 0 0 .35rem; color: var(--text); }
+  .helpcols p, .helpcols ul { font-size: .85rem; color: var(--muted); margin: 0 0 .5rem; }
+  .helpcols ul { padding-left: 1.1rem; }
+  .helpcols li { margin-bottom: .25rem; }
+  .helpcols b { color: var(--text); font-weight: 600; }
+  .disclaimer { font-size: .75rem; color: var(--muted); border-top: 1px solid var(--border);
+                margin-top: .75rem; padding-top: .6rem; }
   /* --- filters --- */
   details > summary { cursor: pointer; color: var(--muted); font-size: 1rem;
        text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
        list-style: none; }
   details > summary::before { content: "▸ "; }
   details[open] > summary::before { content: "▾ "; }
+  details > summary .plain { text-transform: none; letter-spacing: 0; font-weight: 400;
+       font-size: .85rem; }
   .fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
            gap: .75rem 1rem; margin-top: 1rem; }
   .field label { display: block; font-size: .75rem; color: var(--muted); margin-bottom: .2rem; }
@@ -57,10 +82,16 @@
   .checks label { display: flex; align-items: center; gap: .35rem; font-size: .85rem;
                   color: var(--text); cursor: pointer; white-space: nowrap; }
   .checks input { accent-color: var(--accent); }
-  .fgroup { margin-top: 1rem; }
+  .fgroup { margin-top: 1.25rem; }
   .fgroup > .glabel { font-size: .75rem; color: var(--muted);
-                      text-transform: uppercase; letter-spacing: .05em; }
+                      text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  .fgroup > .ghint { font-size: .8rem; color: var(--muted); margin-top: .15rem; }
   .wide { grid-column: 1 / -1; }
+  /* --- error banner --- */
+  #errorBox { display: none; background: rgba(247,109,109,.08); border: 1px solid var(--red);
+              border-radius: 10px; padding: .9rem 1.1rem; margin-bottom: 1rem; }
+  #errorBox b { color: var(--red); }
+  #errorBox .hint { margin-top: .3rem; }
   /* --- top picks --- */
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .9rem; }
   .card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
@@ -76,18 +107,20 @@
   .card .nums span { color: var(--muted); }
   .card .why { margin-top: .6rem; font-size: .8rem; color: var(--muted);
                border-top: 1px solid var(--border); padding-top: .5rem; }
+  .card .warn { margin-top: .5rem; font-size: .78rem; color: var(--amber); }
   /* --- tables / log --- */
   #log {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: .8rem; white-space: pre-wrap; color: var(--muted);
-    max-height: 260px; overflow-y: auto; margin: 0;
+    max-height: 260px; overflow-y: auto; margin: .75rem 0 0;
   }
   table { width: 100%; border-collapse: collapse; font-size: .9rem; }
   th, td { text-align: right; padding: .45rem .6rem; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; }
+  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; }
   td.rr { color: var(--green); font-weight: 700; }
   td.score { font-weight: 700; }
+  td.notes { text-align: left; font-size: .8rem; color: var(--amber); max-width: 260px; }
   .empty { color: var(--muted); font-style: italic; }
   .tablewrap { overflow-x: auto; }
   .hint { font-size: .8rem; color: var(--muted); margin-top: .6rem; }
@@ -95,154 +128,293 @@
 </head>
 <body>
 <main>
-  <h1>Pullback-in-Uptrend Swing Screener</h1>
-  <div class="sub">Uptrending large caps caught mid-pullback near support, ranked by a
-    composite quality score. Tune the filters, hit Run, and play.</div>
+  <h1>Dip Finder</h1>
+  <div class="sub">Finds strong, rising stocks that just dipped — and for each one tells you
+    a <b>buy price</b>, a <b>stop-loss</b> (where to sell to cap your loss), a <b>target</b>,
+    and <b>how many shares</b> to buy so one bad trade never costs more than you allow.</div>
 
   <section>
-    <details id="filterBox" open>
-      <summary>Filters</summary>
+    <details id="helpBox">
+      <summary>What is this &amp; how do I read it? <span class="plain">(2-minute read)</span></summary>
+      <div class="helpcols">
+        <div>
+          <h3>What the scan does</h3>
+          <p>It goes through hundreds of large US and European companies and keeps only the ones
+            that are in a <b>long-term uptrend</b> but had a <b>small recent dip</b> toward a price
+            level where buyers stepped in before ("support"). Buying a strong stock on a dip near
+            support is a classic swing-trading setup: your stop-loss can sit close by, so a losing
+            trade stays cheap, while the recent high gives a realistic target.</p>
+          <p>It then removes the risky cases automatically: loss-making companies, stocks reporting
+            earnings in the next days (earnings can gap straight through a stop-loss), stocks that
+            barely trade, and everything when the overall market itself is falling.</p>
+        </div>
+        <div>
+          <h3>How to read a pick</h3>
+          <ul>
+            <li><b>Price</b> — the latest price; roughly where you'd buy.</li>
+            <li><b>Stop-loss</b> — place a sell-stop order here with your broker. If the price falls
+              this far, the idea failed; the stop caps your loss at the shown <b>€ at risk</b>.</li>
+            <li><b>Target</b> — the recent high the price could realistically return to.</li>
+            <li><b>Reward:Risk</b> — 3.0 means you stand to win €3 for every €1 you risk.</li>
+            <li><b>Shares</b> — sized so that hitting the stop-loss loses at most your
+              "max risk per trade" (set in the filters).</li>
+            <li><b>Score</b> — overall quality, 0–100. <span style="color:var(--green)">70+</span> strong,
+              <span style="color:var(--amber)">50–69</span> okay,
+              <span style="color:var(--red)">below 50</span> weak. Each pick shows a one-line
+              reason for its score.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>How to use it</h3>
+          <ul>
+            <li>Press <b>Run scan</b>. The first scan downloads a year of prices and takes a few
+              minutes — the progress log shows what it's doing. Re-runs with tweaked filters
+              take seconds.</li>
+            <li>Start with the <b>Top picks</b> cards, then open the full table. Hover any column
+              header or filter name for a plain-English explanation.</li>
+            <li>Optional: paste your holdings and cash under <b>Filters → Portfolio</b> — picks then
+              get checked against your available cash, sector concentration, and total risk.</li>
+            <li>"Why stocks were filtered out" at the bottom shows what the scan rejected and why —
+              useful to see if your filters are too strict.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="disclaimer">Prices and fundamentals come from Yahoo Finance (free, may be
+        delayed ~15 min). This is a screening tool, not investment advice — always check a
+        chart and the news before placing a trade.</div>
+    </details>
+  </section>
+
+  <div class="bar">
+    <button id="runBtn" onclick="runScan()">▶ Run scan</button>
+    <button class="ghost" onclick="resetFilters()">Reset filters</button>
+    <span id="statusPill" class="pill">ready</span>
+    <span id="timing" class="pill" style="display:none"></span>
+    <a class="dl" id="csvLink" href="/results.csv" style="display:none">Download CSV</a>
+  </div>
+
+  <div id="errorBox">
+    <b>The scan failed.</b> <span id="errorText"></span>
+    <div class="hint" id="errorHint"></div>
+  </div>
+
+  <section>
+    <details id="filterBox">
+      <summary>Filters <span class="plain">— sensible defaults, only open if you want to tune</span></summary>
 
       <div class="fgroup">
         <div class="glabel">Universe</div>
+        <div class="ghint">Which stocks are scanned at all.</div>
         <div class="checks">
           <label><input type="checkbox" id="include_us"> US markets</label>
           <label><input type="checkbox" id="include_eu"> European markets</label>
         </div>
         <div class="checks" id="sectorChecks"></div>
         <div class="fgrid">
-          <div class="field"><label>Min market cap ($B)</label>
+          <div class="field"><label data-tip="Only companies worth at least this many billion dollars. Bigger companies = steadier prices and easier to buy/sell.">Min company size ($B market cap)</label>
             <input type="number" id="min_mkt_cap_b" min="0.5" step="1"></div>
-          <div class="field"><label>Min liquidity ($M traded/day)</label>
+          <div class="field"><label data-tip="Minimum dollars traded per day. Filters out stocks that are hard to get in and out of.">Min traded per day ($M)</label>
             <input type="number" id="min_dollar_vol_m" min="0" step="10"></div>
-          <div class="field"><label>Max universe size (largest caps kept)</label>
+          <div class="field"><label data-tip="How many of the largest stocks to scan. More = broader search but a slower first scan.">Max stocks to scan</label>
             <input type="number" id="universe_max" min="50" max="5000" step="50"></div>
-          <div class="field wide"><label>Excluded tickers (held-at-cap / permanent passes, comma-separated)</label>
+          <div class="field wide"><label data-tip="Stocks you never want suggested — e.g. ones you already hold at full size, comma-separated.">Never suggest these tickers</label>
             <input type="text" id="exclude" placeholder="AVGO, AMZN, ..."></div>
         </div>
       </div>
 
       <div class="fgroup">
-        <div class="glabel">Setup</div>
+        <div class="glabel">The dip (setup)</div>
+        <div class="ghint">What counts as a healthy dip worth buying.
+          RSI measures momentum from 0–100 — around 35–55 means a mild dip, not a crash.</div>
         <div class="fgrid">
-          <div class="field"><label>RSI from (pullback floor)</label>
+          <div class="field"><label data-tip="Lower RSI bound. Below this the fall is too sharp — that's a falling knife, not a dip.">Dip zone: RSI from</label>
             <input type="number" id="rsi_low" min="0" max="100" step="1"></div>
-          <div class="field"><label>RSI to (pullback ceiling)</label>
+          <div class="field"><label data-tip="Upper RSI bound. Above this the stock hasn't really dipped yet.">Dip zone: RSI to</label>
             <input type="number" id="rsi_high" min="0" max="100" step="1"></div>
-          <div class="field"><label>Min reward:risk</label>
+          <div class="field"><label data-tip="Only keep setups where the possible gain (to target) is at least this many times the possible loss (to stop-loss). 3 = risk €1 to make €3.">Min reward : risk</label>
             <input type="number" id="min_rr" min="0.5" step="0.5"></div>
-          <div class="field"><label>Swing-high lookback (days)</label>
+          <div class="field"><label data-tip="How many days back to look for the recent high that becomes the profit target.">Target lookback (days)</label>
             <input type="number" id="swing_lookback" min="10" max="250" step="5"></div>
-          <div class="field"><label>Pivot width (bars each side)</label>
+          <div class="field"><label data-tip="How strict the support detection is. Higher = only stronger, more obvious support levels count.">Support strictness (bars)</label>
             <input type="number" id="pivot_k" min="1" max="10" step="1"></div>
-          <div class="field"><label>Stop buffer below support (%)</label>
+          <div class="field"><label data-tip="The stop-loss sits this % below the support level, so a normal wiggle doesn't kick you out.">Stop-loss buffer below support (%)</label>
             <input type="number" id="stop_buffer_pct" min="0" max="10" step="0.5"></div>
-          <div class="field"><label>Min stop distance (ATRs — noise gate)</label>
+          <div class="field"><label data-tip="The stop must be at least this many ATRs away. ATR = the stock's average daily wiggle; a stop inside the daily wiggle gets hit by pure noise.">Min stop distance (ATRs)</label>
             <input type="number" id="min_stop_atr" min="0" max="5" step="0.25"></div>
         </div>
       </div>
 
       <div class="fgroup">
-        <div class="glabel">Quality &amp; policy gates</div>
+        <div class="glabel">Safety gates</div>
+        <div class="ghint">Automatic reasons to skip a stock even if the chart looks good.</div>
         <div class="checks">
-          <label><input type="checkbox" id="require_profitable"> Require EPS &gt; 0 (forward, trailing fallback)</label>
-          <label><input type="checkbox" id="require_market_uptrend"> Require market uptrend (SPY / STOXX50 above SMA200)</label>
+          <label data-tip="Skip companies that are losing money (uses forward earnings estimates, falls back to last year's)."><input type="checkbox" id="require_profitable"> Only profitable companies</label>
+          <label data-tip="When the overall market (S&amp;P 500 / Euro Stoxx 50) is below its 200-day average, most dip-buys fail — skip everything."><input type="checkbox" id="require_market_uptrend"> Only when the overall market is rising</label>
         </div>
         <div class="fgrid">
-          <div class="field"><label>Skip if earnings within (days)</label>
+          <div class="field"><label data-tip="Earnings reports can make a price gap far past your stop-loss overnight. Skip stocks reporting within this many days.">Skip if earnings within (days)</label>
             <input type="number" id="earnings_drop_days" min="0" max="60" step="1"></div>
         </div>
       </div>
 
       <div class="fgroup">
-        <div class="glabel">Position sizing</div>
+        <div class="glabel">Money per trade</div>
+        <div class="ghint">Used to compute how many shares each pick suggests.</div>
         <div class="fgrid">
-          <div class="field"><label>Ticket size (€)</label>
+          <div class="field"><label data-tip="The most you want to invest in one position.">Max € per position</label>
             <input type="number" id="ticket_eur" min="1" step="50"></div>
-          <div class="field"><label>Max risk per trade (€)</label>
+          <div class="field"><label data-tip="The most you accept losing on one trade if the stop-loss is hit. Share counts are sized so a stopped-out trade never loses more than this.">Max € loss per trade</label>
             <input type="number" id="max_risk_eur" min="1" step="10"></div>
         </div>
       </div>
 
       <div class="fgroup">
-        <div class="glabel">Portfolio (optional — saved in your browser)</div>
+        <div class="glabel">Your portfolio (optional)</div>
+        <div class="ghint">Add what you own and the scan checks every pick against your real
+          situation: enough cash? sector already too big? total risk still within budget?
+          Everything stays in your browser — nothing is stored on the server.</div>
         <div style="margin:.6rem 0 .2rem; display:flex; gap:.6rem; align-items:center; flex-wrap:wrap">
           <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none">
           <button type="button" class="ghost" onclick="document.getElementById('csvFile').click()">
             📥 Import broker CSV</button>
           <span class="hint" style="margin:0">Revolut transaction export or a simple
-            <code>ticker,shares,cost</code> list — parsed once, kept only in your browser</span>
+            <code>ticker,shares,cost</code> list</span>
         </div>
         <div id="importNote" class="hint" style="display:none"></div>
         <div class="fgrid">
-          <div class="field wide"><label>Holdings — one per line: TICKER, shares, cost basis</label>
+          <div class="field wide"><label data-tip="One position per line: ticker, number of shares, what you paid per share. European tickers need their exchange suffix, e.g. SAP.DE or VUAA.L.">Holdings — one per line: TICKER, shares, cost per share</label>
             <textarea id="holdingsText" rows="4" placeholder="AAPL, 10, 172.50&#10;SAP.DE, 5, 148"
               style="width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);
                      border-radius:6px;padding:.4rem .55rem;font-size:.9rem;font-family:ui-monospace,Menlo,monospace;"></textarea></div>
-          <div class="field"><label>Free cash (€)</label>
+          <div class="field"><label data-tip="Cash available to fund new buys. Picks that need more than this get their size reduced and marked.">Free cash (€)</label>
             <input type="number" id="cash_eur" min="0" step="100"></div>
-          <div class="field"><label>Current open risk (€, stops in market)</label>
+          <div class="field"><label data-tip="If you already have stop-loss orders in the market, their combined possible loss. Counts against your total risk budget.">Risk already committed (€)</label>
             <input type="number" id="current_open_risk_eur" min="0" step="10"></div>
-          <div class="field"><label>Sector cap (% of book)</label>
+          <div class="field"><label data-tip="Warn when a buy would push one sector above this share of your portfolio — protects against having all eggs in one basket.">Max % of portfolio in one sector</label>
             <input type="number" id="sector_cap_pct" min="5" max="100" step="5"></div>
-          <div class="field"><label>Max total open risk (% of book)</label>
+          <div class="field"><label data-tip="Cap on the combined possible loss of ALL open stop-losses, as % of your portfolio. The results table shows which picks still fit.">Max total risk (% of portfolio)</label>
             <input type="number" id="max_open_risk_pct" min="0.5" max="100" step="0.5"></div>
         </div>
       </div>
 
       <div class="fgroup">
-        <div class="glabel">Trade economics</div>
+        <div class="glabel">Trading costs</div>
+        <div class="ghint">Small trades can be eaten alive by fees — this filters those out.</div>
         <div class="fgrid">
-          <div class="field"><label>Commission per order (€)</label>
+          <div class="field"><label data-tip="What your broker charges per order.">Commission per order (€)</label>
             <input type="number" id="commission_eur" min="0" step="0.5"></div>
-          <div class="field"><label>Spread + slippage (bps)</label>
+          <div class="field"><label data-tip="Hidden cost of the gap between buy and sell price, in basis points (5 bps = 0.05%).">Spread + slippage (bps)</label>
             <input type="number" id="spread_bps" min="0" step="1"></div>
-          <div class="field"><label>Max friction (% of target profit, 0 = off)</label>
+          <div class="field"><label data-tip="Reject a pick when commissions + spread would eat more than this % of the hoped-for profit. 0 switches the check off.">Max costs (% of target profit)</label>
             <input type="number" id="max_friction_pct" min="0" max="100" step="5"></div>
         </div>
       </div>
 
-      <div class="hint">Tip: the universe and price data are cached for an hour —
-        the first scan takes a few minutes, but re-running with tweaked filters is fast.</div>
+      <div class="hint">Tip: prices are cached for an hour — the first scan takes a few minutes,
+        re-running with tweaked filters takes seconds.</div>
     </details>
   </section>
 
-  <div class="bar">
-    <button id="runBtn" onclick="runScan()">Run screener</button>
-    <button class="ghost" onclick="resetFilters()">Reset filters</button>
-    <span id="statusPill" class="pill">idle</span>
-    <span id="timing" class="pill" style="display:none"></span>
-    <a class="dl" id="csvLink" href="/results.csv" style="display:none">Download CSV</a>
-  </div>
-
   <section id="topSection" style="display:none">
     <h2>🏆 Top picks today</h2>
+    <div class="secsub">The highest-scoring setups. Hover the grey labels for what each number means.</div>
     <div class="cards" id="topCards"></div>
   </section>
 
   <section>
     <h2>All results <span id="resultCount"></span></h2>
+    <div class="secsub">Every stock that passed all filters, best score first.
+      Hover a column header for what it means.</div>
     <div id="portSummary" class="hint" style="display:none;margin:0 0 .6rem"></div>
-    <div class="tablewrap"><div id="results" class="empty">No scan run yet — press <b>Run screener</b>.
-      The first scan takes a few minutes (universe build + 1y price download + fundamentals).</div></div>
-  </section>
-
-  <section>
-    <h2>Progress log</h2>
-    <pre id="log">—</pre>
+    <div class="tablewrap"><div id="results" class="empty">No scan yet — press
+      <b>▶ Run scan</b> above. The first scan takes a few minutes; you can watch it work
+      in the progress log below.</div></div>
   </section>
 
   <section id="rejSection" style="display:none">
-    <h2>Rejection summary</h2>
+    <h2>Why stocks were filtered out</h2>
+    <div class="secsub" id="rejIntro"></div>
     <div class="tablewrap"><div id="rejections"></div></div>
     <div id="nearMisses"></div>
+  </section>
+
+  <section>
+    <details id="logBox">
+      <summary>Progress log <span class="plain">— what the scan is doing right now</span></summary>
+      <pre id="log">—</pre>
+    </details>
   </section>
 </main>
 
 <script>
-const COLS = ["ticker","status","sector","price","support","stop","resistance","RR","RSI",
-              "rs_3m","vol_ratio","stop_atr","score","shares","risk_EUR","cum_risk_EUR",
-              "fits_risk_budget","sector_after","friction_pct","days_to_earnings","flags"];
+// column key -> [friendly header, tooltip, formatter]
+const fmtNum = v => v;
+const COLDEFS = [
+  ["ticker",   "Stock",        "Ticker symbol — hover to see the company name.", fmtNum],
+  ["status",   "Own it?",      "NEW = not in your portfolio. ADD (+x%) = you already hold it and are up/down x% on it.", fmtNum],
+  ["sector",   "Sector",       "Industry the company is in.", fmtNum],
+  ["price",    "Price",        "Latest price — roughly where you'd buy.", fmtNum],
+  ["stop",     "Stop-loss",    "Place a sell-stop here. If the price falls this far the idea failed; this caps your loss.", fmtNum],
+  ["resistance","Target",      "The recent high the price could realistically climb back to — where you'd take profit.", fmtNum],
+  ["RR",       "Reward:Risk",  "Possible gain vs possible loss. 3 = you stand to win €3 per €1 risked.", fmtNum],
+  ["score",    "Score",        "Overall quality 0–100: 70+ strong, 50–69 okay, below 50 weak.", fmtNum],
+  ["shares",   "Buy (shares)", "Suggested share count, sized so hitting the stop-loss costs at most your max € loss per trade.", fmtNum],
+  ["risk_EUR", "€ at risk",    "What you lose if the stop-loss is hit — your worst case for this trade.", v => "€" + v],
+  ["RSI",      "RSI",          "Momentum 0–100. Inside your dip zone (default 35–55) = mild pullback, not a collapse.", fmtNum],
+  ["rs_3m",    "vs market 3m", "How much this stock beat (+) or lagged (−) its market index over 3 months. Positive = a leader.", v => (v > 0 ? "+" : "") + v + "%"],
+  ["vol_ratio","Dip volume",   "Selling volume during the dip vs before it. Below 1× = calm, healthy dip. Above 1× = heavy selling, be careful.", v => v + "×"],
+  ["stop_atr", "Stop room",    "Stop distance measured in average daily wiggles (ATR). Under ~1 the stop could be hit by pure noise.", v => v + " ATR"],
+  ["support",  "Support",      "The price floor where buyers stepped in before — the stop-loss sits just below it.", fmtNum],
+  ["days_to_earnings","Earnings in","Days until the next earnings report. Reports can gap the price straight past a stop-loss.", v => v + "d"],
+  ["friction_pct","Costs",     "Commission + spread as % of the hoped-for profit on this trade.", v => v + "%"],
+  ["cum_risk_EUR","Σ risk",    "Running total of € at risk if you took this pick and every pick above it.", v => "€" + v],
+  ["fits_risk_budget","In budget?","✓ while the running total of risk still fits inside your portfolio's max total risk.", fmtNum],
+  ["sector_after","Sector after","What % of your portfolio this sector would be after buying — warned if above your cap.", v => v + "%"],
+  ["flags",    "Notes",        "Warnings and data caveats for this pick, in plain words.", fmtNum],
+];
+
+// machine flags -> plain words (shown in Notes and on the cards)
+const FLAG_TEXT = {
+  eps_fallback: "profit check used last year's earnings (no forward estimate available)",
+  earnings_unverified: "next earnings date could not be verified",
+  earnings_from_finnhub: "earnings date from backup source",
+  earnings_sources_disagree: "earnings sources disagree — using the earlier date to be safe",
+  fundamentals_unavailable: "Yahoo was rate-limiting — company fundamentals not verified this run",
+  no_cash: "no free cash in your portfolio to fund this",
+  cash_capped: "position size reduced to fit your available cash",
+  sector_cap: "would push this sector above your portfolio cap",
+};
+function flagText(flags) {
+  return String(flags || "").split(",").filter(Boolean)
+    .map(f => FLAG_TEXT[f] || f).join("; ");
+}
+
+// rejection reason prefixes -> plain words (for the summary table)
+const REASONS = [
+  ["no data",                 "No price data available from Yahoo"],
+  ["insufficient history",    "Less than a year of price history"],
+  ["market regime",           "Its overall market is falling — dip-buys skipped"],
+  ["liquidity",               "Trades too little money per day"],
+  ["not in uptrend",          "Not in an uptrend (below its 200-day average)"],
+  ["RSI",                     "No real dip — momentum outside your dip zone"],
+  ["no valid pivot support",  "No clear support level below the price"],
+  ["price at/above swing high","Already back at its recent high — nothing left to target"],
+  ["R:R",                     "Possible gain too small vs possible loss"],
+  ["stop inside noise",       "Stop-loss would sit inside the normal daily wiggle"],
+  ["excluded sector",         "Financial sector (always excluded)"],
+  ["sector not selected",     "Sector not ticked in your filters"],
+  ["mkt cap",                 "Company smaller than your minimum size"],
+  ["unprofitable",            "Losing money, or no profit data"],
+  ["earnings in",             "Earnings report too close"],
+  ["friction",                "Trading costs would eat too much of the profit"],
+  ["data error",              "Data error while processing"],
+];
+function reasonText(reason) {
+  const r = String(reason);
+  for (const [prefix, text] of REASONS) if (r.startsWith(prefix)) return text;
+  return r;
+}
+
 const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","universe_max","rsi_low","rsi_high","min_rr",
                     "swing_lookback","pivot_k","stop_buffer_pct","min_stop_atr",
                     "earnings_drop_days","ticket_eur","max_risk_eur",
@@ -345,7 +517,10 @@ async function runScan() {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(collectParams()),
   });
-  if (r.ok) document.getElementById("filterBox").open = false;
+  if (r.ok) {
+    document.getElementById("filterBox").open = false;
+    document.getElementById("logBox").open = true;
+  }
   if (r.ok || r.status === 409) startPolling();
 }
 
@@ -357,6 +532,8 @@ function startPolling() {
 function medal(i) { return ["🥇","🥈","🥉"][i] || "🏅"; }
 function scoreColor(s) { return s >= 70 ? "var(--green)" : s >= 50 ? "var(--amber)" : "var(--red)"; }
 
+const STATUS_TEXT = {idle: "ready", running: "scanning…", done: "done", error: "failed"};
+
 function renderTopPicks(picks) {
   const sec = document.getElementById("topSection");
   if (!picks || !picks.length) { sec.style.display = "none"; return; }
@@ -364,21 +541,22 @@ function renderTopPicks(picks) {
   document.getElementById("topCards").innerHTML = picks.map((p, i) => `
     <div class="card">
       <div class="rank">${medal(i)}</div>
-      <div class="tk">${esc(p.ticker)} <span style="color:${scoreColor(p.score)}">${esc(p.score ?? "")}</span>
-        ${p.status && p.status !== "NEW" ? `<span class="pill" style="margin-left:.4rem;font-size:.7rem">${esc(p.status)}</span>` : ""}</div>
+      <div class="tk">${esc(p.ticker)} <span style="color:${scoreColor(p.score)}" data-tip="Quality score 0–100: 70+ strong, 50–69 okay, below 50 weak.">${esc(p.score ?? "")}</span>
+        ${p.status && p.status !== "NEW" ? `<span class="pill" style="margin-left:.4rem;font-size:.7rem" data-tip="You already hold this stock (and the % you're up or down on it).">${esc(p.status)}</span>` : ""}</div>
       <div class="nm">${esc(p.name ?? "")} · ${esc(p.sector ?? "")}</div>
       <div class="scorebar"><div style="width:${Math.min(p.score ?? 0, 100)}%;background:${scoreColor(p.score)}"></div></div>
       <div class="nums">
-        <div><span>entry</span> ${esc(p.price)}</div>
-        <div><span>target</span> ${esc(p.resistance)}</div>
-        <div><span>stop</span> ${esc(p.stop)}</div>
-        <div><span>R:R</span> ${esc(p.RR)}</div>
-        <div><span>RS 3m</span> ${p.rs_3m == null ? "—" : esc(p.rs_3m) + "%"}</div>
-        <div><span>stop dist</span> ${p.stop_atr == null ? "—" : esc(p.stop_atr) + " ATR"}</div>
-        <div><span>shares</span> ${esc(p.shares)}</div>
-        <div><span>risk</span> €${esc(p.risk_EUR)}</div>
+        <div><span data-tip="Latest price — roughly where you'd buy.">buy ≈</span> ${esc(p.price)}</div>
+        <div><span data-tip="The recent high the price could climb back to — where you'd take profit.">target</span> ${esc(p.resistance)}</div>
+        <div><span data-tip="Place a sell-stop order here. It caps your worst case at the € risk shown.">stop-loss</span> ${esc(p.stop)}</div>
+        <div><span data-tip="Possible gain vs possible loss. 3 = win €3 per €1 risked.">reward:risk</span> ${esc(p.RR)}</div>
+        <div><span data-tip="How much it beat (+) or lagged (−) its market over 3 months.">vs market</span> ${p.rs_3m == null ? "—" : esc((p.rs_3m > 0 ? "+" : "") + p.rs_3m) + "%"}</div>
+        <div><span data-tip="Stop distance in average daily wiggles. Under ~1 = noise could hit it.">stop room</span> ${p.stop_atr == null ? "—" : esc(p.stop_atr) + " ATR"}</div>
+        <div><span data-tip="Suggested amount so a stopped-out trade costs at most your max € loss per trade.">shares</span> ${esc(p.shares)}</div>
+        <div><span data-tip="What you lose if the stop-loss is hit — your worst case.">worst case</span> €${esc(p.risk_EUR)}</div>
       </div>
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
+      ${p.flags ? `<div class="warn">⚠ ${esc(flagText(p.flags))}</div>` : ""}
     </div>`).join("");
 }
 
@@ -386,7 +564,7 @@ async function refresh() {
   const s = await (await fetch("/status")).json();
 
   const pill = document.getElementById("statusPill");
-  pill.textContent = s.status;
+  pill.textContent = STATUS_TEXT[s.status] || s.status;
   pill.className = "pill " + s.status;
   document.getElementById("runBtn").disabled = (s.status === "running");
 
@@ -394,11 +572,25 @@ async function refresh() {
   log.textContent = (s.log && s.log.length) ? s.log.join("\n") : "—";
   log.scrollTop = log.scrollHeight;
 
+  // a failed scan shows a clear banner up top, not just a line in the log
+  const errBox = document.getElementById("errorBox");
+  if (s.status === "error" && s.error) {
+    errBox.style.display = "block";
+    document.getElementById("errorText").textContent = s.error;
+    const rateLimited = /rate.?limit|too many requests|429/i.test(s.error);
+    document.getElementById("errorHint").textContent = rateLimited
+      ? "Yahoo Finance is temporarily blocking requests (free data source, it happens). " +
+        "Wait a few minutes and press Run scan again — cached data is reused where possible."
+      : "Check the progress log below for details, then try running again.";
+  } else {
+    errBox.style.display = "none";
+  }
+
   const timing = document.getElementById("timing");
   if (s.elapsed_s != null) {
     timing.style.display = "";
-    timing.textContent = `scan: ${s.elapsed_s}s` +
-      (s.universe_size ? ` · universe: ${s.universe_size}` : "");
+    timing.textContent = `took ${s.elapsed_s}s` +
+      (s.universe_size ? ` · ${s.universe_size} stocks scanned` : "");
   }
 
   renderTopPicks(s.top_picks);
@@ -408,49 +600,78 @@ async function refresh() {
     ps.style.display = "";
     const w = Object.entries(s.portfolio.sector_weights || {})
       .sort((a, b) => b[1] - a[1]).map(([k, v]) => `${esc(k)} ${esc(v)}%`).join(" · ");
-    ps.innerHTML = `📊 Book €${esc(s.portfolio.book_eur)} · cash €${esc(s.portfolio.cash_eur)}` +
-      ` · ${esc(s.portfolio.n_positions)} positions · remaining risk budget ` +
+    ps.innerHTML = `📊 Your portfolio: €${esc(s.portfolio.book_eur)} total · €${esc(s.portfolio.cash_eur)} cash` +
+      ` · ${esc(s.portfolio.n_positions)} positions · room for ` +
       (s.portfolio.risk_budget_eur == null ? "n/a" : `€${esc(s.portfolio.risk_budget_eur)}`) +
-      (w ? `<br>Sector weights: ${w}` : "");
+      ` more risk` + (w ? `<br>Sector split: ${w}` : "");
   } else { ps.style.display = "none"; }
 
   const res = document.getElementById("results");
   const count = document.getElementById("resultCount");
   const csv = document.getElementById("csvLink");
   if (s.results && s.results.length) {
+    // only show columns that have data in at least one row
+    const cols = COLDEFS.filter(([k]) => s.results.some(r => r[k] != null && r[k] !== ""));
     count.textContent = `(${s.results.length})`;
     csv.style.display = "";
     res.classList.remove("empty");
     res.innerHTML = "<table><thead><tr>" +
-      COLS.map(c => `<th>${esc(c)}</th>`).join("") +
+      cols.map(([k, label, tip]) => `<th data-tip="${esc(tip)}">${esc(label)}</th>`).join("") +
       "</tr></thead><tbody>" +
-      s.results.map(row => "<tr>" + COLS.map(c => {
-        let v = (row[c] == null || row[c] === "") ? "—" : row[c];
-        if (c === "fits_risk_budget" && row[c] != null) v = row[c] ? "✓" : "✗";
-        let cls = c === "RR" ? "rr" : c === "score" ? "score" : "";
-        let style = c === "score" ? ` style="color:${scoreColor(row.score)}"` :
-                    c === "fits_risk_budget" && row[c] === false ? ` style="color:var(--red)"` : "";
-        return `<td class="${cls}"${style}>${esc(v)}</td>`;
+      s.results.map(row => "<tr>" + cols.map(([k, label, tip, fmt]) => {
+        let v = (row[k] == null || row[k] === "") ? "—" : fmt(row[k]);
+        if (k === "fits_risk_budget" && row[k] != null) v = row[k] ? "✓" : "✗";
+        let cls = k === "RR" ? "rr" : k === "score" ? "score" : k === "flags" ? "notes" : "";
+        let style = k === "score" ? ` style="color:${scoreColor(row.score)}"` :
+                    k === "fits_risk_budget" && row[k] === false ? ` style="color:var(--red)"` : "";
+        let tipAttr = k === "ticker" && row.name ? ` data-tip="${esc(row.name)}"` : "";
+        if (k === "flags") {
+          // keep rows compact: a ⚠ count in the cell, the full plain-language
+          // explanation on hover (cards above show it in full)
+          const t = flagText(row[k]);
+          const n = t ? t.split("; ").length : 0;
+          v = n ? `⚠ ${n}` : "—";
+          if (t) tipAttr = ` data-tip="${esc(t)}"`;
+        }
+        return `<td class="${cls}"${style}${tipAttr}>${esc(v)}</td>`;
       }).join("") + "</tr>").join("") +
       "</tbody></table>";
   } else if (s.status === "done") {
     count.textContent = "";
     res.className = "empty";
-    res.textContent = "No setups matched — try widening the RSI band, lowering min R:R, or lowering min market cap.";
+    res.textContent = "No stocks matched all your filters today. That's normal in some markets — " +
+      "try widening the dip zone (RSI), lowering min reward:risk, or lowering the min company size.";
+  } else if (s.status === "error") {
+    count.textContent = "";
+    res.className = "empty";
+    res.textContent = "The scan didn't finish — see the message above.";
   }
 
   const rejSection = document.getElementById("rejSection");
   if (s.rejection_summary && s.rejection_summary.length) {
     rejSection.style.display = "";
+    // re-aggregate under plain-language labels
+    const agg = new Map();
+    let total = 0;
+    s.rejection_summary.forEach(r => {
+      const t = reasonText(r.reason);
+      agg.set(t, (agg.get(t) || 0) + r.count);
+      total += r.count;
+    });
+    document.getElementById("rejIntro").textContent =
+      `${total} stocks were checked and filtered out. This is the funnel doing its job — ` +
+      `here is what disqualified them:`;
     document.getElementById("rejections").innerHTML =
-      "<table><thead><tr><th>reason</th><th>count</th></tr></thead><tbody>" +
-      s.rejection_summary.map(r =>
-        `<tr><td>${esc(r.reason)}</td><td>${esc(r.count)}</td></tr>`).join("") +
+      "<table><thead><tr><th>Reason</th><th># stocks</th></tr></thead><tbody>" +
+      [...agg.entries()].sort((a, b) => b[1] - a[1]).map(([t, n]) =>
+        `<tr><td style="text-align:left">${esc(t)}</td><td>${esc(n)}</td></tr>`).join("") +
       "</tbody></table>";
     if (s.near_misses && s.near_misses.length) {
       document.getElementById("nearMisses").innerHTML =
-        "<h2 style='margin-top:1rem'>Near-misses (had a setup, failed a gate)</h2>" +
-        "<table><thead><tr><th>ticker</th><th>why</th></tr></thead><tbody>" +
+        "<h2 style='margin-top:1rem'>Close calls</h2>" +
+        "<div class='secsub'>These had a real dip-setup but failed one final check — " +
+        "worth a look if you disagree with the gate.</div>" +
+        "<table><thead><tr><th>Stock</th><th>What stopped it</th></tr></thead><tbody>" +
         s.near_misses.map(m =>
           `<tr><td>${esc(m.ticker)}</td><td style="text-align:left">${esc(m.reason)}</td></tr>`).join("") +
         "</tbody></table>";
@@ -462,6 +683,14 @@ async function refresh() {
     clearInterval(poller); poller = null;
   }
 }
+
+// open the explainer automatically on a first visit
+try {
+  if (!localStorage.getItem("screener_seen_help")) {
+    document.getElementById("helpBox").open = true;
+    localStorage.setItem("screener_seen_help", "1");
+  }
+} catch (e) {}
 
 loadDefaults();
 refresh();
