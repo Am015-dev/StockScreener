@@ -1,4 +1,7 @@
-yfinance>=0.2.54
+# 1.x is required in practice: older clients lack the cookie/crumb handshake
+# and browser-impersonation (curl_cffi) that keep Yahoo from 429-blocking
+# requests coming from cloud/datacenter IPs like Render's.
+yfinance>=1.5
 requests>=2.31
 pandas>=2.0
 numpy>=1.26

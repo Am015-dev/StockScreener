@@ -375,6 +375,8 @@ def _get_ohlc(universe: list[str], progress=print):
     parts, failed = [], 0
     for ci in range(n_chunks):
         chunk = universe[ci * DOWNLOAD_CHUNK:(ci + 1) * DOWNLOAD_CHUNK]
+        if ci and not _rate_limited_now():
+            time.sleep(2)  # don't fire chunk bursts back-to-back at Yahoo
         try:
             ok, d = _yahoo_call(lambda chunk=chunk: yf.download(
                 chunk, period="1y", auto_adjust=True,
@@ -404,7 +406,9 @@ def _get_ohlc(universe: list[str], progress=print):
             return stale
         raise RuntimeError(
             "every price download failed — Yahoo Finance is likely rate-limiting "
-            "or blocking this server right now; wait a few minutes and rerun")
+            "or blocking this server right now; wait a few minutes and rerun "
+            "(on a fresh server, a smaller 'Max stocks to scan' also helps: "
+            "fewer tickers = fewer requests)")
     data = pd.concat(parts, axis=1) if len(parts) > 1 else parts[0]
 
     got = set(data.columns.get_level_values(0))

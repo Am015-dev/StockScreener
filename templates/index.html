@@ -701,7 +701,9 @@ async function refresh() {
     const rateLimited = /rate.?limit|too many requests|429/i.test(s.error);
     document.getElementById("errorHint").textContent = rateLimited
       ? "Yahoo Finance is temporarily blocking requests (free data source, it happens). " +
-        "Wait a few minutes and press Run scan again — cached data is reused where possible."
+        "Wait 5–10 minutes and press Run scan again — cached data is reused where possible. " +
+        "If it keeps happening right after a deploy, open Filters and lower " +
+        "'Max stocks to scan' to ~200 for the first scan; fewer stocks = fewer requests."
       : "Check the progress log below for details, then try running again.";
   } else {
     errBox.style.display = "none";
