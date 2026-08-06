@@ -469,6 +469,8 @@ const COLDEFS = [
   ["resistance","Target",      "The recent high the price could realistically climb back to — where you'd take profit.", fmtNum],
   ["RR",       "Reward:Risk",  "Possible gain vs possible loss. 3 = you stand to win €3 per €1 risked.", fmtNum],
   ["score",    "Score",        "Overall quality 0–100: 70+ strong, 50–69 okay, below 50 weak.", fmtNum],
+  ["hist",     "Past win rate", "How often THIS stock's setup under YOUR current rules hit the target before the stop, in the 5-year simulation (shown as % of sample size; hidden under 5 samples). Run the Simulation below to compute/refresh it.", fmtNum],
+  ["hist_avg_r", "Past avg", "This stock's average simulated outcome per trade under your rules, in R (units of planned risk).", v => (v > 0 ? "+" : "") + v + "R"],
   ["analyst",  "Analysts",     "Wall Street analyst consensus — the same rating broker apps show (via Yahoo's aggregation of bank research). (n) = number of analysts covering it.", fmtNum],
   ["analyst_target_up_pct", "Analyst target", "How far the average analyst 12-month price target sits above (+) or below (−) today's price.", v => (v > 0 ? "+" : "") + v + "%"],
   ["shares",   "Buy (shares)", "Suggested share count, sized so hitting the stop-loss costs at most your max € loss per trade.", fmtNum],
@@ -676,6 +678,7 @@ function renderTopPicks(picks) {
         <div><span data-tip="Suggested amount so a stopped-out trade costs at most your max € loss per trade.">shares</span> ${esc(p.shares)}</div>
         <div><span data-tip="What you lose if the stop-loss is hit — your worst case.">worst case</span> €${esc(p.risk_EUR)}</div>
         <div><span data-tip="Wall Street analyst consensus — the same rating broker apps show. (n) = analysts covering it.">analysts</span> ${p.analyst ? esc(p.analyst) : "—"}</div>
+        <div><span data-tip="How often this stock's setup under your current rules hit target before stop in the 5-year simulation. Run the Simulation to compute it.">history</span> ${p.hist ? esc(p.hist) + " won" : "—"}</div>
         <div><span data-tip="Average analyst 12-month price target vs today's price.">their target</span> ${p.analyst_target_up_pct == null ? "—" : esc((p.analyst_target_up_pct > 0 ? "+" : "") + p.analyst_target_up_pct) + "%"}</div>
       </div>
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
@@ -1079,6 +1082,10 @@ async function refresh() {
         let cls = k === "RR" ? "rr" : k === "score" ? "score" : k === "flags" ? "notes" : "";
         let style = k === "score" ? ` style="color:${scoreColor(row.score)}"` :
                     k === "fits_risk_budget" && row[k] === false ? ` style="color:var(--red)"` : "";
+        if (k === "hist" && row[k]) {
+          const pct = parseFloat(row[k]);
+          style = ` style="color:${pct >= 50 ? "var(--green)" : pct >= 30 ? "var(--amber)" : "var(--red)"}"`;
+        }
         if (k === "analyst" && row[k]) {
           const c = /^Strong Buy/.test(row[k]) ? "var(--green)" :
                     /^Buy/.test(row[k]) ? "var(--green)" :

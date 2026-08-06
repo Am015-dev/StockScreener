@@ -24,6 +24,7 @@ import pandas as pd
 import yfinance as yf
 
 import cache_store
+import db
 import screener
 
 EXPIRE_BARS = 40      # same as the live journal
@@ -91,6 +92,7 @@ def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
             if frame is None:
                 progress(f"  batch {ci + 1}/{n_chunks}: no data — skipped")
                 continue
+            db.record_bars(frame, chunk, ccy_of=screener._ccy)
             done = _simulate_block(p, frame, chunk, trades)
             scanned += done
             progress(f"  batch {ci + 1}/{n_chunks}: {done} stocks simulated — "
@@ -103,6 +105,10 @@ def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
                                "in a few minutes")
     else:
         scanned = _simulate_block(p, data, universe, trades)
+    n = db.record_backtest(p, trades, ccy_of=screener._ccy)
+    if n:
+        progress(f"Persisted {n} simulated trades — per-stock win rates for these "
+                 f"rules now appear on matching picks.")
     return _aggregate(trades, scanned)
 
 
@@ -161,12 +167,16 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list) -> int:
             if a and p["min_stop_atr"] and risk_ps / a < p["min_stop_atr"]:
                 continue
 
-            # replay forward — identical conventions to the live journal
+            # replay forward — identical conventions to the live journal.
+            # MFE/MAE (max favorable/adverse excursion, in R) ride along:
+            # they later power "average bounce" stats without re-running.
             out_r = exit_i = None
             status = None
+            hmax, lmin = price, price
             last_j = ti + EXPIRE_BARS
             for j in range(ti + 1, last_j + 1):
                 o, h, l = float(o_v[j]), float(h_v[j]), float(l_v[j])
+                hmax, lmin = max(hmax, h), min(lmin, l)
                 if o <= stop:
                     out_r, status, exit_i = (o - price) / risk_ps, "stop", j
                     break
@@ -189,7 +199,12 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list) -> int:
                            "exit_date": str(hist.index[exit_i])[:10],
                            "rr_planned": round(rr, 2),
                            "outcome_r": round(float(out_r), 2),
-                           "status": status})
+                           "status": status,
+                           "entry": round(price, 4), "stop_px": round(stop, 4),
+                           "target_px": round(resistance, 4),
+                           "bars_held": exit_i - ti,
+                           "mfe_r": round((hmax - price) / risk_ps, 2),
+                           "mae_r": round((lmin - price) / risk_ps, 2)})
     return scanned
 
 

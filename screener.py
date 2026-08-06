@@ -41,6 +41,7 @@ except Exception:  # older/newer yfinance layouts — fall back to message sniff
         pass
 
 import cache_store
+import db as market_db
 import universe_static
 
 # ----------------------- PARAMETERS -----------------------
@@ -1603,6 +1604,19 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                         "risk_budget_eur": port["risk_budget_eur"],
                         "n_positions": len(port["positions"]),
                         "sector_weights": port["sector_weights"]}
+    # per-stock historical edge for the CURRENT rules (from the last
+    # simulation with this exact technical config; indexed read, no compute)
+    try:
+        edge = market_db.edge_for(p)
+    except Exception:
+        edge = {}
+    if edge:
+        for row in rows + near_rows:
+            e = edge.get(row["ticker"])
+            if e:
+                row["hist"] = f"{e['win_rate']:.0f}% of {e['n']}"
+                row["hist_avg_r"] = e["avg_r"]
+
     blocked_unverified = sum(1 for _row, m in near
                              if any(g == "unverified" for g, _r in m))
     return {"df": df, "rejections": rejections, "universe_size": len(universe),
