@@ -853,6 +853,29 @@ function drawCurve(pts) {
   };
 }
 
+// ---- edge mirror: simulation win-rates survive server disk wipes ----
+let edgeSynced = false;
+async function syncEdgeBackup(btStatus) {
+  try {
+    if (btStatus === "done") edgeSynced = false;   // fresh sim -> re-export
+    if (edgeSynced) return;
+    const d = await (await fetch("/edge/export")).json();
+    if (d.edge && d.edge.length) {
+      localStorage.setItem("edge_stats_v1", JSON.stringify(d));
+      edgeSynced = true;
+    } else {
+      const b = localStorage.getItem("edge_stats_v1");
+      if (b) {
+        const r = await (await fetch("/edge/restore", {method: "POST",
+          headers: {"Content-Type": "application/json"}, body: b})).json();
+        if (r.restored) { edgeSynced = true; refresh(); }
+      } else {
+        edgeSynced = true;   // nothing anywhere; stop asking until a sim runs
+      }
+    }
+  } catch (e) {}
+}
+
 // ---- Yahoo auth mirror: keep the crumb in this browser across redeploys ----
 let authSynced = false;
 async function syncAuthBackup() {
@@ -1052,6 +1075,7 @@ async function refresh() {
   renderJournal(s.journal);
   syncJournalBackup(s.journal);
   syncAuthBackup();
+  syncEdgeBackup(s.bt_status);
 
   const ps = document.getElementById("portSummary");
   if (s.portfolio) {

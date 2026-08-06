@@ -20,6 +20,7 @@ import yfinance as yf
 from flask import Flask, Response, jsonify, render_template, request
 
 import backtest as backtest_mod
+import db as market_db
 import cache_store
 import journal
 import portfolio_import
@@ -272,6 +273,31 @@ def run_backtest_route():
 
 # ---- Yahoo auth mirror: the crumb lives on ephemeral disk, so the browser
 # ---- keeps a copy (like the journal) and hands it back after a redeploy
+@app.route("/edge/export")
+def edge_export():
+    """Simulation aggregates — mirrored by the browser so per-stock win
+    rates survive the free tier's disk wipes (same pattern as the journal)."""
+    return jsonify({"edge": market_db.export_edge()})
+
+
+@app.route("/edge/restore", methods=["POST"])
+def edge_restore():
+    body = request.get_json(silent=True) or {}
+    added = market_db.restore_edge(body.get("edge") or [])
+    # retro-annotate whatever is currently on screen
+    if added and _state.get("results") and _state.get("params_used"):
+        try:
+            edge = market_db.edge_for(_state["params_used"])
+            for row in _state["results"] + (_state.get("near_board") or []):
+                e = edge.get(row.get("ticker"))
+                if e:
+                    row["hist"] = f"{e['win_rate']:.0f}% of {e['n']}"
+                    row["hist_avg_r"] = e["avg_r"]
+        except Exception:
+            pass
+    return jsonify({"ok": True, "restored": added})
+
+
 @app.route("/auth/export")
 def auth_export():
     hit, stored = cache_store.fetch("yahoo_auth", screener.YAHOO_AUTH_TTL)

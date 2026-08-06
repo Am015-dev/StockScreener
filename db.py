@@ -211,3 +211,50 @@ def edge_for(params: dict) -> dict:
     except Exception:
         pass
     return out
+
+
+def export_edge() -> list[dict]:
+    """All edge aggregates + their config hashes — a few KB, browser-mirrorable."""
+    out = []
+    try:
+        with _conn() as c:
+            for ph, sym, n, wins, wr, avg_r, tot in c.execute("""
+                SELECT sc.param_hash, i.symbol, e.n, e.wins, e.win_rate,
+                       e.avg_r, e.total_r
+                FROM edge_stats e
+                JOIN strategy_configs sc USING (config_id)
+                LEFT JOIN instruments i USING (instrument_id)"""):
+                out.append({"h": ph, "s": sym, "n": n, "w": wins,
+                            "wr": wr, "ar": avg_r, "tr": tot})
+    except Exception:
+        pass
+    return out
+
+
+def restore_edge(rows: list[dict]) -> int:
+    """Re-seed edge_stats from a browser backup after a disk wipe. Aggregates
+    only — the underlying signals rebuild on the next simulation run."""
+    added = 0
+    if not isinstance(rows, list):
+        return 0
+    try:
+        with _conn() as c:
+            for r in rows[:20000]:
+                try:
+                    c.execute("INSERT OR IGNORE INTO strategy_configs "
+                              "(param_hash, params_json) VALUES (?, '{}')",
+                              (str(r["h"]),))
+                    cid = c.execute("SELECT config_id FROM strategy_configs "
+                                    "WHERE param_hash=?", (str(r["h"]),)).fetchone()[0]
+                    iid = _iid(c, str(r["s"])) if r.get("s") else None
+                    c.execute("INSERT OR REPLACE INTO edge_stats "
+                              "(config_id, instrument_id, n, wins, win_rate, "
+                              "avg_r, total_r) VALUES (?,?,?,?,?,?,?)",
+                              (cid, iid, int(r["n"]), int(r["w"]),
+                               float(r["wr"]), float(r["ar"]), float(r["tr"])))
+                    added += 1
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return added
