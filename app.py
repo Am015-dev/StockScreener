@@ -43,6 +43,8 @@ _state = {
     "params_used": None,
     "portfolio": None,         # book/cash/risk-budget summary when holdings given
     "journal": None,           # track-record scoreboard (see journal.py)
+    "near_board": [],          # closest non-qualifying setups, with reasons
+    "relax_hints": {},         # which filter change would surface more results
     "error": None,
 }
 
@@ -138,6 +140,8 @@ def _run_scan(params):
         _state["elapsed_s"] = round(result["elapsed_s"])
         _state["params_used"] = result["params"]
         _state["portfolio"] = result.get("portfolio")
+        _state["near_board"] = result.get("near") or []
+        _state["relax_hints"] = result.get("relax_hints") or {}
         if len(df):
             df.to_csv(RESULTS_CSV, index=False)
 
@@ -180,7 +184,8 @@ def run():
             return jsonify({"ok": False, "message": "A scan is already running."}), 409
         _state.update(status="running", log=[], error=None,
                       started_at=time.time(), finished_at=None,
-                      rejection_summary=[], near_misses=[], params_used=params)
+                      rejection_summary=[], near_misses=[], params_used=params,
+                      near_board=[], relax_hints={})
         threading.Thread(target=_run_scan, args=(params,), daemon=True).start()
     return jsonify({"ok": True, "params": params})
 

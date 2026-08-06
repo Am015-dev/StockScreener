@@ -87,7 +87,11 @@ DEFAULTS = {
     "commission_eur": 1.0,       # per order
     "spread_bps": 5.0,           # half-spread + slippage estimate
     "max_friction_pct": 20.0,    # reject if costs eat > this % of target profit (0 = off)
+    # output
+    "show_near": True,           # also rank the closest non-qualifying setups
 }
+NEAR_MAX = 10          # near-miss board size
+NEAR_MISS_PENALTY = 8  # score points per failed gate on the near-miss board
 EURUSD = 1.08                    # rough conversion for sizing math
 
 BENCHMARKS = {"US": "SPY", "EU": "^STOXX50E"}  # regime + relative-strength references
@@ -218,6 +222,7 @@ def clean_params(overrides: dict | None) -> dict:
     p["commission_eur"] = _num(o.get("commission_eur"), p["commission_eur"], 0, 1000)
     p["spread_bps"] = _num(o.get("spread_bps"), p["spread_bps"], 0, 500)
     p["max_friction_pct"] = _num(o.get("max_friction_pct"), p["max_friction_pct"], 0, 100)
+    p["show_near"] = bool(o.get("show_near", p["show_near"]))
 
     holdings = o.get("holdings", p["holdings"])
     clean_h = []
@@ -760,6 +765,7 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
     progress(f"Universe: {len(universe)} tickers  [{time.time()-t0:.0f}s]")
 
     rows = []
+    near: list[tuple[dict, list]] = []   # (row, [(gate_key, reason), ...])
     rejections: dict[str, str] = {}
 
     def reject(t, reason):
@@ -800,22 +806,10 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             avg_vol = float(hist["Volume"].tail(30).mean())
             region = _region(ticker)
 
-            # ---- Stage 1: cheap technical gates (no API calls) ----
-            if p["require_market_uptrend"] and regime.get(region) is False:
-                reject(ticker, f"market regime ({BENCHMARKS[region]} below SMA200)")
-                continue
-            dollar_vol = avg_vol * price
-            if dollar_vol < p["min_dollar_vol_m"] * 1e6:
-                reject(ticker, f"liquidity (${dollar_vol/1e6:.0f}M/day)")
-                continue
+            # ---- hard gates: without these there is no trade plan at all ----
             if price <= sma200:
                 reject(ticker, "not in uptrend")
                 continue
-            r = rsi(hist["Close"])
-            if not (p["rsi_low"] <= r <= p["rsi_high"]):
-                reject(ticker, f"RSI {r:.0f} outside {p['rsi_low']:.0f}-{p['rsi_high']:.0f}")
-                continue
-
             support = last_pivot_low(hist["Low"].tail(120), p["pivot_k"])
             if support is None or support >= price:
                 reject(ticker, "no valid pivot support below price")
@@ -828,19 +822,58 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             risk_ps = price - stop
             reward_ps = resistance - price
             rr = reward_ps / risk_ps if risk_ps > 0 else float("nan")
-            if not np.isfinite(rr) or rr < p["min_rr"]:
-                reject(ticker, f"R:R {rr:.1f} < {p['min_rr']:.1f}")
+            if not np.isfinite(rr):
+                reject(ticker, "degenerate risk math")
                 continue
 
-            # ---- setup-quality validators (still free: same OHLC data) ----
+            # ---- Stage 1 soft gates: a failure here still leaves a complete
+            # ---- trade plan, so collect misses instead of discarding — the
+            # ---- best of them go on the "closest to qualifying" board.
+            misses: list[tuple[str, str]] = []
+            r = rsi(hist["Close"])
+            dollar_vol = avg_vol * price
             a = atr(hist)
             stop_atr = round(risk_ps / a, 2) if a else None
+            if p["require_market_uptrend"] and regime.get(region) is False:
+                misses.append(("regime", f"market regime ({BENCHMARKS[region]} below SMA200)"))
+            if dollar_vol < p["min_dollar_vol_m"] * 1e6:
+                misses.append(("liquidity", f"liquidity (${dollar_vol/1e6:.0f}M/day)"))
+            if not (p["rsi_low"] <= r <= p["rsi_high"]):
+                misses.append(("rsi", f"RSI {r:.0f} outside {p['rsi_low']:.0f}-{p['rsi_high']:.0f}"))
+            if rr < p["min_rr"]:
+                misses.append(("min_rr", f"R:R {rr:.1f} < {p['min_rr']:.1f}"))
             if stop_atr is not None and stop_atr < p["min_stop_atr"]:
-                reject(ticker, f"stop inside noise ({stop_atr:.1f} ATR < {p['min_stop_atr']:.1f})")
-                continue
+                misses.append(("stop_atr", f"stop inside noise ({stop_atr:.1f} ATR < {p['min_stop_atr']:.1f})"))
+
             rs_3m = rel_strength(hist["Close"], bench.get(region))
             vol_ratio = pullback_volume_ratio(hist["Volume"])
             flags: list[str] = []
+
+            def near_row(extra_flags=(), sector=None, name=None):
+                """Slim row for the near-miss board (no expensive calls)."""
+                fx = EURUSD if region == "US" else 1.0
+                shares = round(min(p["max_risk_eur"] * fx / risk_ps,
+                                   p["ticket_eur"] * fx / price), 4)
+                row = {"ticker": ticker, "name": name or ticker, "sector": sector or "?",
+                       "price": round(price, 2), "support": round(support, 2),
+                       "stop": round(stop, 2), "resistance": round(resistance, 2),
+                       "RR": round(rr, 2), "RSI": round(r, 1),
+                       "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
+                       "shares": shares,
+                       "risk_EUR": round(_to_eur(shares * risk_ps, ticker), 2),
+                       "days_to_earnings": None,
+                       "dollar_vol_m": round(dollar_vol / 1e6, 1),
+                       "flags": ",".join(list(extra_flags))}
+                score, _ = score_row(row, p)
+                row["score"] = max(score - NEAR_MISS_PENALTY * len(misses), 0)
+                row["why_not"] = "; ".join(m[1] for m in misses)
+                return row
+
+            if misses:
+                reject(ticker, misses[0][1])   # keeps the rejection summary honest
+                if p["show_near"]:
+                    near.append((near_row(extra_flags=["gates_skipped"]), list(misses)))
+                continue
 
             # ---- Stage 2: expensive per-ticker calls, survivors only ----
             progress(f"    [stage 2] {ticker}: technical setup found, fetching fundamentals...")
@@ -861,8 +894,15 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             if sector and sector not in allowed_sectors:
                 reject(ticker, f"sector not selected ({sector})")
                 continue
+            def near_reject(gate, reason):
+                reject(ticker, reason)
+                if p["show_near"]:
+                    misses.append((gate, reason))
+                    near.append((near_row(extra_flags=flags, sector=sector,
+                                          name=info.get("shortName")), list(misses)))
+
             if info and mktcap < p["min_mkt_cap_b"] * 1e9:
-                reject(ticker, f"mkt cap {mktcap/1e9:.1f}B < min")
+                near_reject("mkt_cap", f"mkt cap {mktcap/1e9:.1f}B < min")
                 continue
             # profitability gate with a free fallback: Yahoo's forwardEps is
             # often missing for EU names — fall back to trailing EPS (flagged)
@@ -873,7 +913,7 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                 flags.append("eps_fallback")
             if (p["require_profitable"] and info
                     and (eps_used is None or eps_used <= 0)):
-                reject(ticker, f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
+                near_reject("profitable", f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
                 continue
 
             # ---- earnings proximity (Yahoo, cross-checked via free Finnhub) ----
@@ -889,7 +929,7 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             if days_to_earnings is None:
                 flags.append("earnings_unverified")
             if days_to_earnings is not None and days_to_earnings <= p["earnings_drop_days"]:
-                reject(ticker, f"earnings in {days_to_earnings}d")
+                near_reject("earnings", f"earnings in {days_to_earnings}d")
                 continue
 
             # ---- sizing off YOUR risk, not a fixed ticket ----
@@ -930,8 +970,8 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                             if target_profit_eur > 0 else None)
             if (p["max_friction_pct"] > 0 and friction_pct is not None
                     and friction_pct > p["max_friction_pct"]):
-                reject(ticker, f"friction (costs {friction_pct:.0f}% of target profit "
-                               f"> {p['max_friction_pct']:.0f}%)")
+                near_reject("friction", f"friction (costs {friction_pct:.0f}% of target "
+                                        f"profit > {p['max_friction_pct']:.0f}%)")
                 continue
 
             row = {
@@ -960,6 +1000,38 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                  f"cached/stale data where possible; affected results carry "
                  f"'fundamentals_unavailable' or 'earnings_unverified' flags. "
                  f"Rerun in a few minutes for fresh data.")
+    # ---- "closest to qualifying" board + one-click relaxation hints ----
+    near_rows: list[dict] = []
+    relax_hints: dict = {}
+    if near:
+        near.sort(key=lambda x: x[0]["score"], reverse=True)
+        near_rows = [row for row, _ in near[:NEAR_MAX]]
+        buckets: dict[str, list] = {}
+        for row, m in near:
+            if len(m) == 1:   # a single filter change would qualify these
+                buckets.setdefault(m[0][0], []).append(row)
+        if "min_rr" in buckets:
+            best = max(r["RR"] for r in buckets["min_rr"])
+            relax_hints["min_rr"] = {"n": len(buckets["min_rr"]),
+                                     "set_to": int(best * 10) / 10}
+        if "rsi" in buckets:
+            vals = [r["RSI"] for r in buckets["rsi"]]
+            relax_hints["rsi"] = {"n": len(buckets["rsi"]),
+                                  "lo": min(int(p["rsi_low"]), int(min(vals))),
+                                  "hi": max(int(p["rsi_high"]), int(max(vals)) + 1)}
+        if "stop_atr" in buckets:
+            best = max(r["stop_atr"] or 0 for r in buckets["stop_atr"])
+            relax_hints["stop_atr"] = {"n": len(buckets["stop_atr"]),
+                                       "set_to": int(best * 20) / 20}
+        if "liquidity" in buckets:
+            best = max(r.get("dollar_vol_m") or 0 for r in buckets["liquidity"])
+            relax_hints["liquidity"] = {"n": len(buckets["liquidity"]),
+                                        "set_to": max(int(best), 0)}
+        if "regime" in buckets:
+            relax_hints["regime"] = {"n": len(buckets["regime"])}
+        progress(f"Nearly qualified: {len(near)} setup(s) failed at least one gate — "
+                 f"showing the top {len(near_rows)} with reasons.")
+
     progress(f"Scan complete in {elapsed:.0f}s total.")
     df = pd.DataFrame(rows)
     if len(df):
@@ -980,7 +1052,8 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
                         "n_positions": len(port["positions"]),
                         "sector_weights": port["sector_weights"]}
     return {"df": df, "rejections": rejections, "universe_size": len(universe),
-            "elapsed_s": elapsed, "params": p, "portfolio": port_summary}
+            "elapsed_s": elapsed, "params": p, "portfolio": port_summary,
+            "near": near_rows, "relax_hints": relax_hints}
 
 
 def summarize_rejections(rejections: dict[str, str], progress=print):

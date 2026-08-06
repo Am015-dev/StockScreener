@@ -108,6 +108,13 @@
   .card .why { margin-top: .6rem; font-size: .8rem; color: var(--muted);
                border-top: 1px solid var(--border); padding-top: .5rem; }
   .card .warn { margin-top: .5rem; font-size: .78rem; color: var(--amber); }
+  /* --- relaxation hint chips --- */
+  .chips { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .75rem; }
+  .chip { background: transparent; border: 1px solid var(--accent); color: var(--accent);
+          border-radius: 999px; padding: .3rem .8rem; font-size: .82rem; cursor: pointer;
+          font-weight: 500; }
+  .chip:hover { background: rgba(79,143,247,.12); }
+  td.whynot { text-align: left; font-size: .8rem; color: var(--amber); max-width: 240px; }
   /* --- track record tiles --- */
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
            gap: .75rem; margin-bottom: 1rem; }
@@ -262,6 +269,7 @@
         <div class="checks">
           <label data-tip="Skip companies that are losing money (uses forward earnings estimates, falls back to last year's)."><input type="checkbox" id="require_profitable"> Only profitable companies</label>
           <label data-tip="When the overall market (S&amp;P 500 / Euro Stoxx 50) is below its 200-day average, most dip-buys fail — skip everything."><input type="checkbox" id="require_market_uptrend"> Only when the overall market is rising</label>
+          <label data-tip="Below the main results, also rank the best setups that failed one or more filters — with the exact reason, so you can judge for yourself."><input type="checkbox" id="show_near"> Show closest non-qualifying setups too</label>
         </div>
         <div class="fgrid">
           <div class="field"><label data-tip="Earnings reports can make a price gap far past your stop-loss overnight. Skip stocks reporting within this many days.">Skip if earnings within (days)</label>
@@ -338,9 +346,18 @@
     <div class="secsub">Every stock that passed all filters, best score first.
       Hover a column header for what it means.</div>
     <div id="portSummary" class="hint" style="display:none;margin:0 0 .6rem"></div>
+    <div id="relaxHints" class="chips" style="display:none"></div>
     <div class="tablewrap"><div id="results" class="empty">No scan yet — press
       <b>▶ Run scan</b> above. The first scan takes a few minutes; you can watch it work
       in the progress log below.</div></div>
+  </section>
+
+  <section id="nearSection" style="display:none">
+    <h2>🎯 Best of the rest</h2>
+    <div class="secsub">The strongest setups that failed one or more of your filters —
+      shown with the exact reason, so you can decide whether the gate or the stock is right.
+      These are <b>not</b> logged in the track record.</div>
+    <div class="tablewrap"><div id="nearBoard"></div></div>
   </section>
 
   <section id="journalSection" style="display:none">
@@ -410,6 +427,7 @@ const FLAG_TEXT = {
   earnings_from_finnhub: "earnings date from backup source",
   earnings_sources_disagree: "earnings sources disagree — using the earlier date to be safe",
   fundamentals_unavailable: "Yahoo was rate-limiting — company fundamentals not verified this run",
+  gates_skipped: "profitability/earnings checks skipped (setup didn't qualify)",
   no_cash: "no free cash in your portfolio to fund this",
   cash_capped: "position size reduced to fit your available cash",
   sector_cap: "would push this sector above your portfolio cap",
@@ -450,7 +468,8 @@ const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","universe_max","rsi_low",
                     "earnings_drop_days","ticket_eur","max_risk_eur",
                     "cash_eur","current_open_risk_eur","sector_cap_pct","max_open_risk_pct",
                     "commission_eur","spread_bps","max_friction_pct"];
-const BOOL_FIELDS = ["include_us","include_eu","require_profitable","require_market_uptrend"];
+const BOOL_FIELDS = ["include_us","include_eu","require_profitable","require_market_uptrend",
+                     "show_near"];
 const SAVED_FIELDS = ["holdingsText","cash_eur","current_open_risk_eur","sector_cap_pct",
                       "max_open_risk_pct","commission_eur","spread_bps","max_friction_pct"];
 
@@ -590,6 +609,66 @@ function renderTopPicks(picks) {
     </div>`).join("");
 }
 
+// ---- best of the rest (near-miss board + one-click filter relaxations) ----
+function applyHint(changes) {
+  for (const [id, val] of Object.entries(changes)) {
+    const el = document.getElementById(id);
+    if (el.type === "checkbox") el.checked = val; else el.value = val;
+  }
+  runScan();
+}
+
+function renderNearBoard(nearRows, hints, nQualified) {
+  const chipsEl = document.getElementById("relaxHints");
+  const chips = [];
+  const h = hints || {};
+  if (h.min_rr) chips.push([`▸ See ${h.min_rr.n} more — lower min reward:risk to ${h.min_rr.set_to}`,
+                            {min_rr: h.min_rr.set_to}]);
+  if (h.rsi) chips.push([`▸ See ${h.rsi.n} more — widen the dip zone to RSI ${h.rsi.lo}–${h.rsi.hi}`,
+                         {rsi_low: h.rsi.lo, rsi_high: h.rsi.hi}]);
+  if (h.stop_atr) chips.push([`▸ See ${h.stop_atr.n} more — allow stops down to ${h.stop_atr.set_to} ATR`,
+                              {min_stop_atr: h.stop_atr.set_to}]);
+  if (h.liquidity) chips.push([`▸ See ${h.liquidity.n} more — lower min traded/day to $${h.liquidity.set_to}M`,
+                               {min_dollar_vol_m: h.liquidity.set_to}]);
+  if (h.regime) chips.push([`▸ ${h.regime.n} blocked only by the market-downtrend gate — scan anyway`,
+                            {require_market_uptrend: false}]);
+  // offer the one-click relaxations only while results are thin
+  if (chips.length && (nQualified || 0) < 5) {
+    chipsEl.style.display = "";
+    chipsEl.innerHTML = chips.map(([label], i) =>
+      `<button type="button" class="chip" data-chip="${i}">${esc(label)}</button>`).join("");
+    chipsEl.querySelectorAll(".chip").forEach((el, i) =>
+      el.addEventListener("click", () => applyHint(chips[i][1])));
+  } else {
+    chipsEl.style.display = "none";
+  }
+
+  const sec = document.getElementById("nearSection");
+  if (!nearRows || !nearRows.length) { sec.style.display = "none"; return; }
+  sec.style.display = "";
+  document.getElementById("nearBoard").innerHTML =
+    "<table><thead><tr>" +
+    `<th data-tip="Ticker — hover for the company name.">Stock</th>` +
+    `<th data-tip="Quality score after a penalty for each failed filter.">Score</th>` +
+    `<th data-tip="Exactly which of your filters this setup failed, with the numbers.">Why it didn't qualify</th>` +
+    `<th data-tip="Latest price — roughly where you'd buy.">Price</th>` +
+    `<th data-tip="Sell-stop level that caps your loss.">Stop-loss</th>` +
+    `<th data-tip="The recent high — where you'd take profit.">Target</th>` +
+    `<th data-tip="Possible gain vs possible loss.">Reward:Risk</th>` +
+    `<th data-tip="Momentum 0–100; your dip zone is set in the filters.">RSI</th>` +
+    `<th data-tip="Suggested share count for your risk settings.">Buy (shares)</th>` +
+    `<th data-tip="Your worst case if the stop-loss is hit.">€ at risk</th>` +
+    "</tr></thead><tbody>" +
+    nearRows.map(r =>
+      `<tr><td${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
+      `<td class="score" style="color:${scoreColor(r.score)}">${esc(r.score)}</td>` +
+      `<td class="whynot">${esc(r.why_not || "")}</td>` +
+      `<td>${esc(r.price)}</td><td>${esc(r.stop)}</td><td>${esc(r.resistance)}</td>` +
+      `<td class="rr">${esc(r.RR)}</td><td>${esc(r.RSI)}</td>` +
+      `<td>${esc(r.shares)}</td><td>€${esc(r.risk_EUR)}</td></tr>`).join("") +
+    "</tbody></table>";
+}
+
 // ---- track record ----
 const OUTCOME_TEXT = {
   hit_target: ["✅ hit target", "var(--green)"],
@@ -717,6 +796,7 @@ async function refresh() {
   }
 
   renderTopPicks(s.top_picks);
+  renderNearBoard(s.near_board, s.relax_hints, (s.results || []).length);
   renderJournal(s.journal);
   syncJournalBackup(s.journal);
 
@@ -764,8 +844,9 @@ async function refresh() {
   } else if (s.status === "done") {
     count.textContent = "";
     res.className = "empty";
-    res.textContent = "No stocks matched all your filters today. That's normal in some markets — " +
-      "try widening the dip zone (RSI), lowering min reward:risk, or lowering the min company size.";
+    res.textContent = "No stocks matched all your filters today — normal in some markets. " +
+      "Check 'Best of the rest' below for the closest candidates and why each fell short, " +
+      "or click a blue suggestion above to relax one filter and rescan.";
   } else if (s.status === "error") {
     count.textContent = "";
     res.className = "empty";
