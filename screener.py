@@ -73,6 +73,7 @@ DEFAULTS = {
     "min_stop_atr": 1.0,         # stop must sit >= this many ATRs away (noise gate)
     # policy gates
     "require_profitable": True,  # forward EPS > 0  (the anti-AAL gate)
+    "require_analyst_buy": False,  # analyst consensus Buy or better (Yahoo data)
     "earnings_drop_days": 10,    # no entries into binary events
     "require_market_uptrend": True,  # benchmark (SPY / STOXX50) above its SMA200
     # sizing
@@ -210,6 +211,7 @@ def clean_params(overrides: dict | None) -> dict:
     p["stop_buffer_pct"] = _num(o.get("stop_buffer_pct"), p["stop_buffer_pct"], 0, 10)
     p["min_stop_atr"] = _num(o.get("min_stop_atr"), p["min_stop_atr"], 0, 5)
     p["require_profitable"] = bool(o.get("require_profitable", p["require_profitable"]))
+    p["require_analyst_buy"] = bool(o.get("require_analyst_buy", p["require_analyst_buy"]))
     p["require_market_uptrend"] = bool(o.get("require_market_uptrend", p["require_market_uptrend"]))
     p["earnings_drop_days"] = _num(o.get("earnings_drop_days"), p["earnings_drop_days"], 0, 60, int)
     p["ticket_eur"] = _num(o.get("ticket_eur"), p["ticket_eur"], 1, 1e7)
@@ -646,6 +648,21 @@ def _portfolio_state(p: dict, data, universe: list[str], progress=print) -> dict
     return port
 
 
+def _analyst_label(mean: float | None) -> str | None:
+    """Map Yahoo's 1-5 consensus mean to the familiar broker-app wording."""
+    if mean is None:
+        return None
+    if mean <= 1.5:
+        return "Strong Buy"
+    if mean <= 2.5:
+        return "Buy"
+    if mean <= 3.5:
+        return "Hold"
+    if mean <= 4.5:
+        return "Sell"
+    return "Strong Sell"
+
+
 # ----------------------- scoring -----------------------
 def _clamp01(x: float) -> float:
     return min(max(x, 0.0), 1.0)
@@ -654,10 +671,10 @@ def _clamp01(x: float) -> float:
 def score_row(row: dict, p: dict) -> tuple[int, str]:
     """0-100 composite quality score + a one-line human rationale.
 
-    Weights: R:R (35%), relative strength vs benchmark (15%), pullback depth
+    Weights: R:R (30%), relative strength vs benchmark (15%), pullback depth
     within the RSI band (15%), entry proximity to support (15%), pullback
-    volume character (10%), distance to earnings (10%). Each data-quality
-    flag costs 5 points.
+    volume character (10%), distance to earnings (7.5%), analyst consensus
+    (7.5%, neutral when unknown). Each data-quality flag costs 5 points.
     """
     rr_score = min(row["RR"] / 5.0, 1.0)
     span = max(p["rsi_high"] - p["rsi_low"], 1e-9)
@@ -670,10 +687,13 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
     rs_score = 0.5 if rs is None else _clamp01((rs + 10.0) / 20.0)   # -10%..+10% -> 0..1
     vr = row.get("vol_ratio")
     vol_score = 0.5 if vr is None else _clamp01((1.5 - vr) / 1.0)    # 0.5x -> 1, 1.5x -> 0
+    am = row.get("analyst_mean")
+    an_score = 0.5 if am is None else _clamp01((4.0 - am) / 3.0)     # 1.0 -> 1, 4.0 -> 0
 
     flags = [f for f in str(row.get("flags") or "").split(",") if f]
-    score = round(100 * (0.35 * rr_score + 0.15 * rs_score + 0.15 * pullback +
-                         0.15 * support_prox + 0.10 * vol_score + 0.10 * earn)
+    score = round(100 * (0.30 * rr_score + 0.15 * rs_score + 0.15 * pullback +
+                         0.15 * support_prox + 0.10 * vol_score +
+                         0.075 * earn + 0.075 * an_score)
                   - 5 * len(flags))
     score = max(min(score, 100), 0)
 
@@ -685,6 +705,8 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
     if vr is not None:
         bits.append(f"pullback vol {vr:.2f}x" + (" (quiet)" if vr < 1 else ""))
     bits.append("earnings date unknown" if dte is None else f"earnings in {dte}d")
+    if row.get("analyst"):
+        bits.append(f"analysts: {row['analyst']}")
     if flags:
         bits.append("⚠ " + ", ".join(flags))
     return score, " · ".join(bits)
@@ -806,7 +828,8 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     shares = round(min(p["max_risk_eur"] * fx / risk_ps,
                                        p["ticket_eur"] * fx / price), 4)
                     row = {"ticker": ticker, "name": name or ticker, "sector": sector or "?",
-                           "mktcap_b": None,
+                           "mktcap_b": None, "analyst": None, "analyst_mean": None,
+                           "analyst_target_up_pct": None,
                            "price": round(price, 2), "support": round(support, 2),
                            "stop": round(stop, 2), "resistance": round(resistance, 2),
                            "RR": round(rr, 2), "RSI": round(r, 1),
@@ -838,6 +861,14 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 mktcap = info.get("marketCap") or 0
                 fwd_eps = info.get("forwardEps")
                 sector = info.get("sector")
+                # analyst consensus — the same indicator broker apps (Revolut
+                # etc.) show, via Yahoo's aggregation of sell-side research
+                rec_mean = info.get("recommendationMean")
+                analysts_n = info.get("numberOfAnalystOpinions")
+                rec_label = _analyst_label(rec_mean)
+                tgt_mean = info.get("targetMeanPrice")
+                tgt_up_pct = (round((tgt_mean / price - 1) * 100, 1)
+                              if tgt_mean and price > 0 else None)
 
                 # ---- structural filters (fundamental) ----
                 if sector in SECTOR_EXCLUDE:
@@ -850,8 +881,15 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     reject(ticker, reason)
                     if p["show_near"]:
                         misses.append((gate, reason))
-                        near.append((near_row(extra_flags=flags, sector=sector,
-                                              name=info.get("shortName")), list(misses)))
+                        row = near_row(extra_flags=flags, sector=sector,
+                                       name=info.get("shortName"))
+                        # fundamentals are already in hand at stage 2 — show them
+                        row["mktcap_b"] = round(mktcap / 1e9, 1) if mktcap else None
+                        row["analyst"] = (f"{rec_label} ({analysts_n})"
+                                          if rec_label and analysts_n else rec_label)
+                        row["analyst_mean"] = rec_mean
+                        row["analyst_target_up_pct"] = tgt_up_pct
+                        near.append((row, list(misses)))
 
                 if info and mktcap < p["min_mkt_cap_b"] * 1e9:
                     near_reject("mkt_cap", f"mkt cap {mktcap/1e9:.1f}B < min")
@@ -866,6 +904,10 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 if (p["require_profitable"] and info
                         and (eps_used is None or eps_used <= 0)):
                     near_reject("profitable", f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
+                    continue
+                if (p["require_analyst_buy"] and rec_mean is not None
+                        and rec_mean > 2.5):
+                    near_reject("analyst", f"analyst consensus {rec_label} ({rec_mean:.1f})")
                     continue
 
                 # ---- earnings proximity (Yahoo, cross-checked via free Finnhub) ----
@@ -930,6 +972,10 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     "ticker": ticker, "name": info.get("shortName") or ticker,
                     "sector": sector or "?",
                     "mktcap_b": round(mktcap / 1e9, 1) if mktcap else None,
+                "analyst": (f"{rec_label} ({analysts_n})" if rec_label and analysts_n
+                            else rec_label),
+                "analyst_mean": rec_mean,
+                "analyst_target_up_pct": tgt_up_pct,
                     "price": round(price, 2),
                     "support": round(support, 2), "stop": round(stop, 2),
                     "resistance": round(resistance, 2),
@@ -1050,6 +1096,13 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     row["sector"] = info.get("sector") or "?"
                     mc = info.get("marketCap")
                     row["mktcap_b"] = round(mc / 1e9, 1) if mc else row["mktcap_b"]
+                    rm = info.get("recommendationMean")
+                    lbl, n_an = _analyst_label(rm), info.get("numberOfAnalystOpinions")
+                    row["analyst"] = f"{lbl} ({n_an})" if lbl and n_an else lbl
+                    row["analyst_mean"] = rm
+                    tm = info.get("targetMeanPrice")
+                    if tm and row["price"] > 0:
+                        row["analyst_target_up_pct"] = round((tm / row["price"] - 1) * 100, 1)
         buckets: dict[str, list] = {}
         for row, m in near:
             if len(m) == 1:   # a single filter change would qualify these
@@ -1073,6 +1126,8 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                                         "set_to": max(int(best), 0)}
         if "regime" in buckets:
             relax_hints["regime"] = {"n": len(buckets["regime"])}
+        if "analyst" in buckets:
+            relax_hints["analyst"] = {"n": len(buckets["analyst"])}
         progress(f"Nearly qualified: {len(near)} setup(s) failed at least one gate — "
                  f"showing the top {len(near_rows)} with reasons.")
 

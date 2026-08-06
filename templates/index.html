@@ -269,6 +269,7 @@
         <div class="checks">
           <label data-tip="Skip companies that are losing money (uses forward earnings estimates, falls back to last year's)."><input type="checkbox" id="require_profitable"> Only profitable companies</label>
           <label data-tip="When the overall market (S&amp;P 500 / Euro Stoxx 50) is below its 200-day average, most dip-buys fail — skip everything."><input type="checkbox" id="require_market_uptrend"> Only when the overall market is rising</label>
+          <label data-tip="Keep only stocks Wall Street analysts rate Buy or Strong Buy on average — the same consensus rating broker apps like Revolut show (here via Yahoo's aggregation of bank research)."><input type="checkbox" id="require_analyst_buy"> Only analyst Buy-rated or better</label>
           <label data-tip="Below the main results, also rank the best setups that failed one or more filters — with the exact reason, so you can judge for yourself."><input type="checkbox" id="show_near"> Show closest non-qualifying setups too</label>
         </div>
         <div class="fgrid">
@@ -408,6 +409,8 @@ const COLDEFS = [
   ["resistance","Target",      "The recent high the price could realistically climb back to — where you'd take profit.", fmtNum],
   ["RR",       "Reward:Risk",  "Possible gain vs possible loss. 3 = you stand to win €3 per €1 risked.", fmtNum],
   ["score",    "Score",        "Overall quality 0–100: 70+ strong, 50–69 okay, below 50 weak.", fmtNum],
+  ["analyst",  "Analysts",     "Wall Street analyst consensus — the same rating broker apps show (via Yahoo's aggregation of bank research). (n) = number of analysts covering it.", fmtNum],
+  ["analyst_target_up_pct", "Analyst target", "How far the average analyst 12-month price target sits above (+) or below (−) today's price.", v => (v > 0 ? "+" : "") + v + "%"],
   ["shares",   "Buy (shares)", "Suggested share count, sized so hitting the stop-loss costs at most your max € loss per trade.", fmtNum],
   ["risk_EUR", "€ at risk",    "What you lose if the stop-loss is hit — your worst case for this trade.", v => "€" + v],
   ["RSI",      "RSI",          "Momentum 0–100. Inside your dip zone (default 35–55) = mild pullback, not a collapse.", fmtNum],
@@ -472,7 +475,7 @@ const NUM_FIELDS = ["min_mkt_cap_b","min_dollar_vol_m","universe_max","rsi_low",
                     "cash_eur","current_open_risk_eur","sector_cap_pct","max_open_risk_pct",
                     "commission_eur","spread_bps","max_friction_pct"];
 const BOOL_FIELDS = ["include_us","include_eu","require_profitable","require_market_uptrend",
-                     "show_near"];
+                     "require_analyst_buy","show_near"];
 const SAVED_FIELDS = ["holdingsText","cash_eur","current_open_risk_eur","sector_cap_pct",
                       "max_open_risk_pct","commission_eur","spread_bps","max_friction_pct"];
 
@@ -606,6 +609,8 @@ function renderTopPicks(picks) {
         <div><span data-tip="Stop distance in average daily wiggles. Under ~1 = noise could hit it.">stop room</span> ${p.stop_atr == null ? "—" : esc(p.stop_atr) + " ATR"}</div>
         <div><span data-tip="Suggested amount so a stopped-out trade costs at most your max € loss per trade.">shares</span> ${esc(p.shares)}</div>
         <div><span data-tip="What you lose if the stop-loss is hit — your worst case.">worst case</span> €${esc(p.risk_EUR)}</div>
+        <div><span data-tip="Wall Street analyst consensus — the same rating broker apps show. (n) = analysts covering it.">analysts</span> ${p.analyst ? esc(p.analyst) : "—"}</div>
+        <div><span data-tip="Average analyst 12-month price target vs today's price.">their target</span> ${p.analyst_target_up_pct == null ? "—" : esc((p.analyst_target_up_pct > 0 ? "+" : "") + p.analyst_target_up_pct) + "%"}</div>
       </div>
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
       ${p.flags ? `<div class="warn">⚠ ${esc(flagText(p.flags))}</div>` : ""}
@@ -635,6 +640,8 @@ function renderNearBoard(nearRows, hints, nQualified) {
                                {min_dollar_vol_m: h.liquidity.set_to}]);
   if (h.regime) chips.push([`▸ ${h.regime.n} blocked only by the market-downtrend gate — scan anyway`,
                             {require_market_uptrend: false}]);
+  if (h.analyst) chips.push([`▸ ${h.analyst.n} blocked only by the analyst-rating gate — show them`,
+                             {require_analyst_buy: false}]);
   // offer the one-click relaxations only while results are thin
   if (chips.length && (nQualified || 0) < 5) {
     chipsEl.style.display = "";
@@ -656,6 +663,7 @@ function renderNearBoard(nearRows, hints, nQualified) {
     `<th data-tip="Exactly which of your filters this setup failed, with the numbers.">Why it didn't qualify</th>` +
     `<th data-tip="Industry the company is in.">Sector</th>` +
     `<th data-tip="Company size (market value) in billions of dollars.">Size</th>` +
+    `<th data-tip="Wall Street analyst consensus (via Yahoo). (n) = number of analysts.">Analysts</th>` +
     `<th data-tip="Latest price — roughly where you'd buy.">Price</th>` +
     `<th data-tip="Sell-stop level that caps your loss.">Stop-loss</th>` +
     `<th data-tip="The recent high — where you'd take profit.">Target</th>` +
@@ -670,6 +678,7 @@ function renderNearBoard(nearRows, hints, nQualified) {
       `<td class="whynot">${esc(r.why_not || "")}</td>` +
       `<td>${esc(r.sector && r.sector !== "?" ? r.sector : "—")}</td>` +
       `<td>${r.mktcap_b == null ? "—" : "$" + esc(r.mktcap_b) + "B"}</td>` +
+      `<td>${r.analyst ? esc(r.analyst) : "—"}</td>` +
       `<td>${esc(r.price)}</td><td>${esc(r.stop)}</td><td>${esc(r.resistance)}</td>` +
       `<td class="rr">${esc(r.RR)}</td><td>${esc(r.RSI)}</td>` +
       `<td>${esc(r.shares)}</td><td>€${esc(r.risk_EUR)}</td></tr>`).join("") +
@@ -862,6 +871,12 @@ async function refresh() {
         let cls = k === "RR" ? "rr" : k === "score" ? "score" : k === "flags" ? "notes" : "";
         let style = k === "score" ? ` style="color:${scoreColor(row.score)}"` :
                     k === "fits_risk_budget" && row[k] === false ? ` style="color:var(--red)"` : "";
+        if (k === "analyst" && row[k]) {
+          const c = /^Strong Buy/.test(row[k]) ? "var(--green)" :
+                    /^Buy/.test(row[k]) ? "var(--green)" :
+                    /^Hold/.test(row[k]) ? "var(--amber)" : "var(--red)";
+          style = ` style="color:${c}"`;
+        }
         let tipAttr = k === "ticker" && row.name ? ` data-tip="${esc(row.name)}"` : "";
         if (k === "flags") {
           // keep rows compact: a ⚠ count in the cell, the full plain-language
