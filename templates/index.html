@@ -108,6 +108,15 @@
   .card .why { margin-top: .6rem; font-size: .8rem; color: var(--muted);
                border-top: 1px solid var(--border); padding-top: .5rem; }
   .card .warn { margin-top: .5rem; font-size: .78rem; color: var(--amber); }
+  /* --- track record tiles --- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+           gap: .75rem; margin-bottom: 1rem; }
+  .tile { background: var(--panel2); border: 1px solid var(--border);
+          border-radius: 10px; padding: .7rem .9rem; }
+  .tile .v { font-size: 1.4rem; font-weight: 700; }
+  .tile .l { font-size: .72rem; color: var(--muted); margin-top: .1rem; }
+  .subhead { font-size: .85rem; color: var(--text); font-weight: 600;
+             margin: 1.1rem 0 .35rem; }
   /* --- tables / log --- */
   #log {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -176,6 +185,9 @@
               get checked against your available cash, sector concentration, and total risk.</li>
             <li>"Why stocks were filtered out" at the bottom shows what the scan rejected and why —
               useful to see if your filters are too strict.</li>
+            <li>The <b>Track record</b> section grades past picks against what the price actually
+              did afterwards — hit target or hit stop first — so you can see whether this method
+              earns its keep before trusting it with money.</li>
           </ul>
         </div>
       </div>
@@ -329,6 +341,24 @@
     <div class="tablewrap"><div id="results" class="empty">No scan yet — press
       <b>▶ Run scan</b> above. The first scan takes a few minutes; you can watch it work
       in the progress log below.</div></div>
+  </section>
+
+  <section id="journalSection" style="display:none">
+    <h2>📒 Track record</h2>
+    <div class="secsub">Every scan's picks are logged automatically, then graded against what
+      the price actually did: did it hit the target or the stop-loss first?
+      Results are in <span data-tip="R = one unit of planned risk (entry minus stop). A stopped-out pick is −1R; a pick that hits a 3:1 target is +3R. Assumes entry at the scan price and exit exactly at stop/target (at the open when the price gaps past); trading costs not included.">R, units of planned risk</span> —
+      so the tool grades itself, in public.</div>
+    <div class="tiles" id="journalTiles"></div>
+    <div id="journalGrades" class="hint" style="margin:0 0 .5rem"></div>
+    <div id="journalRecentWrap" style="display:none">
+      <div class="subhead">Recent outcomes</div>
+      <div class="tablewrap"><div id="journalRecent"></div></div>
+    </div>
+    <div id="journalOpenWrap" style="display:none">
+      <div class="subhead">Still open</div>
+      <div class="tablewrap"><div id="journalOpen"></div></div>
+    </div>
   </section>
 
   <section id="rejSection" style="display:none">
@@ -560,6 +590,97 @@ function renderTopPicks(picks) {
     </div>`).join("");
 }
 
+// ---- track record ----
+const OUTCOME_TEXT = {
+  hit_target: ["✅ hit target", "var(--green)"],
+  hit_stop:   ["❌ stopped out", "var(--red)"],
+  expired:    ["⏳ expired (2 months, neither hit)", "var(--muted)"],
+};
+function rFmt(r) {
+  if (r == null) return "—";
+  return (r > 0 ? "+" : "") + r + "R";
+}
+function renderJournal(j) {
+  const sec = document.getElementById("journalSection");
+  if (!j || !j.n_total) { sec.style.display = "none"; return; }
+  sec.style.display = "";
+
+  const tiles = [
+    [j.n_total, "picks recorded", "Every stock that passed all filters in any scan, one trade idea per ticker at a time."],
+    [j.n_open, "still open", "Neither the target nor the stop-loss has been touched yet."],
+    [j.n_resolved, "resolved", "Picks where the price has since hit the target or the stop, or two months passed."],
+    [j.hit_rate_pct == null ? "—" : j.hit_rate_pct + "%", "ended in profit", "Share of resolved picks that ended with a gain."],
+    [rFmt(j.avg_r), "avg outcome", "Average result per resolved pick, in units of planned risk. Above 0R means the method is making money on paper."],
+    [rFmt(j.total_r), "total", "Sum of all resolved outcomes. +10R with €90 risked per trade ≈ €900 of simulated profit."],
+  ];
+  document.getElementById("journalTiles").innerHTML = tiles.map(([v, l, tip]) => {
+    const num = String(v);
+    const col = /^[+-]/.test(num) ? (num.startsWith("+") && num !== "+0R"
+                ? "var(--green)" : (num.startsWith("-") ? "var(--red)" : "var(--text)")) : "var(--text)";
+    return `<div class="tile"><div class="v" style="color:${col}">${esc(num)}</div>` +
+           `<div class="l" data-tip="${esc(tip)}">${esc(l)}</div></div>`;
+  }).join("");
+
+  const g = j.grades || {};
+  const gl = [];
+  if (g.strong && g.strong.n) gl.push(`high-score picks (70+): ${g.strong.wins}/${g.strong.n} winners, avg ${rFmt(g.strong.avg_r)}`);
+  if (g.weak && g.weak.n) gl.push(`lower-score picks: ${g.weak.wins}/${g.weak.n} winners, avg ${rFmt(g.weak.avg_r)}`);
+  document.getElementById("journalGrades").textContent =
+    gl.length ? "Does the score mean anything? " + gl.join(" · ") : "";
+
+  const rw = document.getElementById("journalRecentWrap");
+  if (j.recent && j.recent.length) {
+    rw.style.display = "";
+    document.getElementById("journalRecent").innerHTML =
+      "<table><thead><tr><th>Stock</th><th>Picked</th><th>Resolved</th>" +
+      "<th style='text-align:left'>What happened</th><th>Result</th><th>Score was</th></tr></thead><tbody>" +
+      j.recent.map(r => {
+        const [txt, col] = OUTCOME_TEXT[r.status] || [r.status, "var(--muted)"];
+        return `<tr><td>${esc(r.ticker)}</td><td>${esc(r.scan_date)}</td>` +
+          `<td>${esc(r.resolved_date ?? "—")}</td>` +
+          `<td style="text-align:left;color:${col}">${esc(txt)}</td>` +
+          `<td style="color:${col};font-weight:700">${esc(rFmt(r.outcome_r))}</td>` +
+          `<td>${esc(r.score ?? "—")}</td></tr>`;
+      }).join("") + "</tbody></table>";
+  } else rw.style.display = "none";
+
+  const ow = document.getElementById("journalOpenWrap");
+  if (j.open && j.open.length) {
+    ow.style.display = "";
+    document.getElementById("journalOpen").innerHTML =
+      "<table><thead><tr><th>Stock</th><th>Picked</th><th>Entry was</th>" +
+      "<th>Stop-loss</th><th>Target</th><th>Days open</th></tr></thead><tbody>" +
+      j.open.map(r =>
+        `<tr><td>${esc(r.ticker)}</td><td>${esc(r.scan_date)}</td><td>${esc(r.entry)}</td>` +
+        `<td>${esc(r.stop)}</td><td>${esc(r.target)}</td><td>${esc(r.days_open)}</td></tr>`)
+      .join("") + "</tbody></table>";
+  } else ow.style.display = "none";
+}
+
+// The server's disk is wiped on redeploys (free hosting) — mirror the journal
+// to this browser and push it back when the server comes up empty.
+let journalBackupCount = -1, journalRestoreTried = false;
+async function syncJournalBackup(j) {
+  if (!j) return;
+  try {
+    if (j.n_total === 0 && !journalRestoreTried) {
+      journalRestoreTried = true;
+      const b = localStorage.getItem("screener_journal_v1");
+      if (b) {
+        await fetch("/journal/restore", {method: "POST",
+          headers: {"Content-Type": "application/json"}, body: b});
+        refresh();
+      }
+      return;
+    }
+    if (j.n_total > 0 && j.n_total !== journalBackupCount) {
+      const d = await (await fetch("/journal/export")).json();
+      localStorage.setItem("screener_journal_v1", JSON.stringify(d));
+      journalBackupCount = j.n_total;
+    }
+  } catch (e) {}
+}
+
 async function refresh() {
   const s = await (await fetch("/status")).json();
 
@@ -594,6 +715,8 @@ async function refresh() {
   }
 
   renderTopPicks(s.top_picks);
+  renderJournal(s.journal);
+  syncJournalBackup(s.journal);
 
   const ps = document.getElementById("portSummary");
   if (s.portfolio) {

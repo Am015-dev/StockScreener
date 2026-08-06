@@ -16,8 +16,10 @@ import time
 from collections import Counter
 
 import pandas as pd
+import yfinance as yf
 from flask import Flask, Response, jsonify, render_template, request
 
+import journal
 import portfolio_import
 import screener
 
@@ -40,8 +42,44 @@ _state = {
     "near_misses": [],         # [{"ticker": ..., "reason": ...}]
     "params_used": None,
     "portfolio": None,         # book/cash/risk-budget summary when holdings given
+    "journal": None,           # track-record scoreboard (see journal.py)
     "error": None,
 }
+
+
+# ---- journal price lookups: cached scan data first, one batch download for
+# ---- picks whose tickers have since dropped out of the universe
+def _journal_bars(ticker):
+    data = screener._cache.get("ohlc")
+    if data is not None:
+        try:
+            hist = data[ticker].dropna()
+            if len(hist):
+                return hist
+        except Exception:
+            pass
+    return None
+
+
+def _journal_fetch_missing(tickers):
+    out = {}
+    try:
+        ok, d = screener._yahoo_call(lambda: yf.download(
+            tickers, period="1y", auto_adjust=True,
+            group_by="ticker", threads=True, progress=False))
+        if ok and d is not None and not d.empty:
+            if not isinstance(d.columns, pd.MultiIndex):
+                d = pd.concat({tickers[0]: d}, axis=1)
+            for t in tickers:
+                try:
+                    h = d[t].dropna()
+                    if len(h):
+                        out[t] = h
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return out
 
 
 def _records(df: pd.DataFrame) -> list[dict]:
@@ -64,6 +102,10 @@ def _load_cached_csv():
 
 
 _load_cached_csv()
+try:
+    _state["journal"] = journal.snapshot()
+except Exception:
+    pass
 
 
 def _progress(msg):
@@ -98,6 +140,18 @@ def _run_scan(params):
         _state["portfolio"] = result.get("portfolio")
         if len(df):
             df.to_csv(RESULTS_CSV, index=False)
+
+        # track record: log today's picks, grade every still-open past pick
+        try:
+            added = journal.record_picks(records)
+            resolved = journal.update_outcomes(_journal_bars, _journal_fetch_missing)
+            _state["journal"] = journal.snapshot()
+            if added or resolved:
+                _progress(f"Journal: recorded {added} new pick(s), "
+                          f"resolved {resolved} past pick(s).")
+        except Exception as e:
+            _progress(f"Journal update failed (results unaffected): {e}")
+
         _state["status"] = "done"
     except Exception as e:
         _state["error"] = f"{type(e).__name__}: {e}"
@@ -151,6 +205,22 @@ def parse_portfolio():
 @app.route("/status")
 def status():
     return jsonify(_state)
+
+
+@app.route("/journal/export")
+def journal_export():
+    """Full journal dump — the browser mirrors this to localStorage so the
+    track record survives Render's ephemeral disk."""
+    return jsonify({"picks": journal.export_all()})
+
+
+@app.route("/journal/restore", methods=["POST"])
+def journal_restore():
+    """Re-import a browser-side backup after a server disk wipe."""
+    body = request.get_json(silent=True) or {}
+    added = journal.restore(body.get("picks") or [])
+    _state["journal"] = journal.snapshot()
+    return jsonify({"ok": True, "added": added})
 
 
 @app.route("/results.csv")
