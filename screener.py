@@ -112,7 +112,7 @@ FALLBACK_UNIVERSE = [
 
 CACHE_TTL = 3600      # reuse universe/OHLC/fundamentals for an hour
 STALE_OK = float("inf")  # cache_store TTL meaning "any age beats no data"
-DOWNLOAD_CHUNK = 250  # tickers per yf.download call: rate-limit friendliness
+DOWNLOAD_CHUNK = 150  # tickers per batch: small enough for live partial results
 RATE_LIMIT_COOLDOWN = 180  # once Yahoo hard-429s us, stop live calls this long
 RETRY_DELAYS = (2, 5)      # backoff before giving up on a rate-limited call
 # ----------------------------------------------------------
@@ -389,77 +389,6 @@ def build_universe(p: dict, progress=print) -> list[str]:
     return out
 
 
-def _get_ohlc(universe: list[str], progress=print):
-    key = hashlib.md5(",".join(universe).encode()).hexdigest()
-    if _cache["ohlc_key"] == key and _fresh(_cache["ohlc_ts"]):
-        age = int((time.time() - _cache["ohlc_ts"]) / 60)
-        progress(f"Reusing cached 1y OHLC ({age}m old) — filter-only rerun, fast.")
-        return _cache["ohlc"]
-    hit, stored = cache_store.fetch(f"ohlc:{key}", CACHE_TTL)
-    if hit:
-        progress("Loaded 1y OHLC from disk cache — no re-download needed.")
-        _cache.update(ohlc_key=key, ohlc=stored, ohlc_ts=time.time())
-        return stored
-
-    n_chunks = (len(universe) + DOWNLOAD_CHUNK - 1) // DOWNLOAD_CHUNK
-    progress(f"Batch-downloading 1y OHLC for {len(universe)} tickers "
-             f"({n_chunks} chunks of {DOWNLOAD_CHUNK})...")
-    parts, failed = [], 0
-    for ci in range(n_chunks):
-        chunk = universe[ci * DOWNLOAD_CHUNK:(ci + 1) * DOWNLOAD_CHUNK]
-        if ci and not _rate_limited_now("chart"):
-            time.sleep(2)  # don't fire chunk bursts back-to-back at Yahoo
-        try:
-            ok, d = _yahoo_call(lambda chunk=chunk: yf.download(
-                chunk, period="1y", auto_adjust=True,
-                group_by="ticker", threads=8, progress=False), scope="chart")
-            if not ok:
-                failed += 1
-                progress(f"  chunk {ci+1}/{n_chunks}: skipped (Yahoo rate limit)")
-                continue
-            if d is None or d.empty:
-                failed += 1
-                progress(f"  chunk {ci+1}/{n_chunks}: empty response (rate-limited?)")
-                continue
-            if not isinstance(d.columns, pd.MultiIndex):  # single-ticker shape
-                d = pd.concat({chunk[0]: d}, axis=1)
-            parts.append(d)
-            progress(f"  chunk {ci+1}/{n_chunks}: ok")
-        except Exception as e:
-            failed += 1
-            progress(f"  chunk {ci+1}/{n_chunks} failed: {e}")
-    if not parts:
-        # rate-limited into a corner: yesterday's prices still beat no scan
-        hit, stale = cache_store.fetch(f"ohlc:{key}", STALE_OK)
-        if hit and stale is not None and not getattr(stale, "empty", True):
-            progress("  every price download failed — reusing last cached OHLC "
-                     "from disk (stale; rerun later for fresh prices).")
-            _cache.update(ohlc_key=key, ohlc=stale, ohlc_ts=time.time())
-            return stale
-        raise RuntimeError(
-            "every price download failed — Yahoo Finance is likely rate-limiting "
-            "or blocking this server right now; wait a few minutes and rerun "
-            "(on a fresh server, a smaller 'Max stocks to scan' also helps: "
-            "fewer tickers = fewer requests)")
-    data = pd.concat(parts, axis=1) if len(parts) > 1 else parts[0]
-
-    got = set(data.columns.get_level_values(0))
-    n_empty = sum(1 for t in universe
-                  if t not in got or data[t]["Close"].dropna().empty)
-    if n_empty:
-        progress(f"  warning: {n_empty}/{len(universe)} tickers returned no data"
-                 + (" — Yahoo may be rate-limiting; rerun in a few minutes"
-                    if n_empty > len(universe) * 0.2 else ""))
-    _cache.update(ohlc_key=key, ohlc=data, ohlc_ts=time.time())
-    try:  # keep the disk cache off the hot path for very large frames (RAM);
-        # never overwrite a complete stale set with a partial download
-        if failed == 0 and float(data.memory_usage().sum()) < 150e6:
-            cache_store.put(f"ohlc:{key}", data)
-    except Exception:
-        pass
-    return data
-
-
 def _get_info(ticker: str) -> dict:
     """Fundamentals dict, or {} when Yahoo won't give us one right now.
 
@@ -670,7 +599,8 @@ def _portfolio_state(p: dict, data, universe: list[str], progress=print) -> dict
     if not p["holdings"] and p["cash_eur"] <= 0:
         return None
     extra = {}
-    missing = [h["ticker"] for h in p["holdings"] if h["ticker"] not in universe]
+    missing = [h["ticker"] for h in p["holdings"]
+               if data is None or h["ticker"] not in universe]
     if missing:
         try:
             ok, d2 = _yahoo_call(lambda: yf.download(
@@ -688,7 +618,7 @@ def _portfolio_state(p: dict, data, universe: list[str], progress=print) -> dict
     for h in p["holdings"]:
         t = h["ticker"]
         price = extra.get(t)
-        if price is None:
+        if price is None and data is not None:
             price = _last_close(data, t)
         if price is None:
             progress(f"  portfolio: no price for {t} — position ignored in book math")
@@ -761,7 +691,7 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
 
 
 # ----------------------- the scan -----------------------
-def run_screener(params: dict | None = None, progress=print) -> dict:
+def run_screener(params: dict | None = None, progress=print, on_partial=None) -> dict:
     """Full scan. `params` overrides DEFAULTS (see clean_params).
 
     Returns {"df": DataFrame, "rejections": {ticker: reason},
@@ -788,10 +718,6 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
     def reject(t, reason):
         rejections[t] = reason
 
-    data = _get_ohlc(universe, progress)
-
-    port = _portfolio_state(p, data, universe, progress)
-
     bench = _get_benchmarks(progress)
     regime = {region: market_uptrend(close) for region, close in bench.items()}
     for region, up in regime.items():
@@ -802,215 +728,304 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
             progress("Both benchmarks below SMA200 — regime gate will reject everything. "
                      "Untick 'require market uptrend' to override.")
 
+    port = _portfolio_state(p, None, universe, progress)
+
     t1 = time.time()
-    for i, ticker in enumerate(universe, 1):
-        if i % 50 == 0 or i == len(universe):
-            progress(f"  scanning {i}/{len(universe)}  hits so far: {len(rows)}  [{time.time()-t1:.0f}s]")
-        if ticker.split(".")[0].upper() in exclude:
-            continue
-        try:
+    scanned_n = [0]
+
+    def scan_block(tickers, frame):
+        """Run every gate for one batch of tickers against its price frame."""
+        for ticker in tickers:
+            scanned_n[0] += 1
+            if scanned_n[0] % 100 == 0 or scanned_n[0] == len(universe):
+                progress(f"  scanning {scanned_n[0]}/{len(universe)}  "
+                         f"qualified so far: {len(rows)}  [{time.time()-t1:.0f}s]")
+            if ticker.split(".")[0].upper() in exclude:
+                continue
             try:
-                hist = data[ticker].dropna()
+                try:
+                    hist = frame[ticker].dropna()
+                except Exception:
+                    reject(ticker, "no data")
+                    continue
+                if len(hist) < 210:
+                    reject(ticker, "insufficient history")
+                    continue
+
+                price = float(hist["Close"].iloc[-1])
+                sma200 = float(hist["Close"].rolling(200).mean().iloc[-1])
+                avg_vol = float(hist["Volume"].tail(30).mean())
+                region = _region(ticker)
+
+                # ---- hard gates: without these there is no trade plan at all ----
+                if price <= sma200:
+                    reject(ticker, "not in uptrend")
+                    continue
+                support = last_pivot_low(hist["Low"].tail(120), p["pivot_k"])
+                if support is None or support >= price:
+                    reject(ticker, "no valid pivot support below price")
+                    continue
+                stop = support * (1 - p["stop_buffer_pct"] / 100)
+                resistance = float(hist["High"].tail(p["swing_lookback"]).max())
+                if resistance <= price:
+                    reject(ticker, "price at/above swing high (no target)")
+                    continue
+                risk_ps = price - stop
+                reward_ps = resistance - price
+                rr = reward_ps / risk_ps if risk_ps > 0 else float("nan")
+                if not np.isfinite(rr):
+                    reject(ticker, "degenerate risk math")
+                    continue
+
+                # ---- Stage 1 soft gates: a failure here still leaves a complete
+                # ---- trade plan, so collect misses instead of discarding — the
+                # ---- best of them go on the "closest to qualifying" board.
+                misses: list[tuple[str, str]] = []
+                r = rsi(hist["Close"])
+                dollar_vol = avg_vol * price
+                a = atr(hist)
+                stop_atr = round(risk_ps / a, 2) if a else None
+                if p["require_market_uptrend"] and regime.get(region) is False:
+                    misses.append(("regime", f"market regime ({BENCHMARKS[region]} below SMA200)"))
+                if dollar_vol < p["min_dollar_vol_m"] * 1e6:
+                    misses.append(("liquidity", f"liquidity (${dollar_vol/1e6:.0f}M/day)"))
+                if not (p["rsi_low"] <= r <= p["rsi_high"]):
+                    misses.append(("rsi", f"RSI {r:.0f} outside {p['rsi_low']:.0f}-{p['rsi_high']:.0f}"))
+                if rr < p["min_rr"]:
+                    misses.append(("min_rr", f"R:R {rr:.1f} < {p['min_rr']:.1f}"))
+                if stop_atr is not None and stop_atr < p["min_stop_atr"]:
+                    misses.append(("stop_atr", f"stop inside noise ({stop_atr:.1f} ATR < {p['min_stop_atr']:.1f})"))
+
+                rs_3m = rel_strength(hist["Close"], bench.get(region))
+                vol_ratio = pullback_volume_ratio(hist["Volume"])
+                flags: list[str] = []
+
+                def near_row(extra_flags=(), sector=None, name=None):
+                    """Slim row for the near-miss board (no expensive calls)."""
+                    fx = EURUSD if region == "US" else 1.0
+                    shares = round(min(p["max_risk_eur"] * fx / risk_ps,
+                                       p["ticket_eur"] * fx / price), 4)
+                    row = {"ticker": ticker, "name": name or ticker, "sector": sector or "?",
+                           "mktcap_b": None,
+                           "price": round(price, 2), "support": round(support, 2),
+                           "stop": round(stop, 2), "resistance": round(resistance, 2),
+                           "RR": round(rr, 2), "RSI": round(r, 1),
+                           "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
+                           "shares": shares,
+                           "risk_EUR": round(_to_eur(shares * risk_ps, ticker), 2),
+                           "days_to_earnings": None,
+                           "dollar_vol_m": round(dollar_vol / 1e6, 1),
+                           "flags": ",".join(list(extra_flags))}
+                    score, _ = score_row(row, p)
+                    row["score"] = max(score - NEAR_MISS_PENALTY * len(misses), 0)
+                    row["why_not"] = "; ".join(m[1] for m in misses)
+                    return row
+
+                if misses:
+                    reject(ticker, misses[0][1])   # keeps the rejection summary honest
+                    if p["show_near"]:
+                        near.append((near_row(extra_flags=["gates_skipped"]), list(misses)))
+                    continue
+
+                # ---- Stage 2: expensive per-ticker calls, survivors only ----
+                progress(f"    [stage 2] {ticker}: technical setup found, fetching fundamentals...")
+                info = _get_info(ticker)
+                if not info:
+                    # Yahoo is rate-limiting (or has no record): the technical
+                    # setup is real, so keep it with a flag and a score penalty
+                    # instead of falsely rejecting on absent fundamentals.
+                    flags.append("fundamentals_unavailable")
+                mktcap = info.get("marketCap") or 0
+                fwd_eps = info.get("forwardEps")
+                sector = info.get("sector")
+
+                # ---- structural filters (fundamental) ----
+                if sector in SECTOR_EXCLUDE:
+                    reject(ticker, f"excluded sector ({sector})")
+                    continue
+                if sector and sector not in allowed_sectors:
+                    reject(ticker, f"sector not selected ({sector})")
+                    continue
+                def near_reject(gate, reason):
+                    reject(ticker, reason)
+                    if p["show_near"]:
+                        misses.append((gate, reason))
+                        near.append((near_row(extra_flags=flags, sector=sector,
+                                              name=info.get("shortName")), list(misses)))
+
+                if info and mktcap < p["min_mkt_cap_b"] * 1e9:
+                    near_reject("mkt_cap", f"mkt cap {mktcap/1e9:.1f}B < min")
+                    continue
+                # profitability gate with a free fallback: Yahoo's forwardEps is
+                # often missing for EU names — fall back to trailing EPS (flagged)
+                # instead of falsely rejecting as "unprofitable".
+                eps_used = fwd_eps
+                if eps_used is None and info.get("trailingEps") is not None:
+                    eps_used = info["trailingEps"]
+                    flags.append("eps_fallback")
+                if (p["require_profitable"] and info
+                        and (eps_used is None or eps_used <= 0)):
+                    near_reject("profitable", f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
+                    continue
+
+                # ---- earnings proximity (Yahoo, cross-checked via free Finnhub) ----
+                days_to_earnings = _get_days_to_earnings(ticker)
+                days_fh = _finnhub_days_to_earnings(ticker)
+                if days_to_earnings is None and days_fh is not None:
+                    days_to_earnings = days_fh
+                    flags.append("earnings_from_finnhub")
+                elif (days_to_earnings is not None and days_fh is not None
+                      and abs(days_to_earnings - days_fh) > 2):
+                    days_to_earnings = min(days_to_earnings, days_fh)  # conservative
+                    flags.append("earnings_sources_disagree")
+                if days_to_earnings is None:
+                    flags.append("earnings_unverified")
+                if days_to_earnings is not None and days_to_earnings <= p["earnings_drop_days"]:
+                    near_reject("earnings", f"earnings in {days_to_earnings}d")
+                    continue
+
+                # ---- sizing off YOUR risk, not a fixed ticket ----
+                fx = EURUSD if region == "US" else 1.0  # EUR budget -> listing currency
+                shares_by_risk = p["max_risk_eur"] * fx / risk_ps
+                shares_by_ticket = p["ticket_eur"] * fx / price
+                shares = min(shares_by_risk, shares_by_ticket)
+
+                # ---- portfolio awareness (only when a portfolio was provided) ----
+                status = "NEW"
+                sector_after = None
+                if port is not None:
+                    held = port["positions"].get(ticker)
+                    if held:
+                        status = ("ADD" if held["pnl_pct"] is None
+                                  else f"ADD ({held['pnl_pct']:+.1f}%)")
+                    pos_value_eur = _to_eur(shares * price, ticker)
+                    if port["cash_eur"] <= 0:
+                        flags.append("no_cash")
+                    elif pos_value_eur > port["cash_eur"]:
+                        shares *= port["cash_eur"] / pos_value_eur
+                        flags.append("cash_capped")
+                    pos_value_eur = _to_eur(shares * price, ticker)
+                    if sector and port["book_eur"] > 0:
+                        sector_after = round((port["sector_val"].get(sector, 0.0) + pos_value_eur)
+                                             / port["book_eur"] * 100, 1)
+                        if sector_after > p["sector_cap_pct"]:
+                            flags.append("sector_cap")
+
+                shares = round(shares, 4)
+                actual_risk_eur = round(_to_eur(shares * risk_ps, ticker), 2)
+
+                # ---- net-of-cost economics: block trades friction eats alive ----
+                pos_value_eur = _to_eur(shares * price, ticker)
+                target_profit_eur = _to_eur(shares * reward_ps, ticker)
+                cost_eur = 2 * p["commission_eur"] + p["spread_bps"] / 1e4 * pos_value_eur
+                friction_pct = (round(cost_eur / target_profit_eur * 100, 1)
+                                if target_profit_eur > 0 else None)
+                if (p["max_friction_pct"] > 0 and friction_pct is not None
+                        and friction_pct > p["max_friction_pct"]):
+                    near_reject("friction", f"friction (costs {friction_pct:.0f}% of target "
+                                            f"profit > {p['max_friction_pct']:.0f}%)")
+                    continue
+
+                row = {
+                    "ticker": ticker, "name": info.get("shortName") or ticker,
+                    "sector": sector or "?",
+                    "mktcap_b": round(mktcap / 1e9, 1) if mktcap else None,
+                    "price": round(price, 2),
+                    "support": round(support, 2), "stop": round(stop, 2),
+                    "resistance": round(resistance, 2),
+                    "RR": round(rr, 2), "RSI": round(r, 1),
+                    "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
+                    "status": status, "sector_after": sector_after,
+                    "friction_pct": friction_pct,
+                    "shares": shares, "risk_EUR": actual_risk_eur,
+                    "days_to_earnings": days_to_earnings,
+                    "flags": ",".join(flags),
+                }
+                row["score"], row["rationale"] = score_row(row, p)
+                rows.append(row)
+            except Exception as e:
+                reject(ticker, f"data error: {e}")
+
+    def emit_partial():
+        if on_partial is not None:
+            try:
+                on_partial([dict(r) for r in rows], scanned_n[0], len(universe))
             except Exception:
-                reject(ticker, "no data")
-                continue
-            if len(hist) < 210:
-                reject(ticker, "insufficient history")
-                continue
+                pass
 
-            price = float(hist["Close"].iloc[-1])
-            sma200 = float(hist["Close"].rolling(200).mean().iloc[-1])
-            avg_vol = float(hist["Volume"].tail(30).mean())
-            region = _region(ticker)
+    # ---- prices: cached frame -> one fast pass; otherwise download and scan
+    # ---- batch by batch so results appear while the rest still downloads
+    key = hashlib.md5(",".join(universe).encode()).hexdigest()
+    data = None
+    if _cache["ohlc_key"] == key and _fresh(_cache["ohlc_ts"]):
+        age = int((time.time() - _cache["ohlc_ts"]) / 60)
+        progress(f"Reusing cached 1y OHLC ({age}m old) — filter-only rerun, fast.")
+        data = _cache["ohlc"]
+    else:
+        hit, stored = cache_store.fetch(f"ohlc:{key}", CACHE_TTL)
+        if hit:
+            progress("Loaded 1y OHLC from disk cache — no re-download needed.")
+            _cache.update(ohlc_key=key, ohlc=stored, ohlc_ts=time.time())
+            data = stored
 
-            # ---- hard gates: without these there is no trade plan at all ----
-            if price <= sma200:
-                reject(ticker, "not in uptrend")
-                continue
-            support = last_pivot_low(hist["Low"].tail(120), p["pivot_k"])
-            if support is None or support >= price:
-                reject(ticker, "no valid pivot support below price")
-                continue
-            stop = support * (1 - p["stop_buffer_pct"] / 100)
-            resistance = float(hist["High"].tail(p["swing_lookback"]).max())
-            if resistance <= price:
-                reject(ticker, "price at/above swing high (no target)")
-                continue
-            risk_ps = price - stop
-            reward_ps = resistance - price
-            rr = reward_ps / risk_ps if risk_ps > 0 else float("nan")
-            if not np.isfinite(rr):
-                reject(ticker, "degenerate risk math")
-                continue
-
-            # ---- Stage 1 soft gates: a failure here still leaves a complete
-            # ---- trade plan, so collect misses instead of discarding — the
-            # ---- best of them go on the "closest to qualifying" board.
-            misses: list[tuple[str, str]] = []
-            r = rsi(hist["Close"])
-            dollar_vol = avg_vol * price
-            a = atr(hist)
-            stop_atr = round(risk_ps / a, 2) if a else None
-            if p["require_market_uptrend"] and regime.get(region) is False:
-                misses.append(("regime", f"market regime ({BENCHMARKS[region]} below SMA200)"))
-            if dollar_vol < p["min_dollar_vol_m"] * 1e6:
-                misses.append(("liquidity", f"liquidity (${dollar_vol/1e6:.0f}M/day)"))
-            if not (p["rsi_low"] <= r <= p["rsi_high"]):
-                misses.append(("rsi", f"RSI {r:.0f} outside {p['rsi_low']:.0f}-{p['rsi_high']:.0f}"))
-            if rr < p["min_rr"]:
-                misses.append(("min_rr", f"R:R {rr:.1f} < {p['min_rr']:.1f}"))
-            if stop_atr is not None and stop_atr < p["min_stop_atr"]:
-                misses.append(("stop_atr", f"stop inside noise ({stop_atr:.1f} ATR < {p['min_stop_atr']:.1f})"))
-
-            rs_3m = rel_strength(hist["Close"], bench.get(region))
-            vol_ratio = pullback_volume_ratio(hist["Volume"])
-            flags: list[str] = []
-
-            def near_row(extra_flags=(), sector=None, name=None):
-                """Slim row for the near-miss board (no expensive calls)."""
-                fx = EURUSD if region == "US" else 1.0
-                shares = round(min(p["max_risk_eur"] * fx / risk_ps,
-                                   p["ticket_eur"] * fx / price), 4)
-                row = {"ticker": ticker, "name": name or ticker, "sector": sector or "?",
-                       "mktcap_b": None,
-                       "price": round(price, 2), "support": round(support, 2),
-                       "stop": round(stop, 2), "resistance": round(resistance, 2),
-                       "RR": round(rr, 2), "RSI": round(r, 1),
-                       "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
-                       "shares": shares,
-                       "risk_EUR": round(_to_eur(shares * risk_ps, ticker), 2),
-                       "days_to_earnings": None,
-                       "dollar_vol_m": round(dollar_vol / 1e6, 1),
-                       "flags": ",".join(list(extra_flags))}
-                score, _ = score_row(row, p)
-                row["score"] = max(score - NEAR_MISS_PENALTY * len(misses), 0)
-                row["why_not"] = "; ".join(m[1] for m in misses)
-                return row
-
-            if misses:
-                reject(ticker, misses[0][1])   # keeps the rejection summary honest
-                if p["show_near"]:
-                    near.append((near_row(extra_flags=["gates_skipped"]), list(misses)))
-                continue
-
-            # ---- Stage 2: expensive per-ticker calls, survivors only ----
-            progress(f"    [stage 2] {ticker}: technical setup found, fetching fundamentals...")
-            info = _get_info(ticker)
-            if not info:
-                # Yahoo is rate-limiting (or has no record): the technical
-                # setup is real, so keep it with a flag and a score penalty
-                # instead of falsely rejecting on absent fundamentals.
-                flags.append("fundamentals_unavailable")
-            mktcap = info.get("marketCap") or 0
-            fwd_eps = info.get("forwardEps")
-            sector = info.get("sector")
-
-            # ---- structural filters (fundamental) ----
-            if sector in SECTOR_EXCLUDE:
-                reject(ticker, f"excluded sector ({sector})")
-                continue
-            if sector and sector not in allowed_sectors:
-                reject(ticker, f"sector not selected ({sector})")
-                continue
-            def near_reject(gate, reason):
-                reject(ticker, reason)
-                if p["show_near"]:
-                    misses.append((gate, reason))
-                    near.append((near_row(extra_flags=flags, sector=sector,
-                                          name=info.get("shortName")), list(misses)))
-
-            if info and mktcap < p["min_mkt_cap_b"] * 1e9:
-                near_reject("mkt_cap", f"mkt cap {mktcap/1e9:.1f}B < min")
-                continue
-            # profitability gate with a free fallback: Yahoo's forwardEps is
-            # often missing for EU names — fall back to trailing EPS (flagged)
-            # instead of falsely rejecting as "unprofitable".
-            eps_used = fwd_eps
-            if eps_used is None and info.get("trailingEps") is not None:
-                eps_used = info["trailingEps"]
-                flags.append("eps_fallback")
-            if (p["require_profitable"] and info
-                    and (eps_used is None or eps_used <= 0)):
-                near_reject("profitable", f"unprofitable/no EPS data (fwd_eps={fwd_eps})")
-                continue
-
-            # ---- earnings proximity (Yahoo, cross-checked via free Finnhub) ----
-            days_to_earnings = _get_days_to_earnings(ticker)
-            days_fh = _finnhub_days_to_earnings(ticker)
-            if days_to_earnings is None and days_fh is not None:
-                days_to_earnings = days_fh
-                flags.append("earnings_from_finnhub")
-            elif (days_to_earnings is not None and days_fh is not None
-                  and abs(days_to_earnings - days_fh) > 2):
-                days_to_earnings = min(days_to_earnings, days_fh)  # conservative
-                flags.append("earnings_sources_disagree")
-            if days_to_earnings is None:
-                flags.append("earnings_unverified")
-            if days_to_earnings is not None and days_to_earnings <= p["earnings_drop_days"]:
-                near_reject("earnings", f"earnings in {days_to_earnings}d")
-                continue
-
-            # ---- sizing off YOUR risk, not a fixed ticket ----
-            fx = EURUSD if region == "US" else 1.0  # EUR budget -> listing currency
-            shares_by_risk = p["max_risk_eur"] * fx / risk_ps
-            shares_by_ticket = p["ticket_eur"] * fx / price
-            shares = min(shares_by_risk, shares_by_ticket)
-
-            # ---- portfolio awareness (only when a portfolio was provided) ----
-            status = "NEW"
-            sector_after = None
-            if port is not None:
-                held = port["positions"].get(ticker)
-                if held:
-                    status = ("ADD" if held["pnl_pct"] is None
-                              else f"ADD ({held['pnl_pct']:+.1f}%)")
-                pos_value_eur = _to_eur(shares * price, ticker)
-                if port["cash_eur"] <= 0:
-                    flags.append("no_cash")
-                elif pos_value_eur > port["cash_eur"]:
-                    shares *= port["cash_eur"] / pos_value_eur
-                    flags.append("cash_capped")
-                pos_value_eur = _to_eur(shares * price, ticker)
-                if sector and port["book_eur"] > 0:
-                    sector_after = round((port["sector_val"].get(sector, 0.0) + pos_value_eur)
-                                         / port["book_eur"] * 100, 1)
-                    if sector_after > p["sector_cap_pct"]:
-                        flags.append("sector_cap")
-
-            shares = round(shares, 4)
-            actual_risk_eur = round(_to_eur(shares * risk_ps, ticker), 2)
-
-            # ---- net-of-cost economics: block trades friction eats alive ----
-            pos_value_eur = _to_eur(shares * price, ticker)
-            target_profit_eur = _to_eur(shares * reward_ps, ticker)
-            cost_eur = 2 * p["commission_eur"] + p["spread_bps"] / 1e4 * pos_value_eur
-            friction_pct = (round(cost_eur / target_profit_eur * 100, 1)
-                            if target_profit_eur > 0 else None)
-            if (p["max_friction_pct"] > 0 and friction_pct is not None
-                    and friction_pct > p["max_friction_pct"]):
-                near_reject("friction", f"friction (costs {friction_pct:.0f}% of target "
-                                        f"profit > {p['max_friction_pct']:.0f}%)")
-                continue
-
-            row = {
-                "ticker": ticker, "name": info.get("shortName") or ticker,
-                "sector": sector or "?",
-                "mktcap_b": round(mktcap / 1e9, 1) if mktcap else None,
-                "price": round(price, 2),
-                "support": round(support, 2), "stop": round(stop, 2),
-                "resistance": round(resistance, 2),
-                "RR": round(rr, 2), "RSI": round(r, 1),
-                "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
-                "status": status, "sector_after": sector_after,
-                "friction_pct": friction_pct,
-                "shares": shares, "risk_EUR": actual_risk_eur,
-                "days_to_earnings": days_to_earnings,
-                "flags": ",".join(flags),
-            }
-            row["score"], row["rationale"] = score_row(row, p)
-            rows.append(row)
-        except Exception as e:
-            reject(ticker, f"data error: {e}")
+    if data is not None:
+        scan_block(list(universe), data)
+    else:
+        n_chunks = (len(universe) + DOWNLOAD_CHUNK - 1) // DOWNLOAD_CHUNK
+        progress(f"Downloading & scanning 1y prices for {len(universe)} tickers in "
+                 f"{n_chunks} batches of up to {DOWNLOAD_CHUNK} — results appear "
+                 f"below as each batch lands...")
+        parts, failed = [], 0
+        for ci in range(n_chunks):
+            chunk = universe[ci * DOWNLOAD_CHUNK:(ci + 1) * DOWNLOAD_CHUNK]
+            if ci and not _rate_limited_now("chart"):
+                time.sleep(1)  # don't fire batches back-to-back at Yahoo
+            d = None
+            try:
+                ok, d = _yahoo_call(lambda chunk=chunk: yf.download(
+                    chunk, period="1y", auto_adjust=True,
+                    group_by="ticker", threads=16, progress=False), scope="chart")
+                if not ok:
+                    d = None
+            except Exception as e:
+                progress(f"  batch {ci+1}/{n_chunks} failed: {e}")
+                d = None
+            if d is None or d.empty:
+                failed += 1
+                scanned_n[0] += len(chunk)
+                progress(f"  batch {ci+1}/{n_chunks}: no data (Yahoo throttled?) — skipped")
+            else:
+                if not isinstance(d.columns, pd.MultiIndex):  # single-ticker shape
+                    d = pd.concat({chunk[0]: d}, axis=1)
+                parts.append(d)
+                scan_block(chunk, d)
+                progress(f"  batch {ci+1}/{n_chunks}: done — "
+                         f"{len(rows)} qualified so far")
+            emit_partial()
+        if parts:
+            data = pd.concat(parts, axis=1) if len(parts) > 1 else parts[0]
+            _cache.update(ohlc_key=key, ohlc=data, ohlc_ts=time.time())
+            try:  # never overwrite a complete stale set with a partial download
+                if failed == 0 and float(data.memory_usage().sum()) < 150e6:
+                    cache_store.put(f"ohlc:{key}", data)
+            except Exception:
+                pass
+        else:
+            # rate-limited into a corner: yesterday's prices still beat no scan
+            hit, stale = cache_store.fetch(f"ohlc:{key}", STALE_OK)
+            if hit and stale is not None and not getattr(stale, "empty", True):
+                progress("  every price download failed — reusing last cached OHLC "
+                         "from disk (stale; rerun later for fresh prices).")
+                _cache.update(ohlc_key=key, ohlc=stale, ohlc_ts=time.time())
+                data = stale
+                scan_block(list(universe), stale)
+                emit_partial()
+            else:
+                raise RuntimeError(
+                    "every price download failed — Yahoo Finance is likely rate-limiting "
+                    "or blocking this server right now; wait a few minutes and rerun "
+                    "(on a fresh server, a smaller 'Max stocks to scan' also helps: "
+                    "fewer tickers = fewer requests)")
 
     elapsed = time.time() - t0
     rl_hits = _rl["hits"] - rl_hits_start

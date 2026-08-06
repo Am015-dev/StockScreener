@@ -807,7 +807,11 @@ async function refresh() {
 
   // one-line takeaway so nobody has to interpret an empty table
   const verdict = document.getElementById("verdict");
-  if (s.status === "done" && s.universe_size) {
+  if (s.status === "running" && s.scanned != null && s.universe_size) {
+    verdict.style.display = "block";
+    verdict.textContent = `⏳ Scanning… ${s.scanned} of ${s.universe_size} checked · ` +
+      `${(s.results || []).length} qualified so far — results update live below.`;
+  } else if (s.status === "done" && s.universe_size) {
     verdict.style.display = "block";
     const n = (s.results || []).length;
     if (n) {

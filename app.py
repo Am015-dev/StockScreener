@@ -45,6 +45,7 @@ _state = {
     "journal": None,           # track-record scoreboard (see journal.py)
     "near_board": [],          # closest non-qualifying setups, with reasons
     "relax_hints": {},         # which filter change would surface more results
+    "scanned": None,           # live progress: tickers checked so far this run
     "error": None,
 }
 
@@ -119,9 +120,19 @@ def _progress(msg):
         _state["log"][:] = _state["log"][-500:]
 
 
+def _on_partial(rows, scanned, total):
+    """Stream qualified picks to the UI while later batches still download."""
+    recs = sorted(rows, key=lambda r: r.get("score", 0), reverse=True)
+    _state["results"] = recs
+    _state["top_picks"] = recs[:TOP_N]
+    _state["scanned"] = scanned
+    _state["universe_size"] = total
+
+
 def _run_scan(params):
     try:
-        result = screener.run_screener(params, progress=_progress)
+        result = screener.run_screener(params, progress=_progress,
+                                       on_partial=_on_partial)
         df = result["df"]
         rejections = result["rejections"]
 
@@ -162,6 +173,7 @@ def _run_scan(params):
         _state["status"] = "error"
         _progress(f"Scan failed: {_state['error']}")
     finally:
+        _state["scanned"] = None
         _state["finished_at"] = time.time()
 
 
@@ -185,7 +197,7 @@ def run():
         _state.update(status="running", log=[], error=None,
                       started_at=time.time(), finished_at=None,
                       rejection_summary=[], near_misses=[], params_used=params,
-                      near_board=[], relax_hints={})
+                      near_board=[], relax_hints={}, scanned=None)
         threading.Thread(target=_run_scan, args=(params,), daemon=True).start()
     return jsonify({"ok": True, "params": params})
 
