@@ -140,6 +140,31 @@
   .empty { color: var(--muted); font-style: italic; }
   .tablewrap { overflow-x: auto; }
   .hint { font-size: .8rem; color: var(--muted); margin-top: .6rem; }
+  /* --- equity curve --- */
+  #btCurve { width: 100%; height: auto; display: block; margin-top: .5rem; }
+  .curve-note { font-size: .75rem; color: var(--muted); margin-top: .35rem; }
+  /* --- phone layout: stacked cards instead of sideways scrolling --- */
+  @media (max-width: 720px) {
+    body { padding: 1rem .6rem; }
+    main { max-width: 100%; }
+    h1 { font-size: 1.2rem; }
+    .fgrid { grid-template-columns: 1fr 1fr; }
+    .tiles { grid-template-columns: 1fr 1fr; }
+    .cards { grid-template-columns: 1fr; }
+    section { padding: .8rem .8rem; }
+    table.rsp, table.rsp tbody { display: block; width: 100%; }
+    table.rsp thead { display: none; }
+    table.rsp tr { display: block; background: var(--panel2); border: 1px solid var(--border);
+                   border-radius: 10px; margin-bottom: .6rem; padding: .4rem .7rem; }
+    table.rsp td { display: flex; justify-content: space-between; align-items: baseline;
+                   gap: 1rem; text-align: right; border-bottom: 1px solid rgba(255,255,255,.04);
+                   padding: .28rem 0; }
+    table.rsp td:last-child { border-bottom: 0; }
+    table.rsp td::before { content: attr(data-l); color: var(--muted);
+                           font-size: .78rem; text-align: left; flex: 0 0 auto; }
+    table.rsp td:first-child { font-weight: 700; font-size: 1.05rem; }
+    [data-tip]:hover::after { max-width: 85vw; }
+  }
 </style>
 </head>
 <body>
@@ -377,6 +402,29 @@
     <div id="journalOpenWrap" style="display:none">
       <div class="subhead">Still open</div>
       <div class="tablewrap"><div id="journalOpen"></div></div>
+    </div>
+  </section>
+
+  <section id="btSection">
+    <h2>🧪 Simulation — would these rules have made money?</h2>
+    <div class="secsub">Replays your exact filter settings over <b>every stock and every
+      trading day</b> in the last scan's downloaded history, and grades each signal the
+      same way as the track record: did it hit the target or the stop first?</div>
+    <div class="bar" style="margin-bottom:.5rem">
+      <button id="btBtn" onclick="runBacktest()">▶ Run simulation</button>
+      <span id="btPill" class="pill">idle</span>
+    </div>
+    <div id="btMsg" class="hint" style="display:none"></div>
+    <div id="btBody" style="display:none">
+      <div class="tiles" id="btTiles"></div>
+      <div class="hint" id="btBreak" style="margin:.2rem 0 .4rem"></div>
+      <svg id="btCurve" viewBox="0 0 640 170" preserveAspectRatio="none"></svg>
+      <div class="curve-note" id="btCurveNote"></div>
+      <div class="hint">Honest limits: technical rules only (profitability/earnings/analyst
+        gates need data that doesn't exist historically on a free feed) · entry at the signal
+        day's close, exit exactly at stop/target (at the open when the price gaps past) ·
+        no trading costs · positions expire after 40 trading days · sample = the price
+        history in the current cache.</div>
     </div>
   </section>
 
@@ -660,7 +708,7 @@ function renderNearBoard(nearRows, hints, nQualified) {
   if (!nearRows || !nearRows.length) { sec.style.display = "none"; return; }
   sec.style.display = "";
   document.getElementById("nearBoard").innerHTML =
-    "<table><thead><tr>" +
+    "<table class=\"rsp\"><thead><tr>" +
     `<th data-tip="Ticker — hover for the company name.">Stock</th>` +
     `<th data-tip="Quality score after a penalty for each failed filter.">Score</th>` +
     `<th data-tip="Exactly which of your filters this setup failed, with the numbers.">Why it didn't qualify</th>` +
@@ -676,16 +724,131 @@ function renderNearBoard(nearRows, hints, nQualified) {
     `<th data-tip="Your worst case if the stop-loss is hit.">€ at risk</th>` +
     "</tr></thead><tbody>" +
     nearRows.map(r =>
-      `<tr><td${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
-      `<td class="score" style="color:${scoreColor(r.score)}">${esc(r.score)}</td>` +
-      `<td class="whynot">${esc(r.why_not || "")}</td>` +
-      `<td>${esc(r.sector && r.sector !== "?" ? r.sector : "—")}</td>` +
-      `<td>${r.mktcap_b == null ? "—" : "$" + esc(r.mktcap_b) + "B"}</td>` +
-      `<td>${r.analyst ? esc(r.analyst) : "—"}</td>` +
-      `<td>${esc(r.price)}</td><td>${esc(r.stop)}</td><td>${esc(r.resistance)}</td>` +
-      `<td class="rr">${esc(r.RR)}</td><td>${esc(r.RSI)}</td>` +
-      `<td>${esc(r.shares)}</td><td>€${esc(r.risk_EUR)}</td></tr>`).join("") +
+      `<tr><td data-l="Stock"${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
+      `<td class="score" style="color:${scoreColor(r.score)}" data-l="Score">${esc(r.score)}</td>` +
+      `<td class="whynot" data-l="Why not">${esc(r.why_not || "")}</td>` +
+      `<td data-l="Sector">${esc(r.sector && r.sector !== "?" ? r.sector : "—")}</td>` +
+      `<td data-l="Size">${r.mktcap_b == null ? "—" : "$" + esc(r.mktcap_b) + "B"}</td>` +
+      `<td data-l="Analysts">${r.analyst ? esc(r.analyst) : "—"}</td>` +
+      `<td data-l="Price">${esc(r.price)}</td><td data-l="Stop-loss">${esc(r.stop)}</td><td data-l="Target">${esc(r.resistance)}</td>` +
+      `<td class="rr" data-l="Reward:Risk">${esc(r.RR)}</td><td data-l="RSI">${esc(r.RSI)}</td>` +
+      `<td data-l="Buy (shares)">${esc(r.shares)}</td><td data-l="€ at risk">€${esc(r.risk_EUR)}</td></tr>`).join("") +
     "</tbody></table>";
+}
+
+// ---- simulation ----
+async function runBacktest() {
+  const r = await fetch("/backtest", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(collectParams())});
+  const d = await r.json().catch(() => ({}));
+  const msg = document.getElementById("btMsg");
+  if (!r.ok) { msg.style.display = "block"; msg.textContent = "⚠ " + (d.message || "could not start"); }
+  else { msg.style.display = "none"; document.getElementById("logBox").open = true; }
+  startPolling();
+}
+
+function renderBacktest(bt, btStatus) {
+  const pill = document.getElementById("btPill");
+  pill.textContent = {idle: "not run yet", running: "simulating…", done: "done",
+                      error: "failed"}[btStatus] || btStatus;
+  pill.className = "pill " + (btStatus === "done" ? "done" :
+                              btStatus === "running" ? "running" :
+                              btStatus === "error" ? "error" : "");
+  document.getElementById("btBtn").disabled = (btStatus === "running");
+  const body = document.getElementById("btBody");
+  if (!bt || btStatus !== "done") { if (btStatus !== "done") body.style.display = "none"; return; }
+  body.style.display = "block";
+  if (!bt.n) {
+    document.getElementById("btTiles").innerHTML =
+      '<div class="tile"><div class="v">0</div><div class="l">historical trades matched your rules</div></div>';
+    document.getElementById("btBreak").textContent =
+      "No day in the cached history produced a signal under these filters — they may be very strict.";
+    document.getElementById("btCurve").innerHTML = "";
+    document.getElementById("btCurveNote").textContent = "";
+    return;
+  }
+  const pf = bt.profit_factor == null ? "∞" : bt.profit_factor;
+  const tiles = [
+    [bt.n, "historical trades", "Signals found by replaying your rules over the cached history."],
+    [bt.win_rate_pct + "%", "ended in profit", "Share of simulated trades that ended with a gain."],
+    [rFmt(bt.avg_r), "avg outcome", "Average result per trade in units of planned risk. Above 0R = the method made money on paper."],
+    [rFmt(bt.total_r), "total", "Sum of all simulated outcomes, in R."],
+    [pf, "profit factor", "Gross profit ÷ gross loss. Above 1 = profitable; 1.5+ is considered solid."],
+  ];
+  document.getElementById("btTiles").innerHTML = tiles.map(([v, l, tip]) => {
+    const s = String(v);
+    const col = /^[+]/.test(s) ? "var(--green)" : /^[-]/.test(s) ? "var(--red)" : "var(--text)";
+    return `<div class="tile"><div class="v" style="color:${col}">${esc(s)}</div>` +
+           `<div class="l" data-tip="${esc(tip)}">${esc(l)}</div></div>`;
+  }).join("");
+  document.getElementById("btBreak").innerHTML =
+    `${esc(bt.hit_target)} hit target · ${esc(bt.hit_stop)} stopped out · ${esc(bt.expired)} expired · ` +
+    `period ${esc(bt.from)} → ${esc(bt.to)} across ${esc(bt.n_stocks)} stocks · ` +
+    `best ${esc(bt.best.ticker)} ${esc(rFmt(bt.best.outcome_r))} · worst ${esc(bt.worst.ticker)} ${esc(rFmt(bt.worst.outcome_r))}`;
+  drawCurve(bt.curve || []);
+  document.getElementById("btCurveNote").textContent =
+    "Cumulative result in R if every signal had been taken with equal risk — rising line = the edge is real in this sample.";
+}
+
+function drawCurve(pts) {
+  const svg = document.getElementById("btCurve");
+  if (!pts.length) { svg.innerHTML = ""; return; }
+  const W = 640, H = 170, PL = 34, PR = 8, PT = 12, PB = 18;
+  const ys = pts.map(p => p.cum_r);
+  const ymin = Math.min(0, ...ys), ymax = Math.max(0, ...ys);
+  const yr = (ymax - ymin) || 1;
+  const X = i => PL + (W - PL - PR) * (pts.length === 1 ? 0.5 : i / (pts.length - 1));
+  const Y = v => PT + (H - PT - PB) * (1 - (v - ymin) / yr);
+  const path = pts.map((p, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(p.cum_r).toFixed(1)).join(" ");
+  const zero = Y(0);
+  const up = pts[pts.length - 1].cum_r >= 0;
+  svg.innerHTML =
+    `<line x1="${PL}" y1="${zero}" x2="${W - PR}" y2="${zero}" stroke="var(--border)" stroke-width="1" stroke-dasharray="4 4"/>` +
+    `<text x="${PL - 6}" y="${zero + 4}" text-anchor="end" font-size="11" fill="var(--muted)">0R</text>` +
+    `<text x="${PL - 6}" y="${Y(ymax) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${esc(String(Math.round(ymax)))}R</text>` +
+    (ymin < 0 ? `<text x="${PL - 6}" y="${Y(ymin) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${esc(String(Math.round(ymin)))}R</text>` : "") +
+    `<path d="${path}" fill="none" stroke="${up ? "var(--green)" : "var(--red)"}" stroke-width="2"/>` +
+    `<text x="${PL}" y="${H - 4}" font-size="11" fill="var(--muted)">${esc(pts[0].date)}</text>` +
+    `<text x="${W - PR}" y="${H - 4}" text-anchor="end" font-size="11" fill="var(--muted)">${esc(pts[pts.length - 1].date)}</text>` +
+    `<circle id="btDot" r="3.5" fill="var(--text)" style="display:none"/>` +
+    `<text id="btLbl" font-size="11" fill="var(--text)" style="display:none"></text>`;
+  svg.onmousemove = (ev) => {
+    const box = svg.getBoundingClientRect();
+    const fx = (ev.clientX - box.left) / box.width * W;
+    let best = 0, bd = 1e9;
+    pts.forEach((p, i) => { const d = Math.abs(X(i) - fx); if (d < bd) { bd = d; best = i; } });
+    const dot = svg.querySelector("#btDot"), lbl = svg.querySelector("#btLbl");
+    dot.style.display = "block"; lbl.style.display = "block";
+    dot.setAttribute("cx", X(best)); dot.setAttribute("cy", Y(pts[best].cum_r));
+    const tx = Math.min(Math.max(X(best) + 8, PL), W - 150);
+    lbl.setAttribute("x", tx); lbl.setAttribute("y", Math.max(Y(pts[best].cum_r) - 8, 12));
+    lbl.textContent = `${pts[best].date}: ${pts[best].cum_r > 0 ? "+" : ""}${pts[best].cum_r}R`;
+  };
+  svg.onmouseleave = () => {
+    svg.querySelector("#btDot").style.display = "none";
+    svg.querySelector("#btLbl").style.display = "none";
+  };
+}
+
+// ---- Yahoo auth mirror: keep the crumb in this browser across redeploys ----
+let authSynced = false;
+async function syncAuthBackup() {
+  if (authSynced) return;
+  try {
+    const d = await (await fetch("/auth/export")).json();
+    if (d.auth && d.auth.crumb) {
+      localStorage.setItem("yahoo_auth_v1", JSON.stringify(d));
+      authSynced = true;
+    } else {
+      const b = localStorage.getItem("yahoo_auth_v1");
+      if (b) {
+        const r = await (await fetch("/auth/restore", {method: "POST",
+          headers: {"Content-Type": "application/json"}, body: b})).json();
+        if (r.restored) authSynced = true;
+      }
+    }
+  } catch (e) {}
 }
 
 // ---- track record ----
@@ -730,15 +893,15 @@ function renderJournal(j) {
   if (j.recent && j.recent.length) {
     rw.style.display = "";
     document.getElementById("journalRecent").innerHTML =
-      "<table><thead><tr><th>Stock</th><th>Picked</th><th>Resolved</th>" +
+      "<table class=\"rsp\"><thead><tr><th>Stock</th><th>Picked</th><th>Resolved</th>" +
       "<th style='text-align:left'>What happened</th><th>Result</th><th>Score was</th></tr></thead><tbody>" +
       j.recent.map(r => {
         const [txt, col] = OUTCOME_TEXT[r.status] || [r.status, "var(--muted)"];
-        return `<tr><td>${esc(r.ticker)}</td><td>${esc(r.scan_date)}</td>` +
-          `<td>${esc(r.resolved_date ?? "—")}</td>` +
-          `<td style="text-align:left;color:${col}">${esc(txt)}</td>` +
-          `<td style="color:${col};font-weight:700">${esc(rFmt(r.outcome_r))}</td>` +
-          `<td>${esc(r.score ?? "—")}</td></tr>`;
+        return `<tr><td data-l="Stock">${esc(r.ticker)}</td><td data-l="Picked">${esc(r.scan_date)}</td>` +
+          `<td data-l="Resolved">${esc(r.resolved_date ?? "—")}</td>` +
+          `<td style="text-align:left;color:${col}" data-l="What happened">${esc(txt)}</td>` +
+          `<td style="color:${col};font-weight:700" data-l="Result">${esc(rFmt(r.outcome_r))}</td>` +
+          `<td data-l="Score was">${esc(r.score ?? "—")}</td></tr>`;
       }).join("") + "</tbody></table>";
   } else rw.style.display = "none";
 
@@ -746,11 +909,11 @@ function renderJournal(j) {
   if (j.open && j.open.length) {
     ow.style.display = "";
     document.getElementById("journalOpen").innerHTML =
-      "<table><thead><tr><th>Stock</th><th>Picked</th><th>Entry was</th>" +
+      "<table class=\"rsp\"><thead><tr><th>Stock</th><th>Picked</th><th>Entry was</th>" +
       "<th>Stop-loss</th><th>Target</th><th>Days open</th></tr></thead><tbody>" +
       j.open.map(r =>
-        `<tr><td>${esc(r.ticker)}</td><td>${esc(r.scan_date)}</td><td>${esc(r.entry)}</td>` +
-        `<td>${esc(r.stop)}</td><td>${esc(r.target)}</td><td>${esc(r.days_open)}</td></tr>`)
+        `<tr><td data-l="Stock">${esc(r.ticker)}</td><td data-l="Picked">${esc(r.scan_date)}</td><td data-l="Entry was">${esc(r.entry)}</td>` +
+        `<td data-l="Stop-loss">${esc(r.stop)}</td><td data-l="Target">${esc(r.target)}</td><td data-l="Days open">${esc(r.days_open)}</td></tr>`)
       .join("") + "</tbody></table>";
   } else ow.style.display = "none";
 }
@@ -816,6 +979,7 @@ async function refresh() {
 
   renderTopPicks(s.top_picks);
   renderNearBoard(s.near_board, s.relax_hints, (s.results || []).length);
+  renderBacktest(s.backtest, s.bt_status || "idle");
 
   // one-line takeaway so nobody has to interpret an empty table
   const verdict = document.getElementById("verdict");
@@ -844,6 +1008,7 @@ async function refresh() {
   }
   renderJournal(s.journal);
   syncJournalBackup(s.journal);
+  syncAuthBackup();
 
   const ps = document.getElementById("portSummary");
   if (s.portfolio) {
@@ -865,7 +1030,7 @@ async function refresh() {
     count.textContent = `(${s.results.length})`;
     csv.style.display = "";
     res.classList.remove("empty");
-    res.innerHTML = "<table><thead><tr>" +
+    res.innerHTML = "<table class=\"rsp\"><thead><tr>" +
       cols.map(([k, label, tip]) => `<th data-tip="${esc(tip)}">${esc(label)}</th>`).join("") +
       "</tr></thead><tbody>" +
       s.results.map(row => "<tr>" + cols.map(([k, label, tip, fmt]) => {
@@ -889,7 +1054,7 @@ async function refresh() {
           v = n ? `⚠ ${n}` : "—";
           if (t) tipAttr = ` data-tip="${esc(t)}"`;
         }
-        return `<td class="${cls}"${style}${tipAttr}>${esc(v)}</td>`;
+        return `<td class="${cls}"${style}${tipAttr} data-l="${esc(label)}">${esc(v)}</td>`;
       }).join("") + "</tr>").join("") +
       "</tbody></table>";
   } else if (s.status === "done") {
@@ -925,7 +1090,7 @@ async function refresh() {
       "</tbody></table>";
   }
 
-  if (s.status !== "running" && poller && s.status !== "idle") {
+  if (s.status !== "running" && s.bt_status !== "running" && poller && s.status !== "idle") {
     // keep polling only while running; one refresh after finish is enough
     clearInterval(poller); poller = null;
   }

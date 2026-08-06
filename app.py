@@ -19,6 +19,8 @@ import pandas as pd
 import yfinance as yf
 from flask import Flask, Response, jsonify, render_template, request
 
+import backtest as backtest_mod
+import cache_store
 import journal
 import portfolio_import
 import screener
@@ -46,6 +48,8 @@ _state = {
     "near_board": [],          # closest non-qualifying setups, with reasons
     "relax_hints": {},         # which filter change would surface more results
     "scanned": None,           # live progress: tickers checked so far this run
+    "bt_status": "idle",       # simulation: idle | running | done | error
+    "backtest": None,          # simulation results (see backtest.py)
     "error": None,
 }
 
@@ -217,6 +221,79 @@ def parse_portfolio():
     except Exception as e:
         return jsonify({"ok": False, "error": f"could not parse: {e}"}), 400
     return jsonify({"ok": True, **result})
+
+
+def _run_backtest_thread(params):
+    try:
+        bt = backtest_mod.run_backtest(params, screener._cache.get("ohlc"),
+                                       screener._cache.get("universe") or [],
+                                       progress=_progress)
+        _state["backtest"] = bt
+        _state["bt_status"] = "done"
+        _progress(f"Simulation complete: {bt['n']} historical trades across "
+                  f"{bt.get('n_stocks', 0)} stocks.")
+    except Exception as e:
+        _state["bt_status"] = "error"
+        _progress(f"Simulation failed: {type(e).__name__}: {e}")
+
+
+@app.route("/backtest", methods=["POST"])
+def run_backtest_route():
+    overrides = request.get_json(silent=True) or {}
+    params = screener.clean_params(overrides)
+    if screener._cache.get("ohlc") is None or not screener._cache.get("universe"):
+        return jsonify({"ok": False, "message":
+                        "Run a scan first — the simulation replays the prices "
+                        "the scan downloaded."}), 400
+    with _lock:
+        if _state["bt_status"] == "running" or _state["status"] == "running":
+            return jsonify({"ok": False, "message": "Something is already running."}), 409
+        _state.update(bt_status="running", backtest=None)
+        threading.Thread(target=_run_backtest_thread, args=(params,),
+                         daemon=True).start()
+    return jsonify({"ok": True})
+
+
+# ---- Yahoo auth mirror: the crumb lives on ephemeral disk, so the browser
+# ---- keeps a copy (like the journal) and hands it back after a redeploy
+@app.route("/auth/export")
+def auth_export():
+    hit, stored = cache_store.fetch("yahoo_auth", screener.YAHOO_AUTH_TTL)
+    return jsonify({"auth": stored if hit else None})
+
+
+@app.route("/auth/restore", methods=["POST"])
+def auth_restore():
+    body = request.get_json(silent=True) or {}
+    a = body.get("auth") or {}
+    try:
+        if (a.get("crumb") and isinstance(a.get("cookies"), dict)
+                and time.time() - float(a.get("ts", 0)) < screener.YAHOO_AUTH_TTL):
+            cache_store.put("yahoo_auth", {"cookies": a["cookies"],
+                                           "crumb": a["crumb"], "ts": a["ts"]})
+            screener._yauth.update(session=None, crumb=None, ts=0.0)
+            return jsonify({"ok": True, "restored": True})
+    except (TypeError, ValueError):
+        pass
+    return jsonify({"ok": True, "restored": False})
+
+
+def _crumb_hunter():
+    """Yahoo's token endpoint throttles in waves; keep trying quietly in the
+    background until a crumb is won, then it persists for a week."""
+    import random
+    while True:
+        try:
+            _, crumb = screener._yahoo_auth_session()
+            if crumb:
+                time.sleep(3600)
+                continue
+        except Exception:
+            pass
+        time.sleep(150 + random.random() * 120)
+
+
+threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 
 @app.route("/status")
