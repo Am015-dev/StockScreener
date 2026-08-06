@@ -118,16 +118,23 @@ RETRY_DELAYS = (2, 5)      # backoff before giving up on a rate-limited call
 # rate-limited call must never kill a scan (stale cache beats no scan), and
 # once we know we're throttled there is no point firing hundreds more doomed
 # requests — a cooldown window short-circuits live calls to the stale path.
-_rl = {"until": 0.0, "hits": 0}
+#
+# Crucially, Yahoo limits each API separately, and by very different amounts:
+# the screener API ("screen") trips almost immediately from datacenter IPs,
+# the chart/price API ("chart") is the most tolerant, quote/fundamentals
+# ("quote") sits in between. The breaker is therefore scoped per API class —
+# a blocked screener query must not stop the price download from being tried.
+_rl = {"until": {}, "hits": 0}   # scope -> cooldown deadline
 
 
-def _rate_limited_now() -> bool:
-    return time.time() < _rl["until"]
+def _rate_limited_now(scope: str = "chart") -> bool:
+    return time.time() < _rl["until"].get(scope, 0.0)
 
 
-def _note_rate_limited():
+def _note_rate_limited(scope: str):
     _rl["hits"] += 1
-    _rl["until"] = max(_rl["until"], time.time() + RATE_LIMIT_COOLDOWN)
+    _rl["until"][scope] = max(_rl["until"].get(scope, 0.0),
+                              time.time() + RATE_LIMIT_COOLDOWN)
 
 
 def _is_rate_limit(e: Exception) -> bool:
@@ -135,16 +142,17 @@ def _is_rate_limit(e: Exception) -> bool:
             or "too many requests" in str(e).lower() or "429" in str(e))
 
 
-def _yahoo_call(fn):
-    """Run one live Yahoo call with retry + circuit breaker.
+def _yahoo_call(fn, scope: str = "chart"):
+    """Run one live Yahoo call with retry + per-API circuit breaker.
 
     Returns (ok, value). Retries a rate-limited call with short backoff;
-    when retries are exhausted, opens the cooldown window and returns
-    (False, None). During cooldown every call short-circuits to (False, None)
-    without touching the network. Non-rate-limit exceptions propagate so
-    callers keep their existing error handling.
+    when retries are exhausted, opens this scope's cooldown window and
+    returns (False, None). During that window every call in the same scope
+    short-circuits to (False, None) without touching the network — other
+    scopes keep trying. Non-rate-limit exceptions propagate so callers keep
+    their existing error handling.
     """
-    if _rate_limited_now():
+    if _rate_limited_now(scope):
         return False, None
     delays = list(RETRY_DELAYS)
     while True:
@@ -154,7 +162,7 @@ def _yahoo_call(fn):
             if not _is_rate_limit(e):
                 raise
             if not delays:
-                _note_rate_limited()
+                _note_rate_limited(scope)
                 return False, None
             time.sleep(delays.pop(0))
 
@@ -277,7 +285,7 @@ def build_universe(p: dict, progress=print) -> list[str]:
     try:
         if p["include_us"]:
             for sector in p["sectors"]:
-                if _rate_limited_now():
+                if _rate_limited_now("screen"):
                     progress("  Yahoo rate limit hit — skipping remaining US sector queries")
                     break
                 q = yf.EquityQuery("and", [
@@ -287,7 +295,8 @@ def build_universe(p: dict, progress=print) -> list[str]:
                 ])
                 try:
                     ok, res = _yahoo_call(lambda q=q: yf.screen(
-                        q, size=250, sortField="intradaymarketcap", sortAsc=False))
+                        q, size=250, sortField="intradaymarketcap", sortAsc=False),
+                        scope="screen")
                     if not ok:
                         progress(f"  us/{sector}: rate-limited")
                         continue
@@ -299,7 +308,7 @@ def build_universe(p: dict, progress=print) -> list[str]:
         if p["include_eu"]:
             # sector filtered later via info (Yahoo's EU sector tagging is spotty)
             for region in EU_REGIONS:
-                if _rate_limited_now():
+                if _rate_limited_now("screen"):
                     progress("  Yahoo rate limit hit — skipping remaining EU region queries")
                     break
                 q = yf.EquityQuery("and", [
@@ -308,7 +317,8 @@ def build_universe(p: dict, progress=print) -> list[str]:
                 ])
                 try:
                     ok, res = _yahoo_call(lambda q=q: yf.screen(
-                        q, size=100, sortField="intradaymarketcap", sortAsc=False))
+                        q, size=100, sortField="intradaymarketcap", sortAsc=False),
+                        scope="screen")
                     if not ok:
                         progress(f"  {region}: rate-limited")
                         continue
@@ -352,7 +362,7 @@ def build_universe(p: dict, progress=print) -> list[str]:
         progress(f"  universe capped at {cap} (largest caps kept: {len(us)} US, {len(eu)} EU)")
     out = us + eu
     _cache.update(universe_key=key, universe=out, universe_ts=time.time())
-    if not _rate_limited_now():  # don't overwrite a full stale universe with a partial one
+    if not _rate_limited_now("screen"):  # don't overwrite a full stale universe with a partial one
         cache_store.put(f"universe:{key}", out)
     return out
 
@@ -375,12 +385,12 @@ def _get_ohlc(universe: list[str], progress=print):
     parts, failed = [], 0
     for ci in range(n_chunks):
         chunk = universe[ci * DOWNLOAD_CHUNK:(ci + 1) * DOWNLOAD_CHUNK]
-        if ci and not _rate_limited_now():
+        if ci and not _rate_limited_now("chart"):
             time.sleep(2)  # don't fire chunk bursts back-to-back at Yahoo
         try:
             ok, d = _yahoo_call(lambda chunk=chunk: yf.download(
                 chunk, period="1y", auto_adjust=True,
-                group_by="ticker", threads=8, progress=False))
+                group_by="ticker", threads=8, progress=False), scope="chart")
             if not ok:
                 failed += 1
                 progress(f"  chunk {ci+1}/{n_chunks}: skipped (Yahoo rate limit)")
@@ -444,7 +454,7 @@ def _get_info(ticker: str) -> dict:
         _cache["info"][ticker] = (time.time(), stored)
         return stored
     try:
-        ok, info = _yahoo_call(lambda: yf.Ticker(ticker).info)
+        ok, info = _yahoo_call(lambda: yf.Ticker(ticker).info, scope="quote")
     except Exception:
         ok, info = False, None
     if ok:
@@ -465,7 +475,8 @@ def _get_days_to_earnings(ticker: str) -> int | None:
         _cache["earnings"][ticker] = (time.time(), stored)
         return stored
     try:
-        ok, ed = _yahoo_call(lambda: yf.Ticker(ticker).get_earnings_dates(limit=4))
+        ok, ed = _yahoo_call(lambda: yf.Ticker(ticker).get_earnings_dates(limit=4),
+                             scope="quote")
     except Exception:
         ok, ed = True, None  # genuine "no data" (e.g. ETFs) — cacheable as None
     if not ok:
@@ -498,7 +509,7 @@ def _get_benchmarks(progress=print) -> dict:
     try:
         ok, data = _yahoo_call(lambda: yf.download(
             list(BENCHMARKS.values()), period="1y", auto_adjust=True,
-            group_by="ticker", threads=True, progress=False))
+            group_by="ticker", threads=True, progress=False), scope="chart")
         if not ok:
             data = None
     except Exception as e:
@@ -642,7 +653,7 @@ def _portfolio_state(p: dict, data, universe: list[str], progress=print) -> dict
         try:
             ok, d2 = _yahoo_call(lambda: yf.download(
                 missing, period="5d", auto_adjust=True,
-                group_by="ticker", threads=True, progress=False))
+                group_by="ticker", threads=True, progress=False), scope="chart")
             if ok and d2 is not None:
                 for t in missing:
                     px = _last_close(d2, t)
@@ -739,10 +750,10 @@ def run_screener(params: dict | None = None, progress=print) -> dict:
     allowed_sectors = set(p["sectors"])
     t0 = time.time()
     rl_hits_start = _rl["hits"]
-    if _rate_limited_now():
-        progress(f"Note: Yahoo rate-limit cooldown active for another "
-                 f"{int(_rl['until'] - time.time())}s — this run will lean on "
-                 f"cached data where live calls would be throttled.")
+    cooling = [s for s in ("screen", "chart", "quote") if _rate_limited_now(s)]
+    if cooling:
+        progress(f"Note: Yahoo rate-limit cooldown active for {', '.join(cooling)} "
+                 f"calls — this run will lean on cached data there.")
 
     progress("Building universe via Yahoo sector screener...")
     universe = build_universe(p, progress)
