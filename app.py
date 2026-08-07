@@ -207,9 +207,14 @@ def _adopt_published(preset: dict) -> bool:
     params = payload.get("params_used")
     if not params:
         return False
+    payload, dropped = _drop_offmethod(payload)
     market_db.save_snapshot(params, {k: payload.get(k) for k in SNAPSHOT_KEYS})
     if not _load_snapshot(params):
         return False
+    if dropped:
+        _state["log"].append(
+            f"{dropped} published pick(s) dropped — produced before the rules "
+            f"tightened and no longer within the methodology.")
     # a published simulation arrives ready to display, so the analytics
     # are populated before the reader does anything
     if payload.get("backtest"):
@@ -233,6 +238,51 @@ def _load_published(force: bool = False) -> bool:
     if float(best.get("results_ts") or 0) <= have:
         return False
     return _adopt_published(best)
+
+
+def _methodology_violations(row: dict) -> list[str]:
+    """Why this stored row would not be produced by the current rules.
+
+    Results outlive the code that made them. A snapshot or a published file
+    written before a rule tightened will happily keep being served, so a
+    methodology fix reaches the code and not the screen — which is exactly
+    what happened when the RSI ceiling, the reward:risk cap and the
+    earnings gate all landed while the page carried on showing rows that
+    violated all three."""
+    why = []
+    try:
+        rsi = row.get("RSI")
+        ceiling = screener.METHODOLOGY_MAX.get("rsi_high")
+        if rsi is not None and ceiling is not None and float(rsi) > ceiling:
+            why.append(f"RSI {float(rsi):.0f} above the {ceiling:g} pullback ceiling")
+        rr = row.get("RR")
+        if rr is not None and float(rr) > screener.RR_SANE_MAX:
+            why.append(f"reward:risk {float(rr):.1f} above {screener.RR_SANE_MAX:g}")
+        price, support = row.get("price"), row.get("support")
+        dist_max = screener.METHODOLOGY_MAX.get("max_support_dist_pct")
+        if price and support and dist_max is not None:
+            dist = (float(price) - float(support)) / float(price) * 100
+            if dist > dist_max:
+                why.append(f"entry {dist:.1f}% above support (max {dist_max:g}%)")
+    except (TypeError, ValueError):
+        pass
+    return why
+
+
+def _drop_offmethod(payload: dict) -> tuple[dict, int]:
+    """Remove stored rows the current rules would no longer produce."""
+    dropped = 0
+    for key in ("results", "top_picks", "near_board", "pending"):
+        rows = payload.get(key)
+        if not isinstance(rows, list):
+            continue
+        keep = [r for r in rows if not _methodology_violations(r)]
+        if key == "results":
+            dropped = len(rows) - len(keep)
+        payload[key] = keep
+    if isinstance(payload.get("results"), list):
+        payload["top_picks"] = payload["results"][:TOP_N]
+    return payload, dropped
 
 
 SNAPSHOT_KEYS = ("results", "top_picks", "rejection_summary", "near_misses",
@@ -304,6 +354,7 @@ def _load_snapshot(params=None) -> bool:
             _state["backtest"] = snap["backtest"]
             _state["bt_status"] = "done"
         return False
+    snap, dropped = _drop_offmethod(snap)
     for k in SNAPSHOT_KEYS:
         if snap.get(k) is not None:
             _state[k] = snap[k]
@@ -312,6 +363,10 @@ def _load_snapshot(params=None) -> bool:
     _state["results_ts"] = ts
     _state["restored"] = True
     _state["params_used"] = snap.get("_params") or _state.get("params_used")
+    if dropped:
+        _state["log"].append(
+            f"{dropped} stored pick(s) dropped — the rules have tightened since "
+            f"that scan and they would no longer qualify. Re-run for a full list.")
     if not _state.get("backtest"):
         _autoload_backtest(_state.get("params_used"))
     n = len(_state.get("results") or [])
