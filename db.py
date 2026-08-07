@@ -35,7 +35,11 @@ TECH_PARAMS = ("rsi_low", "rsi_high", "min_rr", "swing_lookback", "pivot_k",
                # market gates: simulated since the regime/RS filters landed.
                # They MUST be part of config identity — otherwise the reuse
                # path would serve a simulation run under different rules.
-               "require_market_uptrend", "min_rs_3m")
+               "require_market_uptrend", "min_rs_3m",
+               # realism knobs: each changes which trades exist or what they
+               # return, so each must change config identity
+               "min_price", "min_share_vol", "stop_mode", "stop_atr_mult",
+               "max_hold_bars", "cost_pct")
 MIN_SAMPLE = 5   # never show a win rate computed from fewer signals
 
 _SCHEMA = """

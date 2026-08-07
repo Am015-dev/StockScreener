@@ -11,8 +11,9 @@ Honest scope (stated in the UI too):
     are not simulated.
   - entries at the signal day's close; exits exactly at stop/target, at the
     open when the price gaps past a level; positions expire after
-    EXPIRE_BARS bars marked to market. No costs. One open trade per ticker
-    at a time — the same conventions as the live track record.
+    max_hold_bars bars marked to market. Every trade is charged a
+    round-trip cost (cost_pct, spread + commission) in R. One open trade
+    per ticker at a time — the same conventions as the live track record.
 """
 
 import gc
@@ -28,7 +29,7 @@ import cache_store
 import db
 import screener
 
-EXPIRE_BARS = 40      # same as the live journal
+EXPIRE_BARS = 40      # default hold cap; overridden by p["max_hold_bars"]
 MIN_HISTORY = 260     # bars needed before the first eligible signal day
 CURVE_POINTS = 200    # cap for the equity-curve payload
 HIST_PERIOD = "5y"    # simulation depth — a 1y sample only yields biased
@@ -243,7 +244,9 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list,
         busy_until = -1
         # entries need a FULL resolution window ahead — otherwise the sample
         # only contains trades that resolved fast, i.e. mostly stop-outs
-        for ti in range(210, len(hist) - EXPIRE_BARS):
+        hold_cap = int(p.get("max_hold_bars") or EXPIRE_BARS)
+        cost_pct = float(p.get("cost_pct") or 0.0)
+        for ti in range(210, len(hist) - hold_cap):
             if ti <= busy_until:
                 continue                       # one open trade per ticker
             price = float(c_v[ti])
@@ -260,11 +263,29 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list,
                     continue                   # lagging its own market
             if float(dv30.iloc[ti]) < p["min_dollar_vol_m"] * 1e6:
                 continue
+            # illiquid traps: a sub-$5 price or a thin share count means the
+            # spread eats the edge whatever the chart says
+            if price < p.get("min_price", 0.0):
+                continue
+            if p.get("min_share_vol"):
+                if float(vol.iloc[max(0, ti - 29):ti + 1].mean()) < p["min_share_vol"]:
+                    continue
             support = screener.last_pivot_low(
                 low.iloc[max(0, ti - 119):ti + 1], p["pivot_k"])
             if support is None or support >= price:
                 continue
-            stop = support * (1 - p["stop_buffer_pct"] / 100)
+            a = float(atr_s.iloc[ti]) if np.isfinite(atr_s.iloc[ti]) else None
+            if p.get("stop_mode") == "atr":
+                # volatility-scaled stop: adapts to each stock instead of
+                # assuming one percentage fits everything. Never place it
+                # ABOVE the pivot — the structural level is what invalidates
+                # the setup, so the wider of the two is the honest stop.
+                if a is None:
+                    continue
+                stop = min(support * (1 - p["stop_buffer_pct"] / 100),
+                           price - p.get("stop_atr_mult", 1.5) * a)
+            else:
+                stop = support * (1 - p["stop_buffer_pct"] / 100)
             resistance = float(res_roll.iloc[ti])
             if resistance <= price:
                 continue
@@ -272,7 +293,6 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list,
             rr = (resistance - price) / risk_ps if risk_ps > 0 else float("nan")
             if not np.isfinite(rr) or rr < p["min_rr"]:
                 continue
-            a = float(atr_s.iloc[ti]) if np.isfinite(atr_s.iloc[ti]) else None
             if a and p["min_stop_atr"] and risk_ps / a < p["min_stop_atr"]:
                 continue
 
@@ -282,7 +302,7 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list,
             out_r = exit_i = None
             status = None
             hmax, lmin = price, price
-            last_j = ti + EXPIRE_BARS
+            last_j = ti + hold_cap
             for j in range(ti + 1, last_j + 1):
                 o, h, l = float(o_v[j]), float(h_v[j]), float(l_v[j])
                 hmax, lmin = max(hmax, h), min(lmin, l)
@@ -302,6 +322,12 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list,
                 exit_i = last_j
                 out_r = (float(c_v[exit_i]) - price) / risk_ps
                 status = "expired"
+            # Round-trip friction: spread plus commission, charged on every
+            # trade. Expressed in R, so a tight stop (small risk_ps) is
+            # penalised more — which is correct, since the same percentage
+            # cost eats a larger share of a smaller planned move.
+            if cost_pct:
+                out_r -= (cost_pct / 100.0) * price / risk_ps
             busy_until = exit_i
             trades.append({"ticker": ticker,
                            "date": str(hist.index[ti])[:10],

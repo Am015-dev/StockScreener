@@ -74,6 +74,12 @@ DEFAULTS = {
     "min_stop_atr": 1.0,         # stop must sit >= this many ATRs away (noise gate)
     "max_support_dist_pct": 8.0,  # entry at most this % above support (0 = off)
     "min_rs_3m": 0.0,            # min 3-month outperformance vs benchmark, pts (0 = off)
+    "min_price": 5.0,            # no sub-$5 lines: the spread eats the edge
+    "min_share_vol": 500000.0,   # min 30-day average shares/day
+    "stop_mode": "pivot",        # "pivot" (structure) or "atr" (volatility)
+    "stop_atr_mult": 1.5,        # ATR multiple when stop_mode == "atr"
+    "max_hold_bars": 40,         # force the exit after this many bars
+    "cost_pct": 0.20,            # round-trip spread + commission, % of price
     # policy gates
     "require_profitable": True,  # forward EPS > 0  (the anti-AAL gate)
     "require_analyst_buy": False,  # analyst consensus Buy or better (Yahoo data)
@@ -285,6 +291,13 @@ def clean_params(overrides: dict | None) -> dict:
     p["max_support_dist_pct"] = _num(o.get("max_support_dist_pct"),
                                      p["max_support_dist_pct"], 0, 50)
     p["min_rs_3m"] = _num(o.get("min_rs_3m"), p["min_rs_3m"], -50, 50)
+    p["min_price"] = _num(o.get("min_price"), p["min_price"], 0, 1000)
+    p["min_share_vol"] = _num(o.get("min_share_vol"), p["min_share_vol"], 0, 1e9)
+    p["stop_atr_mult"] = _num(o.get("stop_atr_mult"), p["stop_atr_mult"], 0.5, 6)
+    p["max_hold_bars"] = _num(o.get("max_hold_bars"), p["max_hold_bars"], 5, 250, int)
+    p["cost_pct"] = _num(o.get("cost_pct"), p["cost_pct"], 0, 5)
+    sm = str(o.get("stop_mode", p["stop_mode"])).lower()
+    p["stop_mode"] = sm if sm in ("pivot", "atr") else "pivot"
     p["require_profitable"] = bool(o.get("require_profitable", p["require_profitable"]))
     p["require_analyst_buy"] = bool(o.get("require_analyst_buy", p["require_analyst_buy"]))
     p["strict_gates"] = bool(o.get("strict_gates", p["strict_gates"]))
