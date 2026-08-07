@@ -148,9 +148,21 @@ print("liquidity floors OK: sub-$5 and sub-500k-share lines excluded")
 
 # ---- every knob must change config identity ----
 h = db.config_hash(BASE)
-for k, v in (("cost_pct", 0.2), ("stop_mode", "atr"), ("stop_atr_mult", 2.0),
-             ("max_hold_bars", 15), ("min_price", 5.0), ("min_share_vol", 5e5)):
-    assert db.config_hash(dict(BASE, **{k: v})) != h, \
+# Derive each probe value from what BASE actually holds. Hardcoding one
+# silently stops testing anything the day it becomes the default — which
+# is exactly what happened when max_hold_bars defaulted to 15.
+probes = {
+    "cost_pct": lambda v: (v or 0) + 0.5,
+    "stop_mode": lambda v: "pivot" if v == "atr" else "atr",
+    "stop_atr_mult": lambda v: (v or 1.5) + 1.0,
+    "max_hold_bars": lambda v: int(v or 40) + 7,
+    "min_price": lambda v: (v or 0) + 3.0,
+    "min_share_vol": lambda v: (v or 0) + 250000,
+}
+for k, mutate in probes.items():
+    other = mutate(BASE.get(k))
+    assert other != BASE.get(k), f"probe for {k} must differ from the default"
+    assert db.config_hash(dict(BASE, **{k: other})) != h, \
         f"{k} changes results, so it must change config identity"
 print("config identity OK: every realism knob changes the hash")
 

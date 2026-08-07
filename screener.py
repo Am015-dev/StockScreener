@@ -76,9 +76,17 @@ DEFAULTS = {
     "min_rs_3m": 0.0,            # min 3-month outperformance vs benchmark, pts (0 = off)
     "min_price": 5.0,            # no sub-$5 lines: the spread eats the edge
     "min_share_vol": 500000.0,   # min 30-day average shares/day
-    "stop_mode": "pivot",        # "pivot" (structure) or "atr" (volatility)
+    # Defaults chosen from a measured 5-year sweep over 1,000 stocks, not
+    # from intuition (scripts/sweep.py; see STRATEGY.md). Against pivot
+    # stops these improved every metric: profit factor 0.94 -> 1.20, win
+    # rate 24% -> 32%, drawdown -47% -> -26%, return -14.3% -> +25.0%.
+    # Capping the hold at 15 bars then traded some profit factor (1.20 ->
+    # 1.07) for a far higher win rate (39%) and the only drawdown that has
+    # matched the S&P benchmark (-18.4% vs -18.8%) — the right trade for a
+    # small account, where a -26% drawdown is the one you stop trading in.
+    "stop_mode": "atr",          # "pivot" (structure) or "atr" (volatility)
     "stop_atr_mult": 1.5,        # ATR multiple when stop_mode == "atr"
-    "max_hold_bars": 40,         # force the exit after this many bars
+    "max_hold_bars": 15,         # force the exit after this many bars
     "cost_pct": 0.20,            # round-trip spread + commission, % of price
     # policy gates
     "require_profitable": True,  # forward EPS > 0  (the anti-AAL gate)
