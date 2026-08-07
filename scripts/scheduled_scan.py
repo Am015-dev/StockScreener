@@ -25,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import backtest
 import db
 import journal
 import screener
@@ -48,7 +49,23 @@ PUBLISH_KEYS = ("results", "top_picks", "rejection_summary", "near_misses",
                 "results_ts")
 
 
-def run_preset(name: str, overrides: dict, universe_max: int) -> dict:
+def simulate(p: dict, universe: list, progress) -> dict | None:
+    """The 5-year simulation for these exact rules, published alongside the
+    picks. Without it the analytics half of the page stays blank until a
+    visitor presses a button — and on a fresh instance nobody ever has."""
+    try:
+        res = backtest.run_backtest(p, None, universe, progress=progress)
+        if not res.get("n"):
+            return None
+        res.pop("curve", None)          # the portfolio curve is the one shown
+        return res
+    except Exception as e:
+        progress(f"simulation skipped: {type(e).__name__}: {e}")
+        return None
+
+
+def run_preset(name: str, overrides: dict, universe_max: int,
+               with_simulation: bool = True) -> dict:
     p = screener.clean_params(dict(overrides, universe_max=universe_max))
     log: list[str] = []
 
@@ -91,6 +108,13 @@ def run_preset(name: str, overrides: dict, universe_max: int) -> dict:
         "log": log[-40:],
         "scan_hash": db.scan_hash(p),
     }
+    if with_simulation:
+        bt = simulate(p, list(screener._cache.get("universe") or []), progress)
+        if bt:
+            payload["backtest"] = bt
+            payload["bt_rules"] = {k: p.get(k) for k in db.TECH_PARAMS}
+            pf = (bt.get("portfolio") or {}).get("profit_factor")
+            progress(f"simulation: {bt['n']} trades, portfolio profit factor {pf}")
     return payload
 
 
@@ -99,6 +123,8 @@ def main() -> int:
     ap.add_argument("--out", default="published")
     ap.add_argument("--universe-max", type=int, default=1500)
     ap.add_argument("--presets", default="")
+    ap.add_argument("--no-simulation", action="store_true",
+                    help="publish picks only (much faster)")
     args = ap.parse_args()
 
     names = ([n.strip() for n in args.presets.split(",") if n.strip()]
@@ -112,7 +138,8 @@ def main() -> int:
             print(f"unknown preset {name!r}, skipping", file=sys.stderr)
             continue
         try:
-            payload = run_preset(name, PRESETS[name], args.universe_max)
+            payload = run_preset(name, PRESETS[name], args.universe_max,
+                                 with_simulation=not args.no_simulation)
         except Exception as e:
             # one preset failing must not lose the others: publish what
             # worked and report the rest as failures rather than silently
@@ -124,7 +151,8 @@ def main() -> int:
         index.append({"preset": name, "scan_hash": payload["scan_hash"],
                       "results_ts": payload["results_ts"],
                       "n_results": len(payload["results"]),
-                      "universe_size": payload["universe_size"]})
+                      "universe_size": payload["universe_size"],
+                      "has_simulation": bool(payload.get("backtest"))})
         print(f"[{name}] published {len(payload['results'])} picks "
               f"from {payload['universe_size']} stocks")
 

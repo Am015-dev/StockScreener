@@ -52,6 +52,20 @@ def fake_run(p, progress=print, on_partial=None):
 
 screener.run_screener = fake_run
 import runpy
+import backtest as _bt
+
+
+def fake_sim(p, data, universe, progress=print, reuse=True):
+    progress("stub simulation")
+    return {{"n": 900, "n_stocks": 1000, "profit_factor": 1.07,
+            "curve": [{{"date": "2022-01-03", "cum_r": 0}}],
+            "portfolio": {{"slots": 5, "profit_factor": 1.07, "n": 238,
+                          "win_rate_pct": 39, "mdd_pct": 18.4, "sortino": 0.3,
+                          "return_pct": 11.2}},
+            "spy": {{"return_pct": 98.6, "mdd_pct": 18.8}}}}
+
+
+_bt.run_backtest = fake_sim
 sys.argv = ["scheduled_scan.py", "--out", {str(OUT)!r}, "--universe-max", "1500"]
 runpy.run_path({str(ROOT / "scripts" / "scheduled_scan.py")!r}, run_name="__main__")
 '''
@@ -93,6 +107,30 @@ for name, expect_n in (("balanced", 3), ("relaxed", 7)):
     assert reasons.get("not in uptrend") == 2, reasons
     assert reasons.get("liquidity") == 1, reasons
 print("payloads carry results, filters, a matching hash and aggregated rejections")
+
+# ---- the simulation is published with the picks ----
+for name in ("balanced", "relaxed"):
+    d = json.loads((OUT / f"{name}.json").read_text())
+    bt = d.get("backtest")
+    assert bt, f"{name} published no simulation — the analytics half stays blank"
+    assert bt["portfolio"]["profit_factor"] == 1.07
+    assert "curve" not in bt, "the full-signal curve is dead weight in the payload"
+    assert d["bt_rules"], "a published simulation must say which rules produced it"
+    assert set(d["bt_rules"]) == set(db.TECH_PARAMS)
+assert all(p["has_simulation"] for p in index["presets"]), index
+print("simulations published alongside the picks, tagged with their rules")
+
+# --no-simulation must skip it, for a picks-only run
+FAST = STUB.replace('"--universe-max", "1500"', '"--universe-max", "1500", "--no-simulation"')
+OUT3 = Path(TMP) / "published3"
+s3 = Path(TMP) / "drive_fast.py"
+s3.write_text(FAST.replace(str(OUT), str(OUT3)))
+p3 = subprocess.run([sys.executable, str(s3)], env=env, capture_output=True,
+                    text=True, timeout=300)
+assert p3.returncode == 0, p3.stderr
+d3 = json.loads((OUT3 / "balanced.json").read_text())
+assert "backtest" not in d3, "--no-simulation must publish picks only"
+print("--no-simulation publishes picks only, as intended")
 
 # the presets must actually differ, or publishing three is pointless
 bal = json.loads((OUT / "balanced.json").read_text())

@@ -210,6 +210,12 @@ def _adopt_published(preset: dict) -> bool:
     market_db.save_snapshot(params, {k: payload.get(k) for k in SNAPSHOT_KEYS})
     if not _load_snapshot(params):
         return False
+    # a published simulation arrives ready to display, so the analytics
+    # are populated before the reader does anything
+    if payload.get("backtest"):
+        _state["backtest"] = payload["backtest"]
+        _state["bt_rules"] = payload.get("bt_rules")
+        _state["bt_status"] = "done"
     _state["published_preset"] = preset["preset"]
     _state["log"].append(
         f"Results published by the scheduled scan ({preset['preset']} preset) — "
@@ -232,7 +238,8 @@ def _load_published(force: bool = False) -> bool:
 SNAPSHOT_KEYS = ("results", "top_picks", "rejection_summary", "near_misses",
                  "params_used", "portfolio", "near_board", "relax_hints",
                  "pending", "breadth", "health", "universe_size", "scanned",
-                 "elapsed_s", "results_ts", "backtest", "bt_status")
+                 "elapsed_s", "results_ts", "backtest", "bt_status",
+                 "bt_rules")
 SNAPSHOT_MAX_AGE_H = 24   # entry/stop levels go stale; never serve them as fresh
 
 

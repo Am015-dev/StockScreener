@@ -30,6 +30,11 @@ def payload(preset, params, n, age_s=60):
     rows = [{"ticker": f"ZZ{i}", "score": 70 - i, "price": 100.0 + i,
              "stop": 95.0, "resistance": 115.0, "RR": 3.0} for i in range(n)]
     return {"preset": preset, "results": rows, "top_picks": rows[:3],
+            "backtest": {"n": 900, "n_stocks": 1000,
+                         "portfolio": {"profit_factor": 1.07, "n": 238,
+                                       "win_rate_pct": 39, "mdd_pct": 18.4,
+                                       "sortino": 0.3, "return_pct": 11.2}},
+            "bt_rules": {"min_rr": params.get("min_rr")},
             "near_board": [], "relax_hints": {}, "pending": [],
             "breadth": {"pct": 58, "risk_factor": 1.0},
             "health": {"blocked_unverified": 0}, "params_used": params,
@@ -101,6 +106,13 @@ assert s["status"] == "done" and len(s["results"]) == 9
 r = client.post("/snapshot/load", json={"min_rr": 2.2, "rsi_high": 62}).get_json()
 assert r["found"] is True and r["n_results"] == 9, r
 print("published presets are filed under their own filters")
+
+# the analytics must arrive populated, without anyone pressing a button
+assert st["bt_status"] == "done", st["bt_status"]
+assert st["backtest"]["portfolio"]["profit_factor"] == 1.07
+assert st["bt_rules"], "a published simulation must carry its rule set"
+assert client.get("/status").get_json()["backtest"]["n"] == 900
+print("analytics arrive populated from the published feed — no click needed")
 
 # ---- published results that are older than what we have are ignored ----
 app_mod._state["results_ts"] = time.time() + 3600      # pretend we just scanned
