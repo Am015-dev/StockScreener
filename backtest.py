@@ -18,6 +18,7 @@ Honest scope (stated in the UI too):
 import gc
 import hashlib
 import time
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -109,7 +110,31 @@ def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
     if n:
         progress(f"Persisted {n} simulated trades — per-stock win rates for these "
                  f"rules now appear on matching picks.")
-    return _aggregate(trades, scanned)
+    res = _aggregate(trades, scanned)
+    if res.get("n"):
+        res["spy"] = _spy_benchmark(res["from"], res["to"], progress)
+    return res
+
+
+def _spy_benchmark(d_from: str, d_to: str, progress=print):
+    """SPY total return and max drawdown over the simulation window — the
+    bar the strategy has to beat to justify existing."""
+    try:
+        f = _fetch_chunk(["SPY"], progress)
+        if f is None:
+            return None
+        close = f["SPY"]["Close"].dropna()
+        idx = close.index.tz_localize(None) if getattr(close.index, "tz", None) \
+            is not None else close.index
+        close.index = idx
+        win = close.loc[d_from:d_to]
+        if len(win) < 20:
+            return None
+        ret = (float(win.iloc[-1]) / float(win.iloc[0]) - 1) * 100
+        dd = float(((win / win.cummax()) - 1).min()) * 100
+        return {"return_pct": round(ret, 1), "mdd_pct": round(-dd, 1)}
+    except Exception:
+        return None
 
 
 def _simulate_block(p: dict, data, tickers: list[str], trades: list) -> int:
@@ -220,9 +245,26 @@ def _aggregate(trades: list[dict], scanned: int) -> dict:
 
     trades.sort(key=lambda t: t["exit_date"])
     cum, curve = 0.0, []
+    peak = mdd = 0.0
+    monthly: dict = defaultdict(float)
     for t in trades:
         cum += t["outcome_r"]
+        peak = max(peak, cum)
+        mdd = min(mdd, cum - peak)
+        monthly[t["exit_date"][:7]] += t["outcome_r"]
         curve.append((t["exit_date"], round(cum, 2)))
+    # institutional metrics, stated basis: every signal taken with 1% of the
+    # account at risk, no compounding (linear approximation, no costs)
+    RISK_PCT = 1.0
+    mdd_r = round(-mdd, 2)
+    mdd_pct = round(mdd_r * RISK_PCT, 1)
+    m_rets = [v * RISK_PCT / 100.0 for v in monthly.values()]
+    sortino = None
+    if len(m_rets) >= 6:
+        mean_m = sum(m_rets) / len(m_rets)
+        downside = (sum(min(0.0, v) ** 2 for v in m_rets) / len(m_rets)) ** 0.5
+        if downside > 1e-9:
+            sortino = round((mean_m * 12) / (downside * 12 ** 0.5), 2)
     step = max(1, len(curve) // CURVE_POINTS)
     curve = curve[::step] + ([curve[-1]] if (len(curve) - 1) % step else [])
 
@@ -236,6 +278,9 @@ def _aggregate(trades: list[dict], scanned: int) -> dict:
         "hit_target": by_status["target"], "hit_stop": by_status["stop"],
         "expired": by_status["expired"],
         "from": trades[0]["date"], "to": trades[-1]["date"],
+        "mdd_r": mdd_r, "mdd_pct": mdd_pct, "sortino": sortino,
+        "risk_pct_basis": RISK_PCT,
+        "return_pct": round(total * RISK_PCT, 1), "n_months": len(monthly),
         "curve": [{"date": d, "cum_r": v} for d, v in curve],
         "best": max(trades, key=lambda t: t["outcome_r"]),
         "worst": min(trades, key=lambda t: t["outcome_r"]),

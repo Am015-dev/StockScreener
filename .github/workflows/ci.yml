@@ -1,0 +1,52 @@
+# Quality gate: every push runs the full offline test suite.
+#
+# What it enforces (all hermetic — no Yahoo calls, tests stub the network):
+#   - sizing math: EUR risk identical across USD/EUR/GBp/USD-on-LSE listings,
+#     ticket cap, breadth throttle (guards the ~100x pence bug class)
+#   - simulation metrics: profit factor, max drawdown, Sortino, SPY benchmark
+#     against hand-computed sequences
+#   - fail-closed behavior: total rate limiting degrades with flags, stale
+#     cache is labeled, no data at all raises instead of showing stale picks
+#   - journal replay: target/stop/gap/expiry/same-bar conventions + restore
+#   - latency: hot-path DB reads (edge stats, journal snapshot) < 800ms at
+#     representative volume (5,000 trades / 800 symbols / 400 picks)
+#
+# NOTE on deploy gating: Render currently auto-deploys the deploy branch on
+# push, so a red run here cannot physically stop that deploy. To make this
+# workflow a true deploy gate: turn OFF auto-deploy in the Render dashboard,
+# add the service's deploy hook URL as the RENDER_DEPLOY_HOOK repo secret,
+# and uncomment the deploy job at the bottom.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Simulation metrics (PF / MDD / Sortino / SPY benchmark)
+        run: python tests/test_backtest_metrics.py
+      - name: Position-sizing math (FX, pence, overrides, ticket, throttle)
+        run: python tests/test_sizing_math.py
+      - name: Fail-closed rate-limit behavior
+        run: python tests/test_rate_limit.py
+      - name: Journal replay + restore
+        run: python tests/test_journal.py
+      - name: 800ms hot-path latency budget
+        run: python tests/test_latency.py
+
+  # deploy:
+  #   needs: test
+  #   if: github.ref == 'refs/heads/claude/pullback-uptrend-screener-vvlzeb'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - run: curl -fsS "${{ secrets.RENDER_DEPLOY_HOOK }}"
