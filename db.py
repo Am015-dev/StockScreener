@@ -79,11 +79,13 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     ran_at REAL, n_stocks INTEGER, n_trades INTEGER,
     d_from TEXT, d_to TEXT
 );
-CREATE TABLE IF NOT EXISTS snapshots (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    saved_at REAL NOT NULL,
+CREATE TABLE IF NOT EXISTS scan_snapshots (
+    scan_hash   TEXT PRIMARY KEY,
+    saved_at    REAL NOT NULL,
+    params_json TEXT NOT NULL,
     payload_json TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS snapshots_by_time ON scan_snapshots(saved_at DESC);
 CREATE TABLE IF NOT EXISTS edge_stats (
     config_id INTEGER NOT NULL,
     instrument_id INTEGER,              -- NULL row = whole-universe aggregate
@@ -231,35 +233,94 @@ def load_backtest(params: dict) -> dict | None:
         return None
 
 
-def save_snapshot(payload: dict) -> bool:
-    """Store the latest completed scan so the next page load has data
-    without re-scanning. One row: the newest snapshot replaces the old."""
+# Presentation-only settings: changing them cannot change which stocks the
+# scan finds or at what levels, so they must not split the snapshot store
+# into near-duplicate rows.
+SNAPSHOT_SKIP = ("show_near",)
+SNAPSHOT_KEEP = 40    # distinct filter sets remembered, oldest evicted
+
+
+def scan_hash(params: dict) -> str:
+    """Identity of a set of filters. Two scans share a snapshot exactly
+    when every setting that affects their results matches."""
+    payload = {k: v for k, v in params.items() if k not in SNAPSHOT_SKIP}
+    return hashlib.md5(
+        json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def save_snapshot(params: dict, payload: dict) -> bool:
+    """Store a completed scan under its filters. Re-scanning with the same
+    filters replaces that row; a different filter set gets its own, so
+    switching back and forth never loses either result."""
     try:
         blob = json.dumps(payload, default=str)
+        pblob = json.dumps(params, sort_keys=True, default=str)
+        h = scan_hash(params)
     except (TypeError, ValueError):
         return False
     try:
         with _conn() as c:
-            c.execute("INSERT OR REPLACE INTO snapshots (id, saved_at, payload_json) "
-                      "VALUES (1, ?, ?)", (__import__("time").time(), blob))
+            c.execute("INSERT OR REPLACE INTO scan_snapshots "
+                      "(scan_hash, saved_at, params_json, payload_json) "
+                      "VALUES (?,?,?,?)",
+                      (h, __import__("time").time(), pblob, blob))
+            c.execute("""DELETE FROM scan_snapshots WHERE scan_hash NOT IN
+                         (SELECT scan_hash FROM scan_snapshots
+                          ORDER BY saved_at DESC LIMIT ?)""", (SNAPSHOT_KEEP,))
         return True
     except Exception:
         return False
 
 
-def latest_snapshot() -> dict | None:
-    """The most recent stored scan, with its age, or None."""
+def _row_to_snapshot(row) -> dict | None:
+    try:
+        payload = json.loads(row[2])
+        payload["_saved_at"] = row[0]
+        payload["_params"] = json.loads(row[1])
+        return payload
+    except (TypeError, ValueError):
+        return None
+
+
+def snapshot_for(params: dict) -> dict | None:
+    """The stored scan for exactly these filters, or None. This is the
+    lookup the page does on load: same filters, same results, no re-scan."""
     try:
         with _conn() as c:
-            row = c.execute("SELECT saved_at, payload_json FROM snapshots "
-                            "WHERE id = 1").fetchone()
-        if not row:
-            return None
-        payload = json.loads(row[1])
-        payload["_saved_at"] = row[0]
-        return payload
+            row = c.execute("SELECT saved_at, params_json, payload_json "
+                            "FROM scan_snapshots WHERE scan_hash = ?",
+                            (scan_hash(params),)).fetchone()
+        return _row_to_snapshot(row) if row else None
     except Exception:
         return None
+
+
+def latest_snapshot() -> dict | None:
+    """The most recent stored scan under any filters — the cold-start case,
+    where the server has no idea yet which filters the page is showing."""
+    try:
+        with _conn() as c:
+            row = c.execute("SELECT saved_at, params_json, payload_json "
+                            "FROM scan_snapshots ORDER BY saved_at DESC "
+                            "LIMIT 1").fetchone()
+        return _row_to_snapshot(row) if row else None
+    except Exception:
+        return None
+
+
+def snapshot_index() -> list[dict]:
+    """Every stored filter set, newest first — what the page offers when the
+    current filters have never been scanned."""
+    try:
+        with _conn() as c:
+            return [{"scan_hash": h, "saved_at": ts,
+                     "params": json.loads(p), "n_results": n}
+                    for h, ts, p, n in c.execute(
+                        "SELECT scan_hash, saved_at, params_json, "
+                        "json_array_length(json_extract(payload_json, '$.results')) "
+                        "FROM scan_snapshots ORDER BY saved_at DESC")]
+    except Exception:
+        return []
 
 
 def _refresh_edge(conn, config_id: int) -> None:

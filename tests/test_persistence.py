@@ -76,29 +76,60 @@ except AssertionError as e:
     assert "must not download" in str(e), e
 print("reuse=False still forces a fresh simulation")
 
-# ---- scan snapshots ----
+# ---- scan snapshots, keyed by the filters that produced them ----
 now = time.time()
-payload = {"results": [{"ticker": "ZZA", "score": 71}],
-           "top_picks": [{"ticker": "ZZA", "score": 71}],
-           "universe_size": 600, "results_ts": now, "backtest": {"n": 8}}
-assert db.save_snapshot(payload) is True
-back = db.latest_snapshot()
-assert back["results"][0]["ticker"] == "ZZA"
-assert back["universe_size"] == 600 and back["_saved_at"] >= now
+STRICT = dict(P, min_rr=3.0)
+LOOSE = dict(P, min_rr=2.0)
 
-# newest write wins — one row, always the latest scan
-assert db.save_snapshot(dict(payload, universe_size=900)) is True
-assert db.latest_snapshot()["universe_size"] == 900
+
+def snap(n_results, universe=600, ts=None):
+    rows = [{"ticker": f"ZZ{i}", "score": 70 - i} for i in range(n_results)]
+    return {"results": rows, "top_picks": rows[:3], "universe_size": universe,
+            "results_ts": ts or time.time(), "backtest": {"n": 8}}
+
+
+assert db.save_snapshot(STRICT, snap(1)) is True
+assert db.save_snapshot(LOOSE, snap(7, universe=900)) is True
+
+# each filter set keeps its OWN stored scan — switching back and forth
+# must never hand back the other one's results
+a = db.snapshot_for(STRICT)
+b = db.snapshot_for(LOOSE)
+assert a and len(a["results"]) == 1 and a["universe_size"] == 600
+assert b and len(b["results"]) == 7 and b["universe_size"] == 900
+assert a["_params"]["min_rr"] == 3.0 and b["_params"]["min_rr"] == 2.0
+assert db.snapshot_for(dict(P, min_rr=1.25)) is None, \
+    "filters never scanned must return nothing, not someone else's scan"
+print("snapshots are keyed by filters: two filter sets, two independent scans")
+
+# re-scanning the same filters replaces that row and leaves the other alone
+assert db.save_snapshot(STRICT, snap(4, universe=650)) is True
+assert len(db.snapshot_for(STRICT)["results"]) == 4
+assert len(db.snapshot_for(LOOSE)["results"]) == 7, "re-scan touched the wrong row"
+
+# presentation-only settings must not split the store
+assert db.scan_hash(dict(STRICT, show_near=True)) == \
+       db.scan_hash(dict(STRICT, show_near=False))
+assert db.scan_hash(STRICT) != db.scan_hash(LOOSE)
+
+# latest_snapshot is the cold-start case: newest across all filter sets
+newest = db.latest_snapshot()
+assert newest and len(newest["results"]) == 4, newest
+
+idx = db.snapshot_index()
+assert len(idx) == 2 and idx[0]["n_results"] == 4, idx
+assert {round(s["params"]["min_rr"], 2) for s in idx} == {3.0, 2.0}
+print(f"snapshot index lists {len(idx)} stored filter sets, newest first")
 
 # numpy/pandas scalars in scan rows are coerced, not rejected — that is why
 # the writer passes default=str
-assert db.save_snapshot(dict(payload, universe_size=900, odd=object())) is True
+assert db.save_snapshot(STRICT, dict(snap(4, universe=650), odd=object())) is True
 
 # a payload JSON genuinely cannot encode must leave the stored row intact
 circular: dict = {"results_ts": now}
 circular["self"] = circular
-assert db.save_snapshot(circular) is False
-assert db.latest_snapshot()["universe_size"] == 900
-print("snapshot store keeps exactly the latest scan; a bad write can't corrupt it")
+assert db.save_snapshot(STRICT, circular) is False
+assert len(db.snapshot_for(STRICT)["results"]) == 4
+print("a bad write cannot corrupt an existing stored scan")
 
 print("\nALL PERSISTENCE TESTS PASSED")

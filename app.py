@@ -134,19 +134,26 @@ SNAPSHOT_KEYS = ("results", "top_picks", "rejection_summary", "near_misses",
 SNAPSHOT_MAX_AGE_H = 24   # entry/stop levels go stale; never serve them as fresh
 
 
-def _save_snapshot():
-    """Persist the finished scan so the next visit — or the next process,
-    after a restart — opens with data instead of an empty form."""
+def _save_snapshot(params=None):
+    """Persist the finished scan under the filters that produced it, so
+    returning to those filters shows the same result without re-scanning
+    and a different filter set keeps its own stored scan."""
+    p = params or _state.get("params_used")
+    if not p:
+        return
     try:
-        market_db.save_snapshot({k: _state.get(k) for k in SNAPSHOT_KEYS})
+        market_db.save_snapshot(p, {k: _state.get(k) for k in SNAPSHOT_KEYS})
     except Exception:
         pass
 
 
-def _load_snapshot() -> bool:
-    """Rehydrate the last stored scan. Age is carried through to the UI so
+def _load_snapshot(params=None) -> bool:
+    """Rehydrate a stored scan: the one matching `params` when given, else
+    the most recent under any filters (the cold-start case, before the page
+    has told us what it is showing). Age is carried through to the UI so
     stale levels are always labelled, never presented as live."""
-    snap = market_db.latest_snapshot()
+    snap = (market_db.snapshot_for(params) if params
+            else market_db.latest_snapshot())
     if not snap:
         return False
     ts = snap.get("results_ts") or snap.get("_saved_at")
@@ -170,6 +177,7 @@ def _load_snapshot() -> bool:
     _state["finished_at"] = ts
     _state["results_ts"] = ts
     _state["restored"] = True
+    _state["params_used"] = snap.get("_params") or _state.get("params_used")
     n = len(_state.get("results") or [])
     _state["log"] = [
         f"Loaded the last scan from the database — {n} pick(s), "
@@ -254,7 +262,7 @@ def _run_scan(params):
 
         _state["status"] = "done"
         _state["restored"] = False
-        _save_snapshot()
+        _save_snapshot(params)
         if _state["pending"]:
             _start_auto_reverify(dict(params or {}))
     except Exception as e:
@@ -377,7 +385,7 @@ def _run_backtest_thread(params):
                    else "Simulation complete: ") +
                   f"{bt['n']} historical trades across "
                   f"{bt.get('n_stocks', 0)} stocks.")
-        _save_snapshot()
+        _save_snapshot(params)
     except Exception as e:
         _state["bt_status"] = "error"
         _progress(f"Simulation failed: {type(e).__name__}: {e}")
@@ -428,6 +436,42 @@ def edge_restore():
     return jsonify({"ok": True, "restored": added})
 
 
+@app.route("/snapshot/load", methods=["POST"])
+def snapshot_load():
+    """Serve the stored scan for the filters the page is currently showing.
+
+    This is what makes re-scanning optional: change a filter and the page
+    asks whether that combination has been scanned before. If it has, the
+    stored result is loaded as-is. If it hasn't, nothing is invented — the
+    page says so and waits for Run."""
+    overrides = request.get_json(silent=True) or {}
+    params = screener.clean_params(overrides)
+    with _lock:
+        if _state["status"] == "running":
+            return jsonify({"ok": False, "found": False,
+                            "message": "A scan is running."}), 409
+        found = _load_snapshot(params)
+    if found:
+        return jsonify({"ok": True, "found": True,
+                        "results_ts": _state.get("results_ts"),
+                        "n_results": len(_state.get("results") or [])})
+    stored = market_db.snapshot_index()
+    return jsonify({"ok": True, "found": False, "n_stored": len(stored),
+                    "message": "These filters have not been scanned yet."})
+
+
+@app.route("/snapshot/index")
+def snapshot_index_route():
+    """Which filter combinations already have a stored scan."""
+    return jsonify({"snapshots": [
+        {"saved_at": s["saved_at"], "n_results": s["n_results"],
+         "min_rr": (s["params"] or {}).get("min_rr"),
+         "rsi_low": (s["params"] or {}).get("rsi_low"),
+         "rsi_high": (s["params"] or {}).get("rsi_high"),
+         "universe_max": (s["params"] or {}).get("universe_max")}
+        for s in market_db.snapshot_index()]})
+
+
 @app.route("/snapshot/export")
 def snapshot_export():
     """The last scan + simulation, mirrored by the browser so a redeploy
@@ -450,8 +494,11 @@ def snapshot_restore():
         return jsonify({"ok": True, "restored": False})
     if incoming <= float(have):
         return jsonify({"ok": True, "restored": False})
-    market_db.save_snapshot({k: snap.get(k) for k in SNAPSHOT_KEYS})
-    return jsonify({"ok": True, "restored": bool(_load_snapshot())})
+    params = snap.get("_params")
+    if not params:
+        return jsonify({"ok": True, "restored": False})
+    market_db.save_snapshot(params, {k: snap.get(k) for k in SNAPSHOT_KEYS})
+    return jsonify({"ok": True, "restored": bool(_load_snapshot(params))})
 
 
 @app.route("/auth/export")

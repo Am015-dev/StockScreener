@@ -229,6 +229,8 @@
     </details>
   </section>
 
+  <div id="snapNote" class="hint" style="display:none;margin:.2rem 0 .6rem"></div>
+
   <div class="bar">
     <button id="runBtn" onclick="runScan()">▶ Run scan</button>
     <button class="ghost" onclick="resetFilters()">Reset filters</button>
@@ -652,6 +654,45 @@ document.getElementById("csvFile").addEventListener("change", async (ev) => {
   }
 });
 
+// ---- stored scans are keyed by the filters that produced them: change a
+// ---- filter and we look for that combination rather than forcing a re-scan
+let lastAsked = null;
+async function loadStoredScan(silent) {
+  const p = collectParams();
+  const key = JSON.stringify(p);
+  if (key === lastAsked) return;
+  lastAsked = key;
+  const note = document.getElementById("snapNote");
+  try {
+    const r = await fetch("/snapshot/load", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: key});
+    if (r.status === 409) return;                 // a scan is running; leave it alone
+    const d = await r.json();
+    note.style.display = "block";
+    if (d.found) {
+      const mins = Math.max(0, Math.round(Date.now() / 1000 / 60 - d.results_ts / 60));
+      note.style.color = "var(--muted)";
+      note.textContent = `📂 Loaded the stored scan for these filters ` +
+        `(${d.n_results} pick${d.n_results === 1 ? "" : "s"}, ` +
+        `${mins < 60 ? mins + " min" : (mins / 60).toFixed(1) + " h"} old). ` +
+        `Press Run to re-scan and update it.`;
+      refresh();
+    } else {
+      note.style.color = "var(--amber)";
+      note.textContent = "🔍 These filters have not been scanned yet" +
+        (d.n_stored ? ` (${d.n_stored} other filter set${d.n_stored === 1 ? "" : "s"} stored)` : "") +
+        " — press Run to scan them.";
+    }
+  } catch (e) {}
+}
+
+// ask whenever the filters settle, not on every keystroke
+let snapTimer = null;
+function filtersChanged() {
+  clearTimeout(snapTimer);
+  snapTimer = setTimeout(() => loadStoredScan(true), 600);
+}
+
 async function runScan() {
   saveLocal();
   const r = await fetch("/run", {
@@ -662,6 +703,11 @@ async function runScan() {
   if (r.ok) {
     document.getElementById("filterBox").open = false;
     document.getElementById("logBox").open = true;
+    lastAsked = null;   // this scan replaces the stored one for these filters
+    const note = document.getElementById("snapNote");
+    note.style.display = "block";
+    note.style.color = "var(--muted)";
+    note.textContent = "⏳ Re-scanning — this will replace the stored scan for these filters.";
   }
   if (r.ok || r.status === 409) startPolling();
 }
@@ -1335,6 +1381,16 @@ try {
 
 loadDefaults();
 refresh();
+
+// filters restored from this browser, or edited by hand: look for a stored
+// scan matching them rather than making the user re-scan to see anything
+document.addEventListener("change", (e) => {
+  if (e.target.closest("#filterBox, .sector")) filtersChanged();
+});
+document.addEventListener("input", (e) => {
+  if (e.target.closest("#filterBox")) filtersChanged();
+});
+setTimeout(() => loadStoredScan(true), 900);   // after loadDefaults() settles
 </script>
 </body>
 </html>
