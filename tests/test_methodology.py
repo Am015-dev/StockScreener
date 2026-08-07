@@ -100,4 +100,39 @@ for bad, why in (({"strict_gates": False}, "strict_gates"),
         assert why in str(e).lower() or "methodology" in str(e).lower(), e
 print("the publisher refuses a fail-open or off-methodology preset")
 
+# ---- stored results must not outlive the rules that made them ----
+# A snapshot written before a rule tightened kept being served, so the
+# methodology fix reached the code and never the screen. That is how a
+# live page carried RSI 67 rows and a reward:risk of 13.9 hours after
+# both were supposedly banned.
+os.environ.setdefault("JOURNAL_DB", os.path.join(TMP, "j.db"))
+os.environ.setdefault("RESULTS_CSV", os.path.join(TMP, "r.csv"))
+import app as app_mod
+
+good = {"ticker": "OK", "RSI": 44.0, "RR": 3.0, "price": 100.0, "support": 96.0}
+offenders = [
+    ({"ticker": "HOT", "RSI": 67.3, "RR": 3.0, "price": 100.0, "support": 96.0}, "RSI"),
+    ({"ticker": "WILD", "RSI": 44.0, "RR": 13.9, "price": 100.0, "support": 96.0}, "reward:risk"),
+    ({"ticker": "FAR", "RSI": 44.0, "RR": 3.0, "price": 100.0, "support": 80.0}, "above support"),
+]
+assert app_mod._methodology_violations(good) == [], "a compliant row must survive"
+for bad, expect in offenders:
+    why = app_mod._methodology_violations(bad)
+    assert why, f"{bad['ticker']} should have been flagged"
+    assert any(expect in w for w in why), (bad["ticker"], why)
+
+payload = {"results": [good] + [o for o, _ in offenders],
+           "near_board": [o for o, _ in offenders], "pending": []}
+cleaned, dropped = app_mod._drop_offmethod(payload)
+assert dropped == 3, dropped
+assert [r["ticker"] for r in cleaned["results"]] == ["OK"], cleaned["results"]
+assert cleaned["near_board"] == [], "the near board must be filtered too"
+assert cleaned["top_picks"] == [good]
+print(f"stored rows revalidated on load: {dropped} off-methodology rows dropped, "
+      f"compliant rows kept")
+
+# a row missing the fields cannot be judged, and must not be silently dropped
+assert app_mod._methodology_violations({"ticker": "SPARSE"}) == []
+print("a row with no comparable fields is kept, not guessed at")
+
 print("\nALL METHODOLOGY TESTS PASSED")
