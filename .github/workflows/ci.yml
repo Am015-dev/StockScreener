@@ -8,6 +8,9 @@
 #   - fail-closed behavior: total rate limiting degrades with flags, stale
 #     cache is labeled, no data at all raises instead of showing stale picks
 #   - journal replay: target/stop/gap/expiry/same-bar conventions + restore
+#   - persistence: a simulated config rebuilds from the DB with identical
+#     metrics and no download; a restarted process opens with the last scan,
+#     while a scan too old to trade is withheld and its simulation kept
 #   - latency: hot-path DB reads (edge stats, journal snapshot) < 800ms at
 #     representative volume (5,000 trades / 800 symbols / 400 picks)
 #
@@ -41,6 +44,10 @@ jobs:
         run: python tests/test_rate_limit.py
       - name: Journal replay + restore
         run: python tests/test_journal.py
+      - name: Database reuse + scan snapshots
+        run: python tests/test_persistence.py
+      - name: Cold start serves stored data
+        run: python tests/test_app_startup.py
       - name: 800ms hot-path latency budget
         run: python tests/test_latency.py
 

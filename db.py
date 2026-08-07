@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
     outcome_r REAL, bars_held INTEGER,
     mfe_r REAL, mae_r REAL
 );
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    config_id INTEGER PRIMARY KEY,
+    ran_at REAL, n_stocks INTEGER, n_trades INTEGER,
+    d_from TEXT, d_to TEXT
+);
+CREATE TABLE IF NOT EXISTS snapshots (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    saved_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS edge_stats (
     config_id INTEGER NOT NULL,
     instrument_id INTEGER,              -- NULL row = whole-universe aggregate
@@ -134,7 +144,8 @@ def record_bars(frame, tickers: list[str], ccy_of=None) -> int:
     return total
 
 
-def record_backtest(params: dict, trades: list[dict], ccy_of=None) -> int:
+def record_backtest(params: dict, trades: list[dict], ccy_of=None,
+                    n_stocks: int = 0) -> int:
     """Persist a full simulation: replaces this config's previous signals and
     refreshes edge_stats. Idempotent per config — same rules, same rows."""
     try:
@@ -163,10 +174,88 @@ def record_backtest(params: dict, trades: list[dict], ccy_of=None) -> int:
                     (cur.lastrowid, t["status"], t.get("exit_date"),
                      t["outcome_r"], t.get("bars_held"),
                      t.get("mfe_r"), t.get("mae_r")))
+            if trades:
+                ds = sorted(t["date"] for t in trades)
+                c.execute("INSERT OR REPLACE INTO backtest_runs "
+                          "(config_id, ran_at, n_stocks, n_trades, d_from, d_to) "
+                          "VALUES (?,?,?,?,?,?)",
+                          (cid, __import__("time").time(), n_stocks,
+                           len(trades), ds[0], ds[-1]))
             _refresh_edge(c, cid)
             return len(trades)
     except Exception:
         return 0
+
+
+def load_backtest(params: dict) -> dict | None:
+    """Rebuild a previously-run simulation straight from the database.
+
+    Every simulated trade is already stored in signals + signal_outcomes,
+    so a set of rules that has been simulated once never needs five years
+    of prices downloaded again. Returns {"trades": [...], "n_stocks": n,
+    "ran_at": ts} in exactly the shape _aggregate() consumes, or None when
+    these rules have never been simulated."""
+    try:
+        with _conn() as c:
+            row = c.execute("SELECT config_id FROM strategy_configs WHERE param_hash=?",
+                            (config_hash(params),)).fetchone()
+            if not row:
+                return None
+            cid = row[0]
+            meta = c.execute("SELECT ran_at, n_stocks FROM backtest_runs "
+                             "WHERE config_id=?", (cid,)).fetchone()
+            trades = [
+                {"ticker": sym, "date": d, "exit_date": ex,
+                 "rr_planned": rr, "outcome_r": out_r, "status": status,
+                 "entry": entry, "stop_px": stop, "target_px": target,
+                 "bars_held": bars, "mfe_r": mfe, "mae_r": mae}
+                for (sym, d, ex, rr, out_r, status, entry, stop, target,
+                     bars, mfe, mae) in c.execute("""
+                    SELECT i.symbol, s.d, o.exit_date, s.rr, o.outcome_r,
+                           o.status, s.entry, s.stop, s.target, o.bars_held,
+                           o.mfe_r, o.mae_r
+                    FROM signals s
+                    JOIN signal_outcomes o USING (signal_id)
+                    JOIN instruments i USING (instrument_id)
+                    WHERE s.config_id = ? AND s.source = 'backtest'""", (cid,))]
+            if not trades:
+                return None
+            return {"trades": trades,
+                    "n_stocks": (meta[1] if meta else 0) or 0,
+                    "ran_at": (meta[0] if meta else None)}
+    except Exception:
+        return None
+
+
+def save_snapshot(payload: dict) -> bool:
+    """Store the latest completed scan so the next page load has data
+    without re-scanning. One row: the newest snapshot replaces the old."""
+    try:
+        blob = json.dumps(payload, default=str)
+    except (TypeError, ValueError):
+        return False
+    try:
+        with _conn() as c:
+            c.execute("INSERT OR REPLACE INTO snapshots (id, saved_at, payload_json) "
+                      "VALUES (1, ?, ?)", (__import__("time").time(), blob))
+        return True
+    except Exception:
+        return False
+
+
+def latest_snapshot() -> dict | None:
+    """The most recent stored scan, with its age, or None."""
+    try:
+        with _conn() as c:
+            row = c.execute("SELECT saved_at, payload_json FROM snapshots "
+                            "WHERE id = 1").fetchone()
+        if not row:
+            return None
+        payload = json.loads(row[1])
+        payload["_saved_at"] = row[0]
+        return payload
+    except Exception:
+        return None
 
 
 def _refresh_edge(conn, config_id: int) -> None:

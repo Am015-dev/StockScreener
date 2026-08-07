@@ -58,6 +58,7 @@ _state = {
     "results_ts": None,        # when the shown results were produced
     "health": None,            # {"blocked_unverified": n} from the last scan
     "error": None,
+    "restored": False,         # results came from storage, not a scan just run
 }
 
 
@@ -126,7 +127,62 @@ def _load_cached_csv():
             pass
 
 
-_load_cached_csv()
+SNAPSHOT_KEYS = ("results", "top_picks", "rejection_summary", "near_misses",
+                 "params_used", "portfolio", "near_board", "relax_hints",
+                 "pending", "breadth", "health", "universe_size", "scanned",
+                 "elapsed_s", "results_ts", "backtest", "bt_status")
+SNAPSHOT_MAX_AGE_H = 24   # entry/stop levels go stale; never serve them as fresh
+
+
+def _save_snapshot():
+    """Persist the finished scan so the next visit — or the next process,
+    after a restart — opens with data instead of an empty form."""
+    try:
+        market_db.save_snapshot({k: _state.get(k) for k in SNAPSHOT_KEYS})
+    except Exception:
+        pass
+
+
+def _load_snapshot() -> bool:
+    """Rehydrate the last stored scan. Age is carried through to the UI so
+    stale levels are always labelled, never presented as live."""
+    snap = market_db.latest_snapshot()
+    if not snap:
+        return False
+    ts = snap.get("results_ts") or snap.get("_saved_at")
+    if not ts:
+        return False
+    age_h = (time.time() - float(ts)) / 3600
+    if age_h > SNAPSHOT_MAX_AGE_H:
+        _state["log"] = [f"Stored results are {age_h:.0f}h old — entry and stop "
+                         f"levels have gone stale, so they are not shown. "
+                         f"Run a fresh scan."]
+        # the simulation does NOT go stale the way prices do: it is a fixed
+        # historical record, so keep it even when the picks are discarded
+        if snap.get("backtest"):
+            _state["backtest"] = snap["backtest"]
+            _state["bt_status"] = "done"
+        return False
+    for k in SNAPSHOT_KEYS:
+        if snap.get(k) is not None:
+            _state[k] = snap[k]
+    _state["status"] = "done"
+    _state["finished_at"] = ts
+    _state["results_ts"] = ts
+    _state["restored"] = True
+    n = len(_state.get("results") or [])
+    _state["log"] = [
+        f"Loaded the last scan from the database — {n} pick(s), "
+        f"{age_h:.1f}h old. Prices have moved since; rerun before acting."]
+    if _state.get("backtest"):
+        _state["log"].append(
+            "Simulation results restored too — no re-run needed unless you "
+            "change the rules.")
+    return True
+
+
+if not _load_snapshot():
+    _load_cached_csv()
 try:
     _state["journal"] = journal.snapshot()
 except Exception:
@@ -197,6 +253,8 @@ def _run_scan(params):
             _progress(f"Journal update failed (results unaffected): {e}")
 
         _state["status"] = "done"
+        _state["restored"] = False
+        _save_snapshot()
         if _state["pending"]:
             _start_auto_reverify(dict(params or {}))
     except Exception as e:
@@ -315,8 +373,11 @@ def _run_backtest_thread(params):
                                        progress=_progress)
         _state["backtest"] = bt
         _state["bt_status"] = "done"
-        _progress(f"Simulation complete: {bt['n']} historical trades across "
+        _progress(("Simulation restored from the database: " if bt.get("from_db")
+                   else "Simulation complete: ") +
+                  f"{bt['n']} historical trades across "
                   f"{bt.get('n_stocks', 0)} stocks.")
+        _save_snapshot()
     except Exception as e:
         _state["bt_status"] = "error"
         _progress(f"Simulation failed: {type(e).__name__}: {e}")
@@ -326,10 +387,11 @@ def _run_backtest_thread(params):
 def run_backtest_route():
     overrides = request.get_json(silent=True) or {}
     params = screener.clean_params(overrides)
-    if not screener._cache.get("universe"):
+    if not screener._cache.get("universe") and not market_db.load_backtest(params):
         return jsonify({"ok": False, "message":
-                        "Run a scan first — the simulation uses the scan's "
-                        "stock universe."}), 400
+                        "These rules have not been simulated yet, and there is "
+                        "no scanned universe to simulate them over — run a "
+                        "scan first."}), 400
     with _lock:
         if _state["bt_status"] == "running" or _state["status"] == "running":
             return jsonify({"ok": False, "message": "Something is already running."}), 409
@@ -364,6 +426,32 @@ def edge_restore():
         except Exception:
             pass
     return jsonify({"ok": True, "restored": added})
+
+
+@app.route("/snapshot/export")
+def snapshot_export():
+    """The last scan + simulation, mirrored by the browser so a redeploy
+    (which wipes the free tier's disk) doesn't send you back to an empty
+    page. Same pattern as the journal and edge-stat mirrors."""
+    return jsonify({"snapshot": market_db.latest_snapshot()})
+
+
+@app.route("/snapshot/restore", methods=["POST"])
+def snapshot_restore():
+    body = request.get_json(silent=True) or {}
+    snap = body.get("snapshot") or {}
+    if not isinstance(snap, dict) or not snap.get("results_ts"):
+        return jsonify({"ok": True, "restored": False})
+    # never let a mirror overwrite something newer that is already loaded
+    have = _state.get("results_ts") or 0
+    try:
+        incoming = float(snap.get("results_ts") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"ok": True, "restored": False})
+    if incoming <= float(have):
+        return jsonify({"ok": True, "restored": False})
+    market_db.save_snapshot({k: snap.get(k) for k in SNAPSHOT_KEYS})
+    return jsonify({"ok": True, "restored": bool(_load_snapshot())})
 
 
 @app.route("/auth/export")

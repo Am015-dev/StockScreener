@@ -439,6 +439,7 @@
     <div id="btBody" style="display:none">
       <div class="tiles" id="btTiles"></div>
       <div class="hint" id="btBreak" style="margin:.2rem 0 .4rem"></div>
+      <div id="btSource" class="hint" style="display:none;margin:.2rem 0 .4rem;color:var(--muted)"></div>
       <div id="btPortfolio" class="hint" style="display:none;margin:.3rem 0 .5rem"></div>
       <div id="btGate" style="display:none;font-weight:600;margin:.3rem 0 .5rem"></div>
       <svg id="btCurve" viewBox="0 0 640 170" preserveAspectRatio="none"></svg>
@@ -859,6 +860,14 @@ function renderBacktest(bt, btStatus) {
     `total ${esc(rFmt(bt.total_r))} (≈${esc(bt.return_pct)}% at 1% risk/trade) · ` +
     `best ${esc(bt.best.ticker)} ${esc(rFmt(bt.best.outcome_r))} · worst ${esc(bt.worst.ticker)} ${esc(rFmt(bt.worst.outcome_r))}` +
     (bt.spy ? ` · SPY same window: ${esc(bt.spy.return_pct)}% return, −${esc(bt.spy.mdd_pct)}% max drawdown` : "");
+  const src_note = document.getElementById("btSource");
+  if (bt.from_db) {
+    src_note.style.display = "block";
+    const hrs = bt.ran_at ? (Date.now() / 1000 - bt.ran_at) / 3600 : null;
+    src_note.textContent = "📂 Loaded from the database" +
+      (hrs != null ? ` — simulated ${hrs < 1 ? "under an hour" : hrs.toFixed(0) + " h"} ago` : "") +
+      ". These exact rules were already simulated, so nothing was re-downloaded.";
+  } else src_note.style.display = "none";
   const pbox = document.getElementById("btPortfolio");
   if (pf_v) {
     pbox.style.display = "block";
@@ -981,6 +990,32 @@ async function syncEdgeBackup(btStatus) {
         if (r.restored) { edgeSynced = true; refresh(); }
       } else {
         edgeSynced = true;   // nothing anywhere; stop asking until a sim runs
+      }
+    }
+  } catch (e) {}
+}
+
+// ---- scan mirror: the last scan + simulation survive a redeploy, so a
+// ---- restarted server opens with data instead of an empty form ----
+let snapTs = 0;
+async function syncSnapshot(s) {
+  try {
+    if (s.status === "done" && s.results_ts && s.results_ts > snapTs) {
+      const d = await (await fetch("/snapshot/export")).json();
+      if (d.snapshot && d.snapshot.results_ts) {
+        localStorage.setItem("screener_snapshot_v1", JSON.stringify(d));
+        snapTs = s.results_ts;
+      }
+      return;
+    }
+    // nothing loaded server-side: offer this browser's copy back
+    if (!s.results_ts && s.status !== "running" && !snapTs) {
+      const b = localStorage.getItem("screener_snapshot_v1");
+      if (b) {
+        snapTs = -1;   // ask once per page load, whatever the answer
+        const r = await (await fetch("/snapshot/restore", {method: "POST",
+          headers: {"Content-Type": "application/json"}, body: b})).json();
+        if (r.restored) refresh();
       }
     }
   } catch (e) {}
@@ -1144,7 +1179,8 @@ async function refresh() {
     ageEl.style.display = "block";
     ageEl.textContent = s.status === "running"
       ? "⏱ Live scan in progress — rows update as they are found."
-      : `⏱ These picks are from the scan ${mins < 60 ? mins + " min" : (mins / 60).toFixed(1) + " h"} ago. ` +
+      : `⏱ These picks are from the scan ${mins < 60 ? mins + " min" : (mins / 60).toFixed(1) + " h"} ago` +
+        `${s.restored ? ", loaded automatically from the database" : ""}. ` +
         `Entry/stop/target levels move with the market — rerun before acting.`;
     ageEl.style.color = (mins > 120 && s.status !== "running") ? "var(--amber)" : "var(--muted)";
   } else ageEl.style.display = "none";
@@ -1194,6 +1230,7 @@ async function refresh() {
     verdict.style.display = "none";
   }
   renderJournal(s.journal);
+  syncSnapshot(s);
   syncJournalBackup(s.journal);
   syncAuthBackup();
   syncEdgeBackup(s.bt_status);

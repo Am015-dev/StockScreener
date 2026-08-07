@@ -74,10 +74,30 @@ def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
     return 100 - 100 / (1 + rs)
 
 
-def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
+def run_backtest(p: dict, data, universe: list[str], progress=print,
+                 reuse: bool = True) -> dict:
     """Simulate params `p` (already clean_params'd). When `data` is None the
     5-year history is streamed batch by batch — downloaded, simulated,
-    discarded — so the deep history never has to fit in memory at once."""
+    discarded — so the deep history never has to fit in memory at once.
+
+    Rules already simulated are rebuilt straight from the database instead:
+    every trade was stored the first time, so re-running the same config
+    costs one indexed read rather than a five-year download."""
+    if reuse:
+        stored = db.load_backtest(p)
+        if stored and stored["trades"]:
+            n = len(stored["trades"])
+            when = stored.get("ran_at")
+            age = (f", simulated {(time.time() - when) / 3600:.0f}h ago"
+                   if when else "")
+            progress(f"Loaded {n} simulated trades for these exact rules from "
+                     f"the database{age} — no download needed.")
+            res = _aggregate(stored["trades"], stored["n_stocks"])
+            res["from_db"] = True
+            res["ran_at"] = when
+            if res.get("n"):
+                res["spy"] = _spy_benchmark(res["from"], res["to"], progress)
+            return res
     trades: list[dict] = []
     scanned = 0
     if data is None:
@@ -106,11 +126,12 @@ def run_backtest(p: dict, data, universe: list[str], progress=print) -> dict:
                                "in a few minutes")
     else:
         scanned = _simulate_block(p, data, universe, trades)
-    n = db.record_backtest(p, trades, ccy_of=screener._ccy)
+    n = db.record_backtest(p, trades, ccy_of=screener._ccy, n_stocks=scanned)
     if n:
         progress(f"Persisted {n} simulated trades — per-stock win rates for these "
                  f"rules now appear on matching picks.")
     res = _aggregate(trades, scanned)
+    res["from_db"] = False
     if res.get("n"):
         res["spy"] = _spy_benchmark(res["from"], res["to"], progress)
     return res

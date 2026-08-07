@@ -1,0 +1,85 @@
+"""A restarted process must open with the last scan already loaded.
+
+Renders' free tier restarts on every deploy and when the instance wakes,
+so 'press Run and wait' as the only path to seeing anything is a bug, not
+a limitation. This test imports the app twice against the same database
+and asserts the second import serves the stored scan — and that a scan too
+old to trade is withheld while its simulation is kept."""
+import importlib
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+TMP = tempfile.mkdtemp(prefix="startup_")
+os.environ["MARKET_DB"] = os.path.join(TMP, "market.db")
+os.environ["JOURNAL_DB"] = os.path.join(TMP, "journal.db")
+os.environ["SCREENER_CACHE_DB"] = os.path.join(TMP, "cache.db")
+os.environ["RESULTS_CSV"] = os.path.join(TMP, "results.csv")
+sys.path.insert(0, str(ROOT))
+
+import db
+
+FRESH = {
+    "results": [{"ticker": "ZZA", "score": 71, "price": 100.0},
+                {"ticker": "ZZB", "score": 63, "price": 50.0}],
+    "top_picks": [{"ticker": "ZZA", "score": 71, "price": 100.0}],
+    "universe_size": 612, "scanned": 612, "elapsed_s": 180,
+    "params_used": {"min_rr": 3.0}, "breadth": {"pct": 61, "risk_factor": 1.0},
+    "health": {"blocked_unverified": 2},
+    "backtest": {"n": 2102, "profit_factor": 1.18, "n_stocks": 614},
+    "bt_status": "done",
+    "results_ts": time.time() - 3600 * 2,     # two hours old: still tradeable
+}
+
+# ---- a recent scan is served on startup ----
+assert db.save_snapshot(FRESH) is True
+app_mod = importlib.import_module("app")
+st = app_mod._state
+assert st["status"] == "done", st["status"]
+assert len(st["results"]) == 2 and st["top_picks"][0]["ticker"] == "ZZA"
+assert st["universe_size"] == 612
+assert st["backtest"]["n"] == 2102 and st["bt_status"] == "done"
+assert st["results_ts"] == FRESH["results_ts"]
+log = " ".join(st["log"])
+assert "Loaded the last scan from the database" in log, log
+assert "2.0h old" in log, log
+assert "rerun before acting" in log, log
+assert "Simulation results restored" in log, log
+print("cold start served the stored scan:", log.split(".")[0])
+
+# the HTTP surface exposes it immediately, with no scan run
+client = app_mod.app.test_client()
+status = client.get("/status").get_json()
+assert status["status"] == "done" and len(status["results"]) == 2
+assert status["backtest"]["profit_factor"] == 1.18
+print("/status served stored results on a cold process — no scan required")
+
+# ---- a scan too old to trade is withheld; its simulation is not ----
+STALE = dict(FRESH, results_ts=time.time() - 3600 * 40)   # 40h old
+assert db.save_snapshot(STALE) is True
+importlib.reload(app_mod)
+st2 = app_mod._state
+assert not st2["results"], "stale entry/stop levels must not be shown"
+assert st2["status"] != "done"
+log2 = " ".join(st2["log"])
+assert "40h old" in log2 and "gone stale" in log2, log2
+assert st2["backtest"] and st2["backtest"]["n"] == 2102, \
+    "the simulation is a historical record and does not go stale with prices"
+assert st2["bt_status"] == "done"
+print("stale scan withheld, simulation kept:", log2.split(".")[0])
+
+# ---- the browser mirror refuses to overwrite something newer ----
+importlib.reload(app_mod)
+client = app_mod.app.test_client()
+app_mod._state["results_ts"] = time.time()
+old_mirror = {"snapshot": dict(FRESH, results_ts=time.time() - 86400)}
+r = client.post("/snapshot/restore", json=old_mirror).get_json()
+assert r["restored"] is False, r
+r2 = client.post("/snapshot/restore", json={"snapshot": {}}).get_json()
+assert r2["restored"] is False
+print("snapshot mirror refuses stale and malformed restores")
+
+print("\nALL APP-STARTUP TESTS PASSED")
