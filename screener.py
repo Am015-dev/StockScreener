@@ -1220,8 +1220,17 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
         progress(f"Note: Yahoo rate-limit cooldown active for {', '.join(cooling)} "
                  f"calls — this run will lean on cached data there.")
 
-    _yahoo_auth_session()   # cheap; persists a crumb whenever Yahoo allows one
-    progress("Building universe via Yahoo sector screener...")
+    # Say something BEFORE any network call. Everything below can block on
+    # a remote host, and a scan that prints nothing while it does is
+    # indistinguishable from a hung one — which is precisely how this looked
+    # in production: "running", no log, no results, no explanation.
+    progress(f"Scan started — up to {p['universe_max']} stocks.")
+    try:
+        _yahoo_auth_session()   # opportunistic: persists a crumb when Yahoo allows
+    except Exception as e:
+        progress(f"  fundamentals sign-in unavailable ({type(e).__name__}) — "
+                 f"continuing; affected picks will be flagged.")
+    progress("Building universe...")
     universe = build_universe(p, progress)
     progress(f"Universe: {len(universe)} tickers  [{time.time()-t0:.0f}s]")
 

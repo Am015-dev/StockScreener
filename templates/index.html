@@ -229,6 +229,13 @@
     </details>
   </section>
 
+  <div id="stallBox" style="display:none;margin:.3rem 0 .6rem;padding:.6rem .8rem;
+       border:1px solid var(--amber);border-radius:8px;color:var(--amber)">
+    <b>⚠ This scan has stopped responding.</b>
+    <span id="stallText"></span>
+    <button class="ghost" style="margin-left:.5rem" onclick="cancelScan()">
+      Abandon it and show my last results</button>
+  </div>
   <div id="asOf" style="display:none;font-weight:600;margin:.1rem 0 .4rem"></div>
   <div id="snapNote" class="hint" style="display:none;margin:.2rem 0 .6rem"></div>
 
@@ -693,6 +700,13 @@ let snapTimer = null;
 function filtersChanged() {
   clearTimeout(snapTimer);
   snapTimer = setTimeout(() => loadStoredScan(true), 600);
+}
+
+async function cancelScan() {
+  try {
+    await fetch("/cancel", {method: "POST"});
+  } catch (e) {}
+  refresh();
 }
 
 async function runScan() {
@@ -1264,6 +1278,16 @@ async function refresh() {
   } else hb.style.display = "none";
 
   // one-line takeaway so nobody has to interpret an empty table
+  // a scan that has said nothing for minutes is not working, whatever the
+  // status says — offer a way out rather than an endless spinner
+  const stallBox = document.getElementById("stallBox");
+  if (s.stalled_s) {
+    stallBox.style.display = "block";
+    document.getElementById("stallText").textContent =
+      ` It has produced no output for ${Math.round(s.stalled_s / 60)} minute(s), ` +
+      `most likely stuck waiting on Yahoo.`;
+  } else stallBox.style.display = "none";
+
   // "as of" stamp: the date and time the shown data was actually measured,
   // in the reader's own timezone, stated before anything else on the page
   const asOf = document.getElementById("asOf");

@@ -60,6 +60,7 @@ _state = {
     "health": None,            # {"blocked_unverified": n} from the last scan
     "error": None,
     "restored": False,         # results came from storage, not a scan just run
+    "last_progress_ts": None,  # when the running scan last said anything
     "published_preset": None,  # which scheduled-scan preset is on screen
 }
 
@@ -277,6 +278,7 @@ def _progress(msg):
     for line in str(msg).splitlines():
         if line.strip():
             _state["log"].append(line)
+            _state["last_progress_ts"] = time.time()
     # keep the log bounded
     if len(_state["log"]) > 500:
         _state["log"][:] = _state["log"][-500:]
@@ -419,7 +421,8 @@ def run():
         if _state["status"] == "running":
             return jsonify({"ok": False, "message": "A scan is already running."}), 409
         _state.update(status="running", log=[], error=None,
-                      started_at=time.time(), finished_at=None,
+                      started_at=time.time(), last_progress_ts=time.time(),
+                      finished_at=None,
                       rejection_summary=[], near_misses=[], params_used=params,
                       near_board=[], relax_hints={}, scanned=None, health=None,
                       pending=[])
@@ -660,9 +663,41 @@ def _crumb_hunter():
 threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 
+# A scan that has said nothing for this long is not working, whatever its
+# status field claims. Reporting that beats spinning silently forever.
+STALL_AFTER_S = float(os.environ.get("STALL_AFTER_S", "300"))
+
+
 @app.route("/status")
 def status():
-    return jsonify(_state)
+    st = dict(_state)
+    if st.get("status") == "running":
+        quiet_since = st.get("last_progress_ts") or st.get("started_at")
+        quiet_for = time.time() - float(quiet_since or time.time())
+        if quiet_for > STALL_AFTER_S:
+            st["stalled_s"] = round(quiet_for)
+    return jsonify(st)
+
+
+@app.route("/cancel", methods=["POST"])
+def cancel():
+    """Clear a scan that is no longer making progress, so the page can show
+    stored results again instead of a spinner that never resolves. The
+    worker thread is left to die on its own — killing it mid-download risks
+    a half-written state, and it holds nothing the next scan needs."""
+    with _lock:
+        if _state["status"] != "running":
+            return jsonify({"ok": False, "message": "Nothing is running."}), 409
+        quiet_since = _state.get("last_progress_ts") or _state.get("started_at")
+        quiet_for = time.time() - float(quiet_since or time.time())
+        _state.update(status="error", finished_at=time.time(),
+                      error=f"Scan abandoned after {round(quiet_for)}s without "
+                            f"progress — it was most likely stuck waiting on "
+                            f"Yahoo. Press Run to try again.")
+        _state["log"].append(_state["error"])
+    # fall back to whatever we can legitimately show instead of nothing
+    restored = _load_published(force=True) or _load_snapshot()
+    return jsonify({"ok": True, "restored_previous": bool(restored)})
 
 
 @app.route("/published")
