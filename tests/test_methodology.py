@@ -135,6 +135,21 @@ assert cleaned["top_picks"] == [good]
 print(f"stored rows revalidated on load: {dropped} off-methodology rows dropped, "
       f"compliant rows kept")
 
+# the revalidator must measure distance the way the screener measures it.
+# Off price instead of off support, 5.2% reads as 4.9% and slips through —
+# a filter quietly looser than the rule it exists to enforce.
+edge_dist = screener.METHODOLOGY_MAX["max_support_dist_pct"] + 0.2
+just_over = {"ticker": "EDGE", "RSI": 44.0, "RR": 3.0,
+             "price": 100.0 * (1 + edge_dist / 100), "support": 100.0}
+assert app_mod._methodology_violations(just_over), \
+    f"a row {edge_dist}% above support must be caught, not rounded into range"
+just_under = dict(just_over, ticker="NEAR",
+                  price=100.0 * (1 + (edge_dist - 0.4) / 100))
+assert app_mod._methodology_violations(just_under) == [], \
+    "a row inside the ceiling must not be dropped"
+print(f"support distance revalidated off support: {edge_dist:g}% dropped, "
+      f"{edge_dist - 0.4:g}% kept")
+
 # a row missing the fields cannot be judged, and must not be silently dropped
 assert app_mod._methodology_violations({"ticker": "SPARSE"}) == []
 print("a row with no comparable fields is kept, not guessed at")
