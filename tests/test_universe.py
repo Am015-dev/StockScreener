@@ -59,8 +59,22 @@ calls = {"n": 0}
 def fake_get(url, headers=None, timeout=None):
     calls["n"] += 1
     assert "sec.gov" in url, url
-    assert headers and headers.get("User-Agent"), "SEC requires a User-Agent"
+    ua = (headers or {}).get("User-Agent", "")
+    # These are the SEC's real, measured rules. A User-Agent without a
+    # contact address gets 403, and so does one whose address is on a
+    # code-host domain — which is how this silently fell back to the
+    # 624-name bundled list in production.
+    assert "@" in ua, f"SEC requires a contact address, got {ua!r}"
+    assert "github.com" not in ua, f"SEC refuses code-host addresses: {ua!r}"
+    assert not ua.lower().startswith("mozilla"), f"SEC refuses browser UAs: {ua!r}"
     return FakeResp(PAYLOAD)
+
+
+# the SHIPPED default must satisfy those rules, not just the test's stub
+assert "@" in screener.SEC_UA, screener.SEC_UA
+assert "github.com" not in screener.SEC_UA, screener.SEC_UA
+assert not screener.SEC_UA.lower().startswith("mozilla"), screener.SEC_UA
+print(f"shipped User-Agent satisfies the SEC's rules: {screener.SEC_UA!r}")
 
 
 screener.requests.get = fake_get

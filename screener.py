@@ -612,7 +612,21 @@ def market_uptrend(close: pd.Series | None) -> bool | None:
 # was stuck on a 624-name hardcoded list; this is a real, official source
 # that answers from a server. It only asks for a User-Agent.
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
-SEC_UA = "PullbackScreener/1.0 (github.com/Am015-dev/StockScreener)"
+# The SEC returns 403 unless the User-Agent carries a contact ADDRESS: a
+# project URL is not enough, which is how the first version of this silently
+# fell back to the 624-name bundled list. Measured behaviour, not guesswork:
+#   "StockScreener/1.0 (github.com/owner/repo)"        -> 403
+#   "Mozilla/5.0 (compatible; StockScreener/1.0)"      -> 403
+#   "StockScreener/1.0 (bot@users.noreply.github.com)" -> 403
+#   "StockScreener/1.0 (bot@example.com)"              -> 200
+# Note the third: any address on a code-host domain is refused too, so the
+# obvious "neutral" default is the one that cannot work.
+#
+# Set SEC_CONTACT to an address you actually monitor — the SEC uses it to
+# reach you about excessive traffic. The default is a placeholder rather
+# than a personal address, since this repository may be made public.
+SEC_CONTACT = os.environ.get("SEC_CONTACT", "stockscreener@example.com")
+SEC_UA = f"StockScreener/1.0 (contact: {SEC_CONTACT})"
 SEC_TTL = 7 * 86400          # the listed universe moves slowly
 SEC_EXCHANGES = ("NYSE", "Nasdaq", "NYSE American")
 
@@ -655,7 +669,14 @@ def _sec_universe(progress=print) -> list[str]:
         progress(f"  SEC listing: {len(out)} US common stocks (largest first).")
         return out
     except Exception as e:
-        progress(f"  SEC listing unavailable ({type(e).__name__}) — "
+        # name the status code: "HTTPError" alone cost a diagnosis cycle,
+        # because a 403 (bad User-Agent) and a 503 (SEC down) need opposite
+        # responses and looked identical in the log
+        code = getattr(getattr(e, "response", None), "status_code", None)
+        detail = f"HTTP {code}" if code else type(e).__name__
+        hint = (" — the SEC requires a contact address in the User-Agent; "
+                "set SEC_CONTACT") if code == 403 else ""
+        progress(f"  SEC listing unavailable ({detail}){hint} — "
                  f"falling back to the built-in list.")
         hit, stale = cache_store.fetch("sec_universe", 365 * 86400)
         return stale if hit and isinstance(stale, list) else []
