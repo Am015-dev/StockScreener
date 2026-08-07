@@ -70,16 +70,30 @@ jobs:
           MARKET_DB: /tmp/market.db
           SCREENER_CACHE_DB: /tmp/cache.db
         run: |
+          set +e
           python scripts/scheduled_scan.py \
             --out published \
             --universe-max "${{ github.event.inputs.universe_max || '1500' }}" \
             --presets "${{ github.event.inputs.presets || '' }}"
+          code=$?
+          set -e
+          # 75 means the data source was unavailable, already retried once.
+          # That recurs by nature and is not a defect, so it must not report
+          # as a failed job — an alert that cries wolf gets ignored, and then
+          # the real breakage gets ignored with it.
+          if [ $code -eq 75 ]; then
+            echo "UPSTREAM_UNAVAILABLE=1" >> $GITHUB_ENV
+            echo "::warning::Yahoo was unavailable for every preset; nothing published. The next run retries."
+            exit 0
+          fi
+          exit $code
 
       # Also commit the results into the deployed branch, so a fresh web
       # instance starts with data. Render wipes its disk on every deploy and
       # a private repo cannot be read without a token, so without this the
       # site is empty after each restart — which reads as "nothing shipped".
       - name: Publish to the data branch
+        if: env.UPSTREAM_UNAVAILABLE != '1'
         run: |
           mkdir -p published/state
           cp /tmp/journal.db published/state/journal.db 2>/dev/null || true
@@ -95,6 +109,7 @@ jobs:
             HEAD:screener-data
 
       - name: Ship results into the deployed build
+        if: env.UPSTREAM_UNAVAILABLE != '1'
         continue-on-error: true
         run: |
           # Stash the results OUTSIDE the work tree first: the checkout below
