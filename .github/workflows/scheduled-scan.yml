@@ -95,6 +95,7 @@ jobs:
             HEAD:screener-data
 
       - name: Ship results into the deployed build
+        continue-on-error: true
         run: |
           # Stash the results OUTSIDE the work tree first: the checkout below
           # replaces the work tree, which would delete the very files being
@@ -121,17 +122,38 @@ jobs:
               HEAD:"$BRANCH"
             echo "shipped $(ls published/*.json | wc -l) result files"
           fi
-          git checkout -q -                       # back for the next step
+          # Return the tree to exactly how the scan left it. Checking out
+          # another branch and back DELETES these files, because they are
+          # tracked on the deploy branch but not here — which is what broke
+          # the Summary step that reads them next.
+          git checkout -q -
+          mkdir -p published
+          cp "$stash"/*.json published/
+          echo "restored $(ls published/*.json | wc -l) result files to the work tree"
 
+      # Reporting must never fail the job: the scan and the publish have
+      # already happened by this point, and losing a seven-minute run to a
+      # missing summary file is what happened before this guard existed.
       - name: Summary
+        if: always()
+        continue-on-error: true
         run: |
           echo "### Scheduled scan" >> $GITHUB_STEP_SUMMARY
+          if [ ! -f published/index.json ]; then
+            echo "_no index published_" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
           python - <<'PY' >> $GITHUB_STEP_SUMMARY
           import json, pathlib
-          d = json.loads(pathlib.Path("published/index.json").read_text())
-          for p in d["presets"]:
+          try:
+              d = json.loads(pathlib.Path("published/index.json").read_text())
+          except Exception as e:
+              print(f"_could not read the index: {e}_")
+              raise SystemExit(0)
+          for p in d.get("presets", []):
+              sim = " · simulation published" if p.get("has_simulation") else ""
               print(f"- **{p['preset']}**: {p['n_results']} picks "
-                    f"from {p['universe_size']} stocks")
+                    f"from {p['universe_size']} stocks{sim}")
           for f in d.get("failures", []):
               print(f"- ⚠ **{f['preset']}** failed: {f['error']}")
           PY
