@@ -73,6 +73,7 @@ DEFAULTS = {
     "stop_buffer_pct": 1.5,      # stop % below support
     "min_stop_atr": 1.0,         # stop must sit >= this many ATRs away (noise gate)
     "max_support_dist_pct": 8.0,  # entry at most this % above support (0 = off)
+    "min_rs_3m": 0.0,            # min 3-month outperformance vs benchmark, pts (0 = off)
     # policy gates
     "require_profitable": True,  # forward EPS > 0  (the anti-AAL gate)
     "require_analyst_buy": False,  # analyst consensus Buy or better (Yahoo data)
@@ -283,6 +284,7 @@ def clean_params(overrides: dict | None) -> dict:
     p["min_stop_atr"] = _num(o.get("min_stop_atr"), p["min_stop_atr"], 0, 5)
     p["max_support_dist_pct"] = _num(o.get("max_support_dist_pct"),
                                      p["max_support_dist_pct"], 0, 50)
+    p["min_rs_3m"] = _num(o.get("min_rs_3m"), p["min_rs_3m"], -50, 50)
     p["require_profitable"] = bool(o.get("require_profitable", p["require_profitable"]))
     p["require_analyst_buy"] = bool(o.get("require_analyst_buy", p["require_analyst_buy"]))
     p["strict_gates"] = bool(o.get("strict_gates", p["strict_gates"]))

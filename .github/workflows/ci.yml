@@ -44,6 +44,8 @@ jobs:
         run: python tests/test_rate_limit.py
       - name: Journal replay + restore
         run: python tests/test_journal.py
+      - name: Market gates (regime + relative strength) simulated
+        run: python tests/test_market_gates.py
       - name: Database reuse + scan snapshots
         run: python tests/test_persistence.py
       - name: Cold start serves stored data

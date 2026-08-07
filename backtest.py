@@ -74,6 +74,33 @@ def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
     return 100 - 100 / (1 + rs)
 
 
+RS_DAYS = 63     # ~3 months, same window the live screener scores on
+
+
+def _benchmarks(progress=print) -> dict:
+    """Benchmark closes per region, for the regime and relative-strength
+    gates. The live screener applies both; until now the simulation did
+    not, so its numbers described rules nobody was actually trading."""
+    out = {}
+    for region, sym in screener.BENCHMARKS.items():
+        try:
+            f = _fetch_chunk([sym], progress)
+            if f is None:
+                continue
+            close = f[sym]["Close"].dropna()
+            if getattr(close.index, "tz", None) is not None:
+                close.index = close.index.tz_localize(None)
+            if len(close) >= 200:
+                out[region] = {"close": close,
+                               "sma200": close.rolling(200).mean()}
+        except Exception:
+            continue
+    if not out:
+        progress("  benchmarks unavailable — regime and relative-strength "
+                 "gates could not be simulated this run")
+    return out
+
+
 def run_backtest(p: dict, data, universe: list[str], progress=print,
                  reuse: bool = True) -> dict:
     """Simulate params `p` (already clean_params'd). When `data` is None the
@@ -100,6 +127,16 @@ def run_backtest(p: dict, data, universe: list[str], progress=print,
             return res
     trades: list[dict] = []
     scanned = 0
+    bench = (_benchmarks(progress)
+             if (p.get("require_market_uptrend") or p.get("min_rs_3m")) else {})
+    if bench:
+        gates = []
+        if p.get("require_market_uptrend"):
+            gates.append("benchmark above its 200-day")
+        if p.get("min_rs_3m"):
+            gates.append(f"relative strength >= {p['min_rs_3m']:+g} pts vs benchmark")
+        progress("Simulating with the live screener's market gates: "
+                 + " and ".join(gates) + ".")
     if data is None:
         n_chunks = (len(universe) + BT_CHUNK - 1) // BT_CHUNK
         progress(f"Simulating {HIST_PERIOD} of history for {len(universe)} "
@@ -114,7 +151,7 @@ def run_backtest(p: dict, data, universe: list[str], progress=print,
                 progress(f"  batch {ci + 1}/{n_chunks}: no data — skipped")
                 continue
             db.record_bars(frame, chunk, ccy_of=screener._ccy)
-            done = _simulate_block(p, frame, chunk, trades)
+            done = _simulate_block(p, frame, chunk, trades, bench)
             scanned += done
             progress(f"  batch {ci + 1}/{n_chunks}: {done} stocks simulated — "
                      f"{len(trades)} historical trades so far")
@@ -125,7 +162,7 @@ def run_backtest(p: dict, data, universe: list[str], progress=print,
                                "is throttling price data right now; try again "
                                "in a few minutes")
     else:
-        scanned = _simulate_block(p, data, universe, trades)
+        scanned = _simulate_block(p, data, universe, trades, bench)
     n = db.record_backtest(p, trades, ccy_of=screener._ccy, n_stocks=scanned)
     if n:
         progress(f"Persisted {n} simulated trades — per-stock win rates for these "
@@ -158,7 +195,8 @@ def _spy_benchmark(d_from: str, d_to: str, progress=print):
         return None
 
 
-def _simulate_block(p: dict, data, tickers: list[str], trades: list) -> int:
+def _simulate_block(p: dict, data, tickers: list[str], trades: list,
+                    bench: dict | None = None) -> int:
     """Run the simulation for one batch of tickers against its frame.
     Appends to `trades`, returns how many stocks had enough history."""
     scanned = 0
@@ -183,6 +221,25 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list) -> int:
 
         c_v, o_v = close.values, opens.values
         h_v, l_v = high.values, low.values
+
+        # market gates, aligned onto this stock's own trading calendar
+        regime_ok = rs_v = None
+        b = (bench or {}).get(screener._region(ticker))
+        if b is not None:
+            try:
+                idx = hist.index
+                if getattr(idx, "tz", None) is not None:
+                    idx = idx.tz_localize(None)
+                bc = b["close"].reindex(idx, method="ffill")
+                if p.get("require_market_uptrend"):
+                    regime_ok = (bc > b["sma200"].reindex(idx, method="ffill")).values
+                if p.get("min_rs_3m"):
+                    s_ret = close.values / np.roll(close.values, RS_DAYS) - 1
+                    b_ret = bc.values / np.roll(bc.values, RS_DAYS) - 1
+                    rs_v = (s_ret - b_ret) * 100
+                    rs_v[:RS_DAYS] = np.nan
+            except Exception:
+                regime_ok = rs_v = None
         busy_until = -1
         # entries need a FULL resolution window ahead — otherwise the sample
         # only contains trades that resolved fast, i.e. mostly stop-outs
@@ -195,6 +252,12 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list) -> int:
             r = float(rsi_s.iloc[ti])
             if not (p["rsi_low"] <= r <= p["rsi_high"]):
                 continue
+            if regime_ok is not None and not regime_ok[ti]:
+                continue                       # benchmark below its 200-day
+            if rs_v is not None:
+                rsv = rs_v[ti]
+                if not np.isfinite(rsv) or rsv < p["min_rs_3m"]:
+                    continue                   # lagging its own market
             if float(dv30.iloc[ti]) < p["min_dollar_vol_m"] * 1e6:
                 continue
             support = screener.last_pivot_low(

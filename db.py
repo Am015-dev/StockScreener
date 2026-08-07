@@ -32,7 +32,11 @@ DB_PATH = os.environ.get("MARKET_DB", "/tmp/screener_market.db")
 # parameters that change what the simulation finds — nothing else
 TECH_PARAMS = ("rsi_low", "rsi_high", "min_rr", "swing_lookback", "pivot_k",
                "stop_buffer_pct", "min_stop_atr", "max_support_dist_pct",
-               "min_dollar_vol_m")
+               "min_dollar_vol_m",
+               # market gates: simulated since the regime/RS filters landed.
+               # They MUST be part of config identity — otherwise the reuse
+               # path would serve a simulation run under different rules.
+               "require_market_uptrend", "min_rs_3m")
 MIN_SAMPLE = 5   # never show a win rate computed from fewer signals
 
 _SCHEMA = """
