@@ -47,6 +47,8 @@ jobs:
         run: python tests/test_rate_limit.py
       - name: Journal replay + restore
         run: python tests/test_journal.py
+      - name: Published-results adoption (scheduled scans)
+        run: python tests/test_published.py
       - name: Universe source (SEC listing + fallbacks)
         run: python tests/test_universe.py
       - name: Market gates (regime + relative strength) simulated

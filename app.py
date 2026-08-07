@@ -60,6 +60,7 @@ _state = {
     "health": None,            # {"blocked_unverified": n} from the last scan
     "error": None,
     "restored": False,         # results came from storage, not a scan just run
+    "published_preset": None,  # which scheduled-scan preset is on screen
 }
 
 
@@ -128,6 +129,76 @@ def _load_cached_csv():
             pass
 
 
+# ---- published results: scans run on a schedule in CI, not here ----
+# The heavy work (downloading and analysing thousands of stocks) happens on
+# a GitHub Actions runner and lands on the `screener-data` branch. This
+# instance just reads the finished JSON, so a page load costs a fetch
+# instead of a five-minute scan — and a visitor never waits on Yahoo.
+PUBLISHED_BASE = os.environ.get(
+    "PUBLISHED_BASE",
+    "https://raw.githubusercontent.com/Am015-dev/StockScreener/screener-data")
+PUBLISHED_TTL = float(os.environ.get("PUBLISHED_TTL", "900"))   # re-check every 15 min
+_published = {"ts": 0.0, "index": None}
+
+
+def _published_get(path: str):
+    """Fetch a published file. Private repositories need a token; public
+    ones need nothing, which is the main reason to make the repo public."""
+    import requests as rq
+    headers = {}
+    tok = os.environ.get("PUBLISHED_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if tok:
+        headers["Authorization"] = f"token {tok}"
+    try:
+        r = rq.get(f"{PUBLISHED_BASE}/{path}", headers=headers, timeout=20)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
+def _published_index(force: bool = False):
+    if not force and _published["index"] is not None \
+            and time.time() - _published["ts"] < PUBLISHED_TTL:
+        return _published["index"]
+    idx = _published_get("index.json")
+    if idx is not None:
+        _published.update(index=idx, ts=time.time())
+    return idx
+
+
+def _adopt_published(preset: dict) -> bool:
+    """Load a published scan into the live state and store it under its
+    filters, so it behaves exactly like a scan run here."""
+    payload = _published_get(f"{preset['preset']}.json")
+    if not payload or not payload.get("results_ts"):
+        return False
+    params = payload.get("params_used")
+    if not params:
+        return False
+    market_db.save_snapshot(params, {k: payload.get(k) for k in SNAPSHOT_KEYS})
+    if not _load_snapshot(params):
+        return False
+    _state["published_preset"] = preset["preset"]
+    _state["log"].append(
+        f"Results published by the scheduled scan ({preset['preset']} preset) — "
+        f"no scanning was needed to show them.")
+    return True
+
+
+def _load_published(force: bool = False) -> bool:
+    """Adopt the freshest published preset that is newer than what we have."""
+    idx = _published_index(force)
+    if not idx or not idx.get("presets"):
+        return False
+    best = max(idx["presets"], key=lambda p: p.get("results_ts") or 0)
+    have = float(_state.get("results_ts") or 0)
+    if float(best.get("results_ts") or 0) <= have:
+        return False
+    return _adopt_published(best)
+
+
 SNAPSHOT_KEYS = ("results", "top_picks", "rejection_summary", "near_misses",
                  "params_used", "portfolio", "near_board", "relax_hints",
                  "pending", "breadth", "health", "universe_size", "scanned",
@@ -191,8 +262,11 @@ def _load_snapshot(params=None) -> bool:
 
 
 market_db._drop_dead_weight()   # reclaim the write-only bars table, once
-if not _load_snapshot():
-    _load_cached_csv()
+# published results first: they are produced by the scheduled scan and are
+# usually fresher than anything this instance still has after a restart
+if not _load_published():
+    if not _load_snapshot():
+        _load_cached_csv()
 try:
     _state["journal"] = journal.snapshot()
 except Exception:
@@ -589,6 +663,26 @@ threading.Thread(target=_crumb_hunter, daemon=True).start()
 @app.route("/status")
 def status():
     return jsonify(_state)
+
+
+@app.route("/published")
+def published_route():
+    """What the scheduled scan has published, and how old it is."""
+    idx = _published_index()
+    return jsonify({"base": PUBLISHED_BASE, "index": idx,
+                    "using": _state.get("published_preset")})
+
+
+@app.route("/published/refresh", methods=["POST"])
+def published_refresh():
+    """Pull the newest published scan now instead of waiting for the poll."""
+    with _lock:
+        if _state["status"] == "running":
+            return jsonify({"ok": False, "message": "A scan is running."}), 409
+        adopted = _load_published(force=True)
+    return jsonify({"ok": True, "adopted": adopted,
+                    "results_ts": _state.get("results_ts"),
+                    "n_results": len(_state.get("results") or [])})
 
 
 def _send_alert(text: str) -> list[str]:
