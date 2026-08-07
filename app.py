@@ -53,6 +53,7 @@ _state = {
     "scanned": None,           # live progress: tickers checked so far this run
     "bt_status": "idle",       # simulation: idle | running | done | error
     "backtest": None,          # simulation results (see backtest.py)
+    "bt_rules": None,          # the rule set the shown simulation was run under
     "pending": [],             # qualified technically, awaiting verification
     "breadth": None,           # {"pct": .., "risk_factor": ..} market health
     "results_ts": None,        # when the shown results were produced
@@ -377,6 +378,9 @@ def parse_portfolio():
 
 def _run_backtest_thread(params):
     try:
+        # record which rules this simulation belongs to, so neither the page
+        # nor a script can mistake a previous run's numbers for these rules
+        _state["bt_rules"] = {k: params.get(k) for k in market_db.TECH_PARAMS}
         bt = backtest_mod.run_backtest(params, None,
                                        screener._cache.get("universe") or [],
                                        progress=_progress)
@@ -404,7 +408,7 @@ def run_backtest_route():
     with _lock:
         if _state["bt_status"] == "running" or _state["status"] == "running":
             return jsonify({"ok": False, "message": "Something is already running."}), 409
-        _state.update(bt_status="running", backtest=None)
+        _state.update(bt_status="running", backtest=None, bt_rules=None)
         threading.Thread(target=_run_backtest_thread, args=(params,),
                          daemon=True).start()
     return jsonify({"ok": True})

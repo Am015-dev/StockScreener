@@ -442,6 +442,7 @@
     <div id="btBody" style="display:none">
       <div class="tiles" id="btTiles"></div>
       <div class="hint" id="btBreak" style="margin:.2rem 0 .4rem"></div>
+      <div id="btStaleRules" class="hint" style="display:none;margin:.2rem 0 .4rem;color:var(--amber);font-weight:600"></div>
       <div id="btSource" class="hint" style="display:none;margin:.2rem 0 .4rem;color:var(--muted)"></div>
       <div id="btPortfolio" class="hint" style="display:none;margin:.3rem 0 .5rem"></div>
       <div id="btGate" style="display:none;font-weight:600;margin:.3rem 0 .5rem"></div>
@@ -907,6 +908,26 @@ function renderBacktest(bt, btStatus) {
     `total ${esc(rFmt(bt.total_r))} (≈${esc(bt.return_pct)}% at 1% risk/trade) · ` +
     `best ${esc(bt.best.ticker)} ${esc(rFmt(bt.best.outcome_r))} · worst ${esc(bt.worst.ticker)} ${esc(rFmt(bt.worst.outcome_r))}` +
     (bt.spy ? ` · SPY same window: ${esc(bt.spy.return_pct)}% return, −${esc(bt.spy.mdd_pct)}% max drawdown` : "");
+  // the simulation on screen may predate a filter change — say so rather
+  // than letting old numbers sit under new rules
+  const stale_rules = document.getElementById("btStaleRules");
+  const cur = collectParams();
+  const ruleKeys = ["rsi_low", "rsi_high", "min_rr", "swing_lookback", "pivot_k",
+                    "stop_buffer_pct", "min_stop_atr", "max_support_dist_pct",
+                    "min_dollar_vol_m", "require_market_uptrend", "min_rs_3m"];
+  const usedRules = window.__btRules;
+  let mismatch = [];
+  if (usedRules) {
+    mismatch = ruleKeys.filter(k => cur[k] !== undefined && usedRules[k] !== undefined
+                                    && String(cur[k]) !== String(usedRules[k]));
+  }
+  if (mismatch.length) {
+    stale_rules.style.display = "block";
+    stale_rules.textContent = "⚠ These simulation results are for different rules (" +
+      mismatch.join(", ") + " have changed since it ran). Re-run the simulation " +
+      "before judging the current filters.";
+  } else stale_rules.style.display = "none";
+
   const src_note = document.getElementById("btSource");
   if (bt.from_db) {
     src_note.style.display = "block";
@@ -1216,6 +1237,7 @@ async function refresh() {
 
   renderTopPicks(s.top_picks);
   renderNearBoard(s.near_board, s.relax_hints, (s.results || []).length);
+  window.__btRules = s.bt_rules || null;
   renderBacktest(s.backtest, s.bt_status || "idle");
   renderPending(s.pending);
 

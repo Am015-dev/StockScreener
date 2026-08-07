@@ -115,4 +115,28 @@ no_params = {"snapshot": dict(FRESH, results_ts=time.time() + 60)}
 assert client.post("/snapshot/restore", json=no_params).get_json()["restored"] is False
 print("snapshot mirror refuses stale, malformed and unattributed restores")
 
+# ---- a simulation must carry the rules it was run under ----
+importlib.reload(app_mod)
+client = app_mod.app.test_client()
+assert client.get("/status").get_json().get("bt_rules") is None
+
+captured = {}
+
+
+def fake_sim(params, data, universe, progress=print, reuse=True):
+    captured["rules"] = {k: params.get(k) for k in db.TECH_PARAMS}
+    return {"n": 5, "n_stocks": 10, "profit_factor": 1.2, "from_db": False}
+
+
+app_mod.backtest_mod.run_backtest = fake_sim
+app_mod.screener._cache["universe"] = ["ZZA"]
+app_mod._run_backtest_thread(screener.clean_params({"min_rr": 2.75}))
+
+rules = client.get("/status").get_json()["bt_rules"]
+assert rules is not None, "the shown simulation must say which rules produced it"
+assert rules["min_rr"] == 2.75, rules
+assert set(rules) == set(db.TECH_PARAMS), "every rule that changes results must be recorded"
+assert rules == captured["rules"], "recorded rules must match what was simulated"
+print("simulations carry their rule set — old numbers cannot pass as new ones")
+
 print("\nALL APP-STARTUP TESTS PASSED")
