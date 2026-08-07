@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
 CREATE TABLE IF NOT EXISTS backtest_runs (
     config_id INTEGER PRIMARY KEY,
     ran_at REAL, n_stocks INTEGER, n_trades INTEGER,
-    d_from TEXT, d_to TEXT
+    d_from TEXT, d_to TEXT,
+    metrics_json TEXT
 );
 CREATE TABLE IF NOT EXISTS scan_snapshots (
     scan_hash   TEXT PRIMARY KEY,
@@ -194,6 +195,55 @@ def record_backtest(params: dict, trades: list[dict], ccy_of=None,
             return len(trades)
     except Exception:
         return 0
+
+
+def record_metrics(params: dict, res: dict) -> bool:
+    """Store a finished simulation's headline metrics so configurations can
+    be compared without replaying any of them."""
+    keep = ("n", "n_stocks", "win_rate_pct", "avg_r", "total_r",
+            "profit_factor", "mdd_r", "mdd_pct", "sortino", "return_pct",
+            "from", "to", "spy", "portfolio")
+    try:
+        slim = {k: res.get(k) for k in keep if k in res}
+        if isinstance(slim.get("portfolio"), dict):
+            slim["portfolio"] = {k: v for k, v in slim["portfolio"].items()
+                                 if k != "curve"}
+        blob = json.dumps(slim, default=str)
+    except (TypeError, ValueError):
+        return False
+    try:
+        with _conn() as c:
+            cid = _config_id(c, params)
+            c.execute("UPDATE backtest_runs SET metrics_json = ? WHERE config_id = ?",
+                      (blob, cid))
+        return True
+    except Exception:
+        return False
+
+
+def list_backtests() -> list[dict]:
+    """Every simulated rule set with its stored metrics, newest first — the
+    side-by-side view of which configuration actually has an edge."""
+    out = []
+    try:
+        with _conn() as c:
+            for ph, pj, ran_at, n_tr, n_st, d_f, d_t, mj in c.execute("""
+                    SELECT sc.param_hash, sc.params_json, br.ran_at,
+                           br.n_trades, br.n_stocks, br.d_from, br.d_to,
+                           br.metrics_json
+                    FROM backtest_runs br
+                    JOIN strategy_configs sc USING (config_id)
+                    ORDER BY br.ran_at DESC"""):
+                try:
+                    out.append({"hash": ph[:8], "params": json.loads(pj),
+                                "ran_at": ran_at, "n_trades": n_tr,
+                                "n_stocks": n_st, "from": d_f, "to": d_t,
+                                "metrics": json.loads(mj) if mj else None})
+                except (TypeError, ValueError):
+                    continue
+    except Exception:
+        pass
+    return out
 
 
 def load_backtest(params: dict) -> dict | None:

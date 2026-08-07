@@ -461,6 +461,46 @@ def snapshot_load():
                     "message": "These filters have not been scanned yet."})
 
 
+@app.route("/configs")
+def configs_route():
+    """Every simulated rule set with its metrics, and whether it clears the
+    tradeable bar — profit factor >= 1.5, drawdown no worse than the
+    benchmark, Sortino >= 1.0 — judged on the realistic portfolio."""
+    rows = []
+    for r in market_db.list_backtests():
+        m = r.get("metrics") or {}
+        pf_view = m.get("portfolio") or {}
+        pf = pf_view.get("profit_factor", m.get("profit_factor"))
+        mdd = pf_view.get("mdd_pct", m.get("mdd_pct"))
+        sortino = pf_view.get("sortino", m.get("sortino"))
+        spy_mdd = (m.get("spy") or {}).get("mdd_pct")
+        fails = []
+        if pf is not None and pf < 1.5:
+            fails.append(f"profit factor {pf} < 1.5")
+        if mdd is not None:
+            if spy_mdd is not None and mdd > spy_mdd:
+                fails.append(f"drawdown -{mdd}% worse than SPY -{spy_mdd}%")
+            elif spy_mdd is None and mdd > 20:
+                fails.append(f"drawdown -{mdd}% worse than -20%")
+        if sortino is not None and sortino < 1.0:
+            fails.append(f"Sortino {sortino} < 1.0")
+        rows.append({
+            "hash": r["hash"], "ran_at": r["ran_at"],
+            "n_trades": r["n_trades"], "n_stocks": r["n_stocks"],
+            "from": r["from"], "to": r["to"],
+            "rules": {k: r["params"].get(k) for k in market_db.TECH_PARAMS},
+            "profit_factor": pf, "mdd_pct": mdd, "sortino": sortino,
+            "win_rate_pct": pf_view.get("win_rate_pct", m.get("win_rate_pct")),
+            "return_pct": pf_view.get("return_pct", m.get("return_pct")),
+            "spy": m.get("spy"),
+            "clears_bar": (bool(m) and not fails),
+            "fails": fails,
+            "measured": bool(m),
+        })
+    cleared = [r for r in rows if r["clears_bar"]]
+    return jsonify({"configs": rows, "n": len(rows), "n_clearing": len(cleared)})
+
+
 @app.route("/snapshot/index")
 def snapshot_index_route():
     """Which filter combinations already have a stored scan."""

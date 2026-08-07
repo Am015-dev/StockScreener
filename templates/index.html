@@ -229,6 +229,7 @@
     </details>
   </section>
 
+  <div id="asOf" style="display:none;font-weight:600;margin:.1rem 0 .4rem"></div>
   <div id="snapNote" class="hint" style="display:none;margin:.2rem 0 .6rem"></div>
 
   <div class="bar">
@@ -1241,6 +1242,24 @@ async function refresh() {
   } else hb.style.display = "none";
 
   // one-line takeaway so nobody has to interpret an empty table
+  // "as of" stamp: the date and time the shown data was actually measured,
+  // in the reader's own timezone, stated before anything else on the page
+  const asOf = document.getElementById("asOf");
+  if (s.results_ts) {
+    const d = new Date(s.results_ts * 1000);
+    const ageMin = Math.max(0, Math.round(Date.now() / 1000 / 60 - s.results_ts / 60));
+    const today = d.toDateString() === new Date().toDateString();
+    asOf.style.display = "block";
+    asOf.innerHTML =
+      `📅 Data as of <b>${d.toLocaleDateString(undefined, {weekday: "short", day: "numeric", month: "short"})}` +
+      ` ${d.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"})}</b>` +
+      ` (${ageMin < 1 ? "just now" : ageMin < 60 ? ageMin + " min ago" : (ageMin / 60).toFixed(1) + " h ago"})` +
+      ` · ${esc(s.universe_size || 0)} stocks scanned` +
+      (s.status === "running" ? " · <span style=\"color:var(--amber)\">scan in progress</span>" : "");
+    asOf.style.color = today ? "var(--text)" : "var(--amber)";
+    if (!today) asOf.innerHTML += ' · <span style="color:var(--amber)">not today — press Run</span>';
+  } else asOf.style.display = "none";
+
   const verdict = document.getElementById("verdict");
   if (s.status === "running" && s.scanned != null && s.universe_size) {
     verdict.style.display = "block";

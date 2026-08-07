@@ -170,6 +170,7 @@ def run_backtest(p: dict, data, universe: list[str], progress=print,
     res["from_db"] = False
     if res.get("n"):
         res["spy"] = _spy_benchmark(res["from"], res["to"], progress)
+    db.record_metrics(p, res)
     return res
 
 
@@ -330,7 +331,21 @@ def _portfolio_sim(trades: list[dict], slots: int = PORTFOLIO_SLOTS,
     signal means holding ~80 positions at once, i.e. ~80% of the account at
     risk simultaneously. The drawdown that produces is an artifact of an
     impossible position count, not a property of the rules. This is the
-    curve a person could actually have traded."""
+    curve a person could actually have traded.
+
+    The result is much worse than the all-signals view, and the reason is
+    not slot starvation — a synthetic run with the same winner/loser
+    holding asymmetry reproduces the all-signals numbers almost exactly.
+    The cause is that these signals CLUSTER: a market-wide dip fires dozens
+    on the same day and their outcomes are correlated, so five slots fill
+    with one day's bet rather than five independent ones. The diversification
+    that makes the all-signals figure look survivable is simply not available
+    to an account of this size.
+
+    Caveat worth stating: signals are taken first-come-first-served. A user
+    following the ranked picks would choose differently, and that policy has
+    not been measured — so read this as the cost of capacity limits, not as
+    the exact return of any particular selection rule."""
     if not trades:
         return {}
     order = sorted(trades, key=lambda t: t["date"])

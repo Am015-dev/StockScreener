@@ -442,11 +442,18 @@ def build_universe(p: dict, progress=print) -> list[str]:
                      f"from disk ({len(stale)} tickers, may be stale).")
             _cache.update(universe_key=key, universe=stale, universe_ts=time.time())
             return stale
-        us_syms = list(universe_static.US_CORE) if p["include_us"] else []
+        us_syms = _sec_universe(progress) if p["include_us"] else []
         eu_syms = list(universe_static.EU_CORE) if p["include_eu"] else []
-        progress(f"  Yahoo screener unavailable — using the built-in large-cap "
-                 f"universe ({len(us_syms) + len(eu_syms)} tickers; size/sector "
-                 f"re-checked from live data during the scan).")
+        if us_syms:
+            progress(f"  Yahoo screener unavailable — using the SEC's official "
+                     f"listing instead ({len(us_syms)} US names, largest first) "
+                     f"plus {len(eu_syms)} European names. Size, liquidity and "
+                     f"sector are re-checked from live data during the scan.")
+        else:
+            us_syms = list(universe_static.US_CORE) if p["include_us"] else []
+            progress(f"  Yahoo screener and the SEC listing are both "
+                     f"unavailable — using the built-in large-cap universe "
+                     f"({len(us_syms) + len(eu_syms)} tickers).")
         if not us_syms and not eu_syms:
             us_syms = list(FALLBACK_UNIVERSE)
     elif _rate_limited_now("screen") and len(us_syms) + len(eu_syms) < 150:
@@ -597,6 +604,61 @@ def market_uptrend(close: pd.Series | None) -> bool | None:
     if close is None or len(close) < 200:
         return None
     return bool(float(close.iloc[-1]) > float(close.rolling(200).mean().iloc[-1]))
+
+
+# The SEC publishes every US-listed registrant with its exchange, ordered
+# largest first, in the same ticker format Yahoo uses (BRK-B, not BRK.B).
+# Yahoo's own screener API refuses datacenter IPs, which is why this app
+# was stuck on a 624-name hardcoded list; this is a real, official source
+# that answers from a server. It only asks for a User-Agent.
+SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
+SEC_UA = "PullbackScreener/1.0 (github.com/Am015-dev/StockScreener)"
+SEC_TTL = 7 * 86400          # the listed universe moves slowly
+SEC_EXCHANGES = ("NYSE", "Nasdaq", "NYSE American")
+
+
+def _is_common_stock(ticker: str) -> bool:
+    """Drop preferred lines and warrants, keep ordinary share classes.
+
+    Yahoo spells preferred shares with a -P prefix on the suffix (CMS-PB)
+    and warrants/units with -W or -U, while a plain share class is a single
+    letter (BRK-B, BF-A). Preferred shares do not trend or pull back like
+    equity and would only pad the scan."""
+    if "-" not in ticker:
+        return True
+    suffix = ticker.rsplit("-", 1)[1].upper()
+    return len(suffix) == 1 and suffix not in ("W", "U", "R")
+
+
+def _sec_universe(progress=print) -> list[str]:
+    """US common stocks from the SEC's official listing, largest first."""
+    hit, stored = cache_store.fetch("sec_universe", SEC_TTL)
+    if hit and isinstance(stored, list) and stored:
+        return stored
+    try:
+        r = requests.get(SEC_TICKERS_URL, headers={"User-Agent": SEC_UA}, timeout=25)
+        r.raise_for_status()
+        d = r.json()
+        fi = {f: i for i, f in enumerate(d["fields"])}
+        out, seen = [], set()
+        for row in d["data"]:
+            t = str(row[fi["ticker"]] or "").strip().upper()
+            if (not t or t in seen
+                    or row[fi["exchange"]] not in SEC_EXCHANGES
+                    or not _is_common_stock(t)):
+                continue
+            seen.add(t)
+            out.append(t)
+        if len(out) < 500:
+            raise ValueError(f"only {len(out)} tickers parsed — format changed?")
+        cache_store.put("sec_universe", out)
+        progress(f"  SEC listing: {len(out)} US common stocks (largest first).")
+        return out
+    except Exception as e:
+        progress(f"  SEC listing unavailable ({type(e).__name__}) — "
+                 f"falling back to the built-in list.")
+        hit, stale = cache_store.fetch("sec_universe", 365 * 86400)
+        return stale if hit and isinstance(stale, list) else []
 
 
 def rel_strength(close: pd.Series, bench_close: pd.Series | None, days: int = 63) -> float | None:
