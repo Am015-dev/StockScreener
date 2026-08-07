@@ -5,229 +5,281 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dip Finder — buy strong stocks on a pullback</title>
 <style>
+  /* ============================================================
+     Design tokens.
+
+     Series colours are the validated reference palette (blue,
+     orange, aqua, yellow), checked with the data-viz validator in
+     both modes: dark passes every check; light warns only on
+     contrast, which visible labels relieve. The previous ad-hoc
+     palette FAILED the lightness band, and its amber/green pair —
+     the win/loss colours — sat at deltaE 7.2 under protanopia,
+     i.e. indistinguishable to a colourblind reader. Status is
+     therefore never carried by colour alone: every good/bad state
+     also ships a glyph and a word.
+     ============================================================ */
   :root {
-    --bg: #0f1115; --panel: #171a21; --panel2: #1d222c; --border: #262b36;
-    --text: #e6e9ef; --muted: #8b93a5; --accent: #4f8ff7;
-    --green: #3ecf8e; --amber: #e8b64c; --red: #f76d6d; --gold: #f2c14e;
+    color-scheme: light;
+    --surface-0: #f7f7f6;      /* page */
+    --surface-1: #ffffff;      /* panels */
+    --surface-2: #f2f2f0;      /* nested */
+    --line:      #e2e2df;
+    --line-soft: #ededea;
+    --ink:       #14140f;
+    --ink-2:     #52514e;
+    --ink-3:     #7b7a75;
+
+    --series-1: #2a78d6;       /* blue   — primary/accent */
+    --series-2: #eb6834;       /* orange */
+    --series-3: #1baf7a;       /* aqua   — positive */
+    --series-4: #eda100;       /* yellow — caution */
+    --neg:      #c8442c;       /* negative */
+
+    --accent: var(--series-1);
+    --green:  #157f5b;
+    --amber:  #97650a;
+    --red:    var(--neg);
+    --gold:   #a97b12;
+    --bg: var(--surface-0); --panel: var(--surface-1); --panel2: var(--surface-2);
+    --border: var(--line); --text: var(--ink); --muted: var(--ink-2);
+
+    --sp-1: .25rem; --sp-2: .5rem; --sp-3: .75rem; --sp-4: 1rem;
+    --sp-5: 1.5rem; --sp-6: 2rem; --sp-7: 3rem;
+    --r-sm: 6px; --r: 10px; --r-lg: 14px;
+    --shadow: 0 1px 2px rgba(20,20,15,.06), 0 4px 12px rgba(20,20,15,.04);
   }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-0: #101013; --surface-1: #17171b; --surface-2: #1e1e24;
+      --line: #2a2a32; --line-soft: #232329;
+      --ink: #f2f2ef; --ink-2: #a8a8a2; --ink-3: #7d7d78;
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+      --neg: #e0533d;
+      --green: #35b98a; --amber: #d9a02c; --gold: #d9b04e;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.28);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #101013; --surface-1: #17171b; --surface-2: #1e1e24;
+    --line: #2a2a32; --line-soft: #232329;
+    --ink: #f2f2ef; --ink-2: #a8a8a2; --ink-3: #7d7d78;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --neg: #e0533d;
+    --green: #35b98a; --amber: #d9a02c; --gold: #d9b04e;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.28);
+  }
+
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--text);
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: var(--sp-6) var(--sp-4) var(--sp-7);
+    background: var(--surface-0); color: var(--ink);
+    font: 400 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    /* every figure on this page is meant to be compared down a column */
+    font-variant-numeric: tabular-nums;
   }
-  main { max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  .sub { color: var(--muted); margin-bottom: 1.25rem; }
-  .bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  main { max-width: 1140px; margin: 0 auto; }
+
+  h1 { font-size: 1.75rem; line-height: 1.15; letter-spacing: -.02em;
+       font-weight: 680; margin: 0 0 var(--sp-2); }
+  .sub { color: var(--ink-2); margin: 0 0 var(--sp-5); max-width: 68ch; font-size: .95rem; }
+  h2 { font-size: 1.0625rem; font-weight: 640; letter-spacing: -.01em;
+       margin: 0 0 var(--sp-1); color: var(--ink); text-transform: none;
+       display: flex; align-items: center; gap: .55rem; }
+  h2::before { content: ""; flex: 0 0 auto; width: 3px; height: 1.05em;
+               border-radius: 2px; background: var(--series-1); }
+  section:has(#nearWrap) h2::before,
+  #nearSection h2::before { background: var(--series-4); }
+  #journalSection h2::before { background: var(--series-3); }
+  #btSection h2::before { background: var(--series-2); }
+  .secsub { font-size: .875rem; color: var(--ink-2); margin: 0 0 var(--sp-4); max-width: 72ch; }
+  .subhead { font-size: .9375rem; font-weight: 620; color: var(--ink);
+             margin: var(--sp-5) 0 var(--sp-2); }
+
+  section { background: var(--surface-1); border: 1px solid var(--line);
+            border-radius: var(--r-lg); padding: var(--sp-5);
+            margin-bottom: var(--sp-4); box-shadow: var(--shadow); }
+
+  .bar { display: flex; gap: var(--sp-3); align-items: center;
+         flex-wrap: wrap; margin-bottom: var(--sp-4); }
   button {
-    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
-    padding: .6rem 1.4rem; font-size: 1rem; cursor: pointer; font-weight: 600;
+    background: var(--series-1); color: #fff; border: 0; border-radius: var(--r-sm);
+    padding: .6rem 1.25rem; font-size: .9375rem; cursor: pointer; font-weight: 600;
+    letter-spacing: -.01em; transition: filter .12s ease, transform .06s ease;
   }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted);
-                 font-weight: 400; font-size: .9rem; padding: .45rem 1rem; }
-  a.dl { color: var(--accent); text-decoration: none; }
-  .pill {
-    padding: .2rem .7rem; border-radius: 999px; font-size: .85rem;
-    border: 1px solid var(--border); color: var(--muted);
-  }
-  .pill.running { color: var(--accent); border-color: var(--accent); }
-  .pill.done { color: var(--green); border-color: var(--green); }
-  .pill.error { color: var(--red); border-color: var(--red); }
-  section { background: var(--panel); border: 1px solid var(--border);
-            border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
-  h2 { font-size: 1rem; margin: 0 0 .35rem; color: var(--muted);
-       text-transform: uppercase; letter-spacing: .05em; }
-  .secsub { font-size: .85rem; color: var(--muted); margin: 0 0 .75rem; }
-  /* --- anything with a data-tip explains itself on hover/tap --- */
-  [data-tip] { cursor: help; text-decoration: underline dotted var(--muted);
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid var(--line);
+                 color: var(--ink-2); font-weight: 500; font-size: .875rem;
+                 padding: .45rem .9rem; }
+  button.ghost:hover { border-color: var(--ink-3); color: var(--ink); filter: none; }
+  :focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; border-radius: 4px; }
+  a.dl { color: var(--series-1); text-decoration: none; font-size: .875rem; font-weight: 500; }
+  a.dl:hover { text-decoration: underline; }
+
+  .pill { padding: .2rem .65rem; border-radius: 999px; font-size: .8125rem;
+          border: 1px solid var(--line); color: var(--ink-2); font-weight: 500; }
+  .pill.running { color: var(--series-1); border-color: color-mix(in srgb, var(--series-1) 45%, transparent); }
+  .pill.done    { color: var(--green);    border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+  .pill.error   { color: var(--neg);      border-color: color-mix(in srgb, var(--neg) 45%, transparent); }
+
+  [data-tip] { cursor: help; text-decoration: underline dotted var(--ink-3);
                text-underline-offset: 3px; position: relative; }
   [data-tip]:hover::after, [data-tip]:focus::after {
     content: attr(data-tip); position: absolute; left: 0; top: 100%; z-index: 30;
-    margin-top: .35rem; width: max-content; max-width: 280px; white-space: normal;
-    background: #0a0c10; color: var(--text); border: 1px solid var(--accent);
-    border-radius: 8px; padding: .5rem .65rem; font-size: .8rem; line-height: 1.4;
+    margin-top: var(--sp-1); width: max-content; max-width: 300px; white-space: normal;
+    background: var(--surface-1); color: var(--ink); border: 1px solid var(--line);
+    border-radius: var(--r); padding: .6rem .75rem; font-size: .8125rem; line-height: 1.45;
     font-weight: 400; text-transform: none; letter-spacing: 0; text-align: left;
-    box-shadow: 0 6px 18px rgba(0,0,0,.5); pointer-events: none;
+    box-shadow: var(--shadow); pointer-events: none;
   }
   th[data-tip]:hover::after, td.notes[data-tip]:hover::after { left: auto; right: 0; }
-  /* --- help panel --- */
+
   .helpcols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-              gap: 1rem; margin-top: .75rem; }
-  .helpcols h3 { font-size: .85rem; margin: 0 0 .35rem; color: var(--text); }
-  .helpcols p, .helpcols ul { font-size: .85rem; color: var(--muted); margin: 0 0 .5rem; }
+              gap: var(--sp-5); margin-top: var(--sp-4); }
+  .helpcols h3 { font-size: .875rem; margin: 0 0 var(--sp-2); color: var(--ink); font-weight: 620; }
+  .helpcols p, .helpcols ul { font-size: .875rem; color: var(--ink-2); margin: 0 0 var(--sp-2); }
   .helpcols ul { padding-left: 1.1rem; }
-  .helpcols li { margin-bottom: .25rem; }
-  .helpcols b { color: var(--text); font-weight: 600; }
-  .disclaimer { font-size: .75rem; color: var(--muted); border-top: 1px solid var(--border);
-                margin-top: .75rem; padding-top: .6rem; }
-  /* --- filters --- */
-  details > summary { cursor: pointer; color: var(--muted); font-size: 1rem;
-       text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
-       list-style: none; }
-  details > summary::before { content: "▸ "; }
-  details[open] > summary::before { content: "▾ "; }
-  details > summary .plain { text-transform: none; letter-spacing: 0; font-weight: 400;
-       font-size: .85rem; }
+  .helpcols li { margin-bottom: var(--sp-1); }
+  .helpcols b { color: var(--ink); font-weight: 620; }
+  .disclaimer { font-size: .8125rem; color: var(--ink-3); border-top: 1px solid var(--line-soft);
+                margin-top: var(--sp-4); padding-top: var(--sp-3); }
+
+  details > summary { cursor: pointer; color: var(--ink); font-size: 1.0625rem;
+       font-weight: 640; letter-spacing: -.01em; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸"; display: inline-block; width: 1em;
+       color: var(--ink-3); transition: transform .15s ease; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details > summary .plain { font-weight: 400; font-size: .875rem; color: var(--ink-2); }
+
   .fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-           gap: .75rem 1rem; margin-top: 1rem; }
-  .field label { display: block; font-size: .75rem; color: var(--muted); margin-bottom: .2rem; }
+           gap: var(--sp-3) var(--sp-4); margin-top: var(--sp-4); }
+  .field label { display: block; font-size: .75rem; color: var(--ink-2);
+                 margin-bottom: var(--sp-1); font-weight: 500; }
   .field input[type=number], .field input[type=text] {
-    width: 100%; background: var(--panel2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px; padding: .4rem .55rem;
-    font-size: .9rem;
+    width: 100%; background: var(--surface-2); color: var(--ink);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: .45rem .6rem;
+    font-size: .9375rem; font-variant-numeric: tabular-nums;
   }
-  .field input:focus { outline: none; border-color: var(--accent); }
-  .checks { display: flex; flex-wrap: wrap; gap: .4rem .9rem; margin-top: .5rem; }
-  .checks label { display: flex; align-items: center; gap: .35rem; font-size: .85rem;
-                  color: var(--text); cursor: pointer; white-space: nowrap; }
-  .checks input { accent-color: var(--accent); }
-  .fgroup { margin-top: 1.25rem; }
-  .fgroup > .glabel { font-size: .75rem; color: var(--muted);
-                      text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
-  .fgroup > .ghint { font-size: .8rem; color: var(--muted); margin-top: .15rem; }
+  .field input:focus { outline: none; border-color: var(--series-1);
+                       box-shadow: 0 0 0 3px color-mix(in srgb, var(--series-1) 18%, transparent); }
+  .checks { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); margin-top: var(--sp-2); }
+  .checks label { display: flex; align-items: center; gap: var(--sp-1); font-size: .875rem;
+                  color: var(--ink); cursor: pointer; white-space: nowrap; }
+  .checks input { accent-color: var(--series-1); }
+  .fgroup { margin-top: var(--sp-5); }
+  .fgroup > .glabel { font-size: .8125rem; color: var(--ink); font-weight: 620; }
+  .fgroup > .ghint { font-size: .8125rem; color: var(--ink-2); margin-top: 2px; }
   .wide { grid-column: 1 / -1; }
-  /* --- error banner --- */
-  #errorBox { display: none; background: rgba(247,109,109,.08); border: 1px solid var(--red);
-              border-radius: 10px; padding: .9rem 1.1rem; margin-bottom: 1rem; }
-  #errorBox b { color: var(--red); }
-  #errorBox .hint { margin-top: .3rem; }
-  /* --- top picks --- */
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .9rem; }
-  .card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
-          padding: .9rem 1rem; position: relative; }
-  .card .rank { position: absolute; top: .7rem; right: .9rem; font-size: 1.2rem; }
-  .card .tk { font-size: 1.15rem; font-weight: 700; }
-  .card .nm { color: var(--muted); font-size: .8rem; margin-bottom: .5rem;
+
+  #errorBox { display: none; background: color-mix(in srgb, var(--neg) 7%, var(--surface-1));
+              border: 1px solid color-mix(in srgb, var(--neg) 40%, transparent);
+              border-radius: var(--r); padding: var(--sp-3) var(--sp-4); margin-bottom: var(--sp-4); }
+  #errorBox b { color: var(--neg); }
+
+  /* --- pick cards --- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+           gap: var(--sp-4); }
+  .card { background: var(--surface-1); border: 1px solid var(--line);
+          border-radius: var(--r); padding: var(--sp-4); position: relative;
+          transition: border-color .15s ease, box-shadow .15s ease; }
+  .card:hover { border-color: var(--ink-3); box-shadow: var(--shadow); }
+  .card .rank { position: absolute; top: var(--sp-3); right: var(--sp-4); font-size: 1.15rem; }
+  .card .tk { font-size: 1.25rem; font-weight: 680; letter-spacing: -.02em; }
+  .card .nm { color: var(--ink-2); font-size: .8125rem; margin-bottom: var(--sp-3);
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .scorebar { height: 6px; background: var(--border); border-radius: 3px; margin: .4rem 0 .6rem; }
-  .scorebar > div { height: 100%; border-radius: 3px; background: var(--green); }
-  .card .nums { display: grid; grid-template-columns: 1fr 1fr; gap: .15rem .8rem;
-                font-size: .85rem; }
-  .card .nums span { color: var(--muted); }
-  .card .why { margin-top: .6rem; font-size: .8rem; color: var(--muted);
-               border-top: 1px solid var(--border); padding-top: .5rem; }
-  .card .warn { margin-top: .5rem; font-size: .78rem; color: var(--amber); }
-  /* --- relaxation hint chips --- */
-  .chips { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .75rem; }
-  .chip { background: transparent; border: 1px solid var(--accent); color: var(--accent);
-          border-radius: 999px; padding: .3rem .8rem; font-size: .82rem; cursor: pointer;
-          font-weight: 500; }
-  .chip:hover { background: rgba(79,143,247,.12); }
-  td.whynot { text-align: left; font-size: .8rem; color: var(--amber); max-width: 240px; }
-  /* --- track record tiles --- */
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-           gap: .75rem; margin-bottom: 1rem; }
-  .tile { background: var(--panel2); border: 1px solid var(--border);
-          border-radius: 10px; padding: .7rem .9rem; }
-  .tile .v { font-size: 1.4rem; font-weight: 700; }
-  .tile .l { font-size: .72rem; color: var(--muted); margin-top: .1rem; }
-  .subhead { font-size: .85rem; color: var(--text); font-weight: 600;
-             margin: 1.1rem 0 .35rem; }
-  /* --- tables / log --- */
-  #log {
-    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    font-size: .8rem; white-space: pre-wrap; color: var(--muted);
-    max-height: 260px; overflow-y: auto; margin: .75rem 0 0;
-  }
-  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-  th, td { text-align: right; padding: .45rem .6rem; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .scorebar { height: 4px; background: var(--line-soft); border-radius: 2px;
+              margin: var(--sp-2) 0 var(--sp-3); overflow: hidden; }
+  .scorebar > div { height: 100%; border-radius: 2px; background: var(--series-3); }
+  .card .nums { display: grid; grid-template-columns: 1fr 1fr;
+                gap: var(--sp-1) var(--sp-4); font-size: .875rem; }
+  .card .nums > div { display: flex; justify-content: space-between;
+                      align-items: baseline; gap: var(--sp-2);
+                      padding: 2px 0; border-bottom: 1px solid var(--line-soft); }
+  .card .nums span { color: var(--ink-2); font-size: .8125rem; }
+  .card .why { margin-top: var(--sp-3); font-size: .8125rem; color: var(--ink-2);
+               border-top: 1px solid var(--line-soft); padding-top: var(--sp-2); }
+  .card .warn { margin-top: var(--sp-2); font-size: .8125rem; color: var(--amber); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-3); }
+  .chip { background: transparent; border: 1px solid color-mix(in srgb, var(--series-1) 40%, transparent);
+          color: var(--series-1); border-radius: 999px; padding: .3rem .8rem;
+          font-size: .8125rem; cursor: pointer; font-weight: 500; }
+  .chip:hover { background: color-mix(in srgb, var(--series-1) 10%, transparent); filter: none; }
+
+  /* --- stat tiles --- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: var(--sp-3); margin-bottom: var(--sp-4); }
+  .tile { background: var(--surface-2); border: 1px solid var(--line-soft);
+          border-radius: var(--r); padding: var(--sp-3) var(--sp-4); }
+  .tile .v { font-size: 1.5rem; font-weight: 660; letter-spacing: -.02em; line-height: 1.1; }
+  .tile .l { font-size: .75rem; color: var(--ink-2); margin-top: var(--sp-1); line-height: 1.35; }
+
+  #log { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .8125rem; white-space: pre-wrap; color: var(--ink-2);
+    max-height: 280px; overflow-y: auto; margin: var(--sp-3) 0 0;
+    background: var(--surface-2); border-radius: var(--r-sm); padding: var(--sp-3); }
+
+  table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  th, td { text-align: right; padding: .5rem .65rem; border-bottom: 1px solid var(--line-soft); }
+  th { color: var(--ink-2); font-weight: 600; white-space: nowrap; font-size: .8125rem;
+       border-bottom-color: var(--line); }
+  tbody tr:hover { background: var(--surface-2); }
   th:first-child, td:first-child { text-align: left; }
-  td.rr { color: var(--green); font-weight: 700; }
-  td.score { font-weight: 700; }
-  td.notes { text-align: left; font-size: .8rem; color: var(--amber); max-width: 260px; }
-  .empty { color: var(--muted); font-style: italic; }
+  td:first-child { font-weight: 600; }
+  td.rr { color: var(--green); font-weight: 660; }
+  td.score { font-weight: 660; }
+  td.notes { text-align: left; font-size: .8125rem; color: var(--amber); max-width: 260px; }
+  td.whynot { text-align: left; font-size: .8125rem; color: var(--amber); max-width: 240px; }
+  .empty { color: var(--ink-3); font-style: italic; }
   .tablewrap { overflow-x: auto; }
-  .hint { font-size: .8rem; color: var(--muted); margin-top: .6rem; }
-  /* --- equity curve --- */
-  #btCurve { width: 100%; height: auto; display: block; margin-top: .5rem; }
-  .curve-note { font-size: .75rem; color: var(--muted); margin-top: .35rem; }
-  /* --- phone layout: stacked cards instead of sideways scrolling --- */
+  .hint { font-size: .8125rem; color: var(--ink-2); margin-top: var(--sp-2); }
+
+  #btCurve { width: 100%; height: auto; display: block; margin-top: var(--sp-2); }
+  .curve-note { font-size: .75rem; color: var(--ink-3); margin-top: var(--sp-1); }
+
   @media (max-width: 720px) {
-    body { padding: 1rem .6rem; }
+    body { padding: var(--sp-4) var(--sp-3) var(--sp-6); }
     main { max-width: 100%; }
-    h1 { font-size: 1.2rem; }
-    .fgrid { grid-template-columns: 1fr 1fr; }
-    .tiles { grid-template-columns: 1fr 1fr; }
+    h1 { font-size: 1.375rem; }
+    .fgrid, .tiles { grid-template-columns: 1fr 1fr; }
     .cards { grid-template-columns: 1fr; }
-    section { padding: .8rem .8rem; }
+    section { padding: var(--sp-4); }
+    .card .nums { grid-template-columns: 1fr; }
     table.rsp, table.rsp tbody { display: block; width: 100%; }
     table.rsp thead { display: none; }
-    table.rsp tr { display: block; background: var(--panel2); border: 1px solid var(--border);
-                   border-radius: 10px; margin-bottom: .6rem; padding: .4rem .7rem; }
+    table.rsp tr { display: block; background: var(--surface-2); border: 1px solid var(--line);
+                   border-radius: var(--r); margin-bottom: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
+    table.rsp tr:hover { background: var(--surface-2); }
     table.rsp td { display: flex; justify-content: space-between; align-items: baseline;
-                   gap: 1rem; text-align: right; border-bottom: 1px solid rgba(255,255,255,.04);
-                   padding: .28rem 0; }
+                   gap: var(--sp-4); text-align: right; border-bottom: 1px solid var(--line-soft);
+                   padding: .3rem 0; }
     table.rsp td:last-child { border-bottom: 0; }
-    table.rsp td::before { content: attr(data-l); color: var(--muted);
-                           font-size: .78rem; text-align: left; flex: 0 0 auto; }
-    table.rsp td:first-child { font-weight: 700; font-size: 1.05rem; }
+    table.rsp td::before { content: attr(data-l); color: var(--ink-2);
+                           font-size: .8125rem; text-align: left; flex: 0 0 auto; font-weight: 400; }
+    table.rsp td:first-child { font-weight: 680; font-size: 1.0625rem; }
     [data-tip]:hover::after { max-width: 85vw; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
   }
 </style>
 </head>
 <body>
 <main>
-  <h1>Dip Finder</h1>
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem">
+    <h1>Dip Finder</h1>
+    <button class="ghost" id="themeBtn" onclick="toggleTheme()"
+            aria-label="Switch between light and dark" style="flex:0 0 auto">Theme</button>
+  </div>
   <div class="sub">Finds strong, rising stocks that just dipped — and for each one tells you
     a <b>buy price</b>, a <b>stop-loss</b> (where to sell to cap your loss), a <b>target</b>,
     and <b>how many shares</b> to buy so one bad trade never costs more than you allow.</div>
 
-  <section>
-    <details id="helpBox">
-      <summary>What is this &amp; how do I read it? <span class="plain">(2-minute read)</span></summary>
-      <div class="helpcols">
-        <div>
-          <h3>What the scan does</h3>
-          <p>It goes through hundreds of large US and European companies and keeps only the ones
-            that are in a <b>long-term uptrend</b> but had a <b>small recent dip</b> toward a price
-            level where buyers stepped in before ("support"). Buying a strong stock on a dip near
-            support is a classic swing-trading setup: your stop-loss can sit close by, so a losing
-            trade stays cheap, while the recent high gives a realistic target.</p>
-          <p>It then removes the risky cases automatically: loss-making companies, stocks reporting
-            earnings in the next days (earnings can gap straight through a stop-loss), stocks that
-            barely trade, and everything when the overall market itself is falling.</p>
-        </div>
-        <div>
-          <h3>How to read a pick</h3>
-          <ul>
-            <li><b>Price</b> — the latest price; roughly where you'd buy.</li>
-            <li><b>Stop-loss</b> — place a sell-stop order here with your broker. If the price falls
-              this far, the idea failed; the stop caps your loss at the shown <b>€ at risk</b>.</li>
-            <li><b>Target</b> — the recent high the price could realistically return to.</li>
-            <li><b>Reward:Risk</b> — 3.0 means you stand to win €3 for every €1 you risk.</li>
-            <li><b>Shares</b> — sized so that hitting the stop-loss loses at most your
-              "max risk per trade" (set in the filters).</li>
-            <li><b>Score</b> — overall quality, 0–100. <span style="color:var(--green)">70+</span> strong,
-              <span style="color:var(--amber)">50–69</span> okay,
-              <span style="color:var(--red)">below 50</span> weak. Each pick shows a one-line
-              reason for its score.</li>
-          </ul>
-        </div>
-        <div>
-          <h3>How to use it</h3>
-          <ul>
-            <li>Press <b>Run scan</b>. The first scan downloads a year of prices and takes a few
-              minutes — the progress log shows what it's doing. Re-runs with tweaked filters
-              take seconds.</li>
-            <li>Start with the <b>Top picks</b> cards, then open the full table. Hover any column
-              header or filter name for a plain-English explanation.</li>
-            <li>Optional: paste your holdings and cash under <b>Filters → Portfolio</b> — picks then
-              get checked against your available cash, sector concentration, and total risk.</li>
-            <li>"Why stocks were filtered out" at the bottom shows what the scan rejected and why —
-              useful to see if your filters are too strict.</li>
-            <li>The <b>Track record</b> section grades past picks against what the price actually
-              did afterwards — hit target or hit stop first — so you can see whether this method
-              earns its keep before trusting it with money.</li>
-          </ul>
-        </div>
-      </div>
-      <div class="disclaimer">Prices and fundamentals come from Yahoo Finance (free, may be
-        delayed ~15 min). This is a screening tool, not investment advice — always check a
-        chart and the news before placing a trade.</div>
-    </details>
-  </section>
 
   <div id="stallBox" style="display:none;margin:.3rem 0 .6rem;padding:.6rem .8rem;
        border:1px solid var(--amber);border-radius:8px;color:var(--amber)">
@@ -385,7 +437,7 @@
   </section>
 
   <section id="topSection" style="display:none">
-    <h2>🏆 Top picks today</h2>
+    <h2>Top picks today</h2>
     <div class="secsub">The highest-scoring setups. Hover the grey labels for what each number means.</div>
     <div class="cards" id="topCards"></div>
   </section>
@@ -412,7 +464,7 @@
   </section>
 
   <section id="nearSection" style="display:none">
-    <h2>🎯 Best of the rest</h2>
+    <h2>Best of the rest</h2>
     <div class="secsub">The strongest setups that failed one or more of your filters —
       shown with the exact reason, so you can decide whether the gate or the stock is right.
       These are <b>not</b> logged in the track record.</div>
@@ -420,7 +472,7 @@
   </section>
 
   <section id="journalSection" style="display:none">
-    <h2>📒 Track record</h2>
+    <h2>Track record</h2>
     <div class="secsub">Every scan's picks are logged automatically, then graded against what
       the price actually did: did it hit the target or the stop-loss first?
       Results are in <span data-tip="R = one unit of planned risk (entry minus stop). A stopped-out pick is −1R; a pick that hits a 3:1 target is +3R. Assumes entry at the scan price and exit exactly at stop/target (at the open when the price gaps past); trading costs not included.">R, units of planned risk</span> —
@@ -438,7 +490,7 @@
   </section>
 
   <section id="btSection">
-    <h2>🧪 Simulation — would these rules have made money?</h2>
+    <h2>Simulation — would these rules have made money?</h2>
     <div class="secsub">Replays your exact filter settings over <b>every stock and every
       trading day of the last 5 years</b> for the scanned stocks, and grades each signal
       the same way as the track record: did it hit the target or the stop first?
@@ -478,6 +530,60 @@
     </details>
   </section>
 
+  <section>
+    <details id="helpBox">
+      <summary>What is this &amp; how do I read it? <span class="plain">(2-minute read)</span></summary>
+      <div class="helpcols">
+        <div>
+          <h3>What the scan does</h3>
+          <p>It goes through hundreds of large US and European companies and keeps only the ones
+            that are in a <b>long-term uptrend</b> but had a <b>small recent dip</b> toward a price
+            level where buyers stepped in before ("support"). Buying a strong stock on a dip near
+            support is a classic swing-trading setup: your stop-loss can sit close by, so a losing
+            trade stays cheap, while the recent high gives a realistic target.</p>
+          <p>It then removes the risky cases automatically: loss-making companies, stocks reporting
+            earnings in the next days (earnings can gap straight through a stop-loss), stocks that
+            barely trade, and everything when the overall market itself is falling.</p>
+        </div>
+        <div>
+          <h3>How to read a pick</h3>
+          <ul>
+            <li><b>Price</b> — the latest price; roughly where you'd buy.</li>
+            <li><b>Stop-loss</b> — place a sell-stop order here with your broker. If the price falls
+              this far, the idea failed; the stop caps your loss at the shown <b>€ at risk</b>.</li>
+            <li><b>Target</b> — the recent high the price could realistically return to.</li>
+            <li><b>Reward:Risk</b> — 3.0 means you stand to win €3 for every €1 you risk.</li>
+            <li><b>Shares</b> — sized so that hitting the stop-loss loses at most your
+              "max risk per trade" (set in the filters).</li>
+            <li><b>Score</b> — overall quality, 0–100. <span style="color:var(--green)">70+</span> strong,
+              <span style="color:var(--amber)">50–69</span> okay,
+              <span style="color:var(--red)">below 50</span> weak. Each pick shows a one-line
+              reason for its score.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>How to use it</h3>
+          <ul>
+            <li>Press <b>Run scan</b>. The first scan downloads a year of prices and takes a few
+              minutes — the progress log shows what it's doing. Re-runs with tweaked filters
+              take seconds.</li>
+            <li>Start with the <b>Top picks</b> cards, then open the full table. Hover any column
+              header or filter name for a plain-English explanation.</li>
+            <li>Optional: paste your holdings and cash under <b>Filters → Portfolio</b> — picks then
+              get checked against your available cash, sector concentration, and total risk.</li>
+            <li>"Why stocks were filtered out" at the bottom shows what the scan rejected and why —
+              useful to see if your filters are too strict.</li>
+            <li>The <b>Track record</b> section grades past picks against what the price actually
+              did afterwards — hit target or hit stop first — so you can see whether this method
+              earns its keep before trusting it with money.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="disclaimer">Prices and fundamentals come from Yahoo Finance (free, may be
+        delayed ~15 min). This is a screening tool, not investment advice — always check a
+        chart and the news before placing a trade.</div>
+    </details>
+  </section>
   <section>
     <details id="logBox">
       <summary>Progress log <span class="plain">— what the scan is doing right now</span></summary>
@@ -752,7 +858,16 @@ function sparkSVG(p, w, h) {
   const y = v => pad + (h - 2 * pad) * (1 - (v - lo) / span);
   const x = i => (w * i) / (s.length - 1);
   const path = s.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  // hover targets: one invisible column per point, each wide enough to hit
+  const hit = s.map((v, i) => {
+    const cw = w / s.length;
+    return `<rect x="${(x(i) - cw / 2).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${h}"
+      fill="transparent" class="spk-hit" data-v="${v}" data-i="${i}"
+      data-cx="${x(i).toFixed(1)}" data-cy="${y(v).toFixed(1)}"><title>${v}</title></rect>`;
+  }).join("");
   const up = s[s.length - 1] >= s[0];
+  const readout = `<div class="spk-read hint" style="text-align:center;margin-top:.1rem;
+      min-height:1.1em;font-variant-numeric:tabular-nums"></div>`;
   const line = (v, col, dash) =>
     `<line x1="0" x2="${w}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"
       stroke="${col}" stroke-width="1" stroke-dasharray="${dash}" opacity=".85"/>`;
@@ -761,8 +876,15 @@ function sparkSVG(p, w, h) {
     ${line(p.resistance, "var(--green)", "4 3")}
     ${line(p.stop, "var(--red)", "4 3")}
     ${line(p.price, "var(--muted)", "1 3")}
-    <path d="${path}" fill="none" stroke="${up ? "var(--green)" : "var(--red)"}" stroke-width="1.6"/>
-  </svg>
+    <path d="${path}" fill="none" stroke="${up ? "var(--series-3)" : "var(--neg)"}"
+      stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <g class="spk-cursor" style="display:none">
+      <line y1="0" y2="${h}" stroke="var(--ink-3)" stroke-width="1" stroke-dasharray="2 2"/>
+      <circle r="3.5" fill="${up ? "var(--series-3)" : "var(--neg)"}"
+        stroke="var(--surface-1)" stroke-width="2"/>
+    </g>
+    ${hit}
+  </svg>${readout}
   <div class="hint" style="display:flex;gap:.7rem;justify-content:center;margin-top:.15rem">
     <span style="color:var(--green)">━ target ${esc(p.resistance)}</span>
     <span style="color:var(--muted)">┄ now ${esc(p.price)}</span>
@@ -1302,6 +1424,7 @@ async function refresh() {
       (s.universe_size ? ` · ${s.universe_size} stocks scanned` : "");
   }
 
+  window.__lastStatus = s;
   renderTopPicks(s.top_picks, s.near_board);
   renderNearBoard(s.near_board, s.relax_hints, (s.results || []).length);
   window.__btRules = s.bt_rules || null;
@@ -1350,7 +1473,7 @@ async function refresh() {
     const today = d.toDateString() === new Date().toDateString();
     asOf.style.display = "block";
     asOf.innerHTML =
-      `📅 Data as of <b>${d.toLocaleDateString(undefined, {weekday: "short", day: "numeric", month: "short"})}` +
+      `Data as of <b>${d.toLocaleDateString(undefined, {weekday: "short", day: "numeric", month: "short"})}` +
       ` ${d.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"})}</b>` +
       ` (${ageMin < 1 ? "just now" : ageMin < 60 ? ageMin + " min ago" : (ageMin / 60).toFixed(1) + " h ago"})` +
       ` · ${esc(s.universe_size || 0)} stocks scanned` +
@@ -1489,13 +1612,57 @@ async function refresh() {
   }
 }
 
+// Theme: the reader's explicit choice wins over the OS setting in both
+// directions, which is why the token block declares dark twice.
+function applyTheme(t) {
+  if (t) document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+  const btn = document.getElementById("themeBtn");
+  if (btn) btn.textContent = t === "dark" ? "Dark" : t === "light" ? "Light" : "Theme";
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const next = cur === "dark" ? "light" : cur === "light" ? "" : "dark";
+  try { next ? localStorage.setItem("screener_theme", next)
+             : localStorage.removeItem("screener_theme"); } catch (e) {}
+  applyTheme(next);
+  if (window.__lastStatus) renderBacktest(window.__lastStatus.backtest,
+                                          window.__lastStatus.bt_status || "idle");
+}
+try { applyTheme(localStorage.getItem("screener_theme") || ""); } catch (e) {}
+
 // open the explainer automatically on a first visit
-try {
-  if (!localStorage.getItem("screener_seen_help")) {
-    document.getElementById("helpBox").open = true;
-    localStorage.setItem("screener_seen_help", "1");
-  }
-} catch (e) {}
+/* the explainer now sits below the results, so it stays closed: opening it
+   on a first visit would push the picks off the screen it was meant to
+   explain. */
+
+// One delegated listener rather than per-chart handlers: cards are
+// re-rendered on every poll, so per-node listeners would leak.
+document.addEventListener("mouseover", (e) => {
+  const r = e.target.closest(".spk-hit");
+  if (!r) return;
+  const svg = r.closest("svg");
+  const cur = svg.querySelector(".spk-cursor");
+  if (!cur) return;
+  const cx = r.getAttribute("data-cx"), cy = r.getAttribute("data-cy");
+  cur.style.display = "";
+  cur.querySelector("line").setAttribute("x1", cx);
+  cur.querySelector("line").setAttribute("x2", cx);
+  cur.querySelector("circle").setAttribute("cx", cx);
+  cur.querySelector("circle").setAttribute("cy", cy);
+  const out = svg.parentElement.querySelector(".spk-read");
+  if (out) out.textContent = `${r.getAttribute("data-v")} · ` +
+    `${60 - Number(r.getAttribute("data-i"))} trading days ago`;
+});
+document.addEventListener("mouseout", (e) => {
+  const r = e.target.closest(".spk-hit");
+  if (!r) return;
+  const svg = r.closest("svg");
+  const cur = svg.querySelector(".spk-cursor");
+  if (cur) cur.style.display = "none";
+  const out = svg.parentElement.querySelector(".spk-read");
+  if (out) out.textContent = "";
+});
 
 loadDefaults();
 refresh();
