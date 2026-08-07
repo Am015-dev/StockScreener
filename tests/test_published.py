@@ -138,4 +138,41 @@ assert d["index"] and len(d["index"]["presets"]) == 2
 assert d["base"].startswith("https://")
 print(f"/published lists {len(d['index']['presets'])} presets")
 
+# ---- results shipped with the build are used, with no network at all ----
+import shutil
+
+pubdir = os.path.join(TMP, "shipped")
+os.makedirs(pubdir, exist_ok=True)
+local = payload("balanced", BALANCED, 6, age_s=120)
+with open(os.path.join(pubdir, "index.json"), "w") as f:
+    json.dump({"generated_at": time.time(), "failures": [], "presets": [
+        {"preset": "balanced", "scan_hash": "a",
+         "results_ts": local["results_ts"], "n_results": 6,
+         "universe_size": 1500}]}, f)
+with open(os.path.join(pubdir, "balanced.json"), "w") as f:
+    json.dump(local, f)
+
+os.environ["PUBLISHED_DIR"] = pubdir
+
+
+def must_not_call(*a, **k):
+    raise AssertionError("a shipped result file must not trigger a network call")
+
+
+requests.get = must_not_call
+importlib.reload(app_mod)
+st3 = app_mod._state
+assert st3["status"] == "done", st3["status"]
+assert len(st3["results"]) == 6, len(st3["results"])
+assert st3["published_preset"] == "balanced"
+print("results shipped with the build load on startup, with zero network calls")
+
+# and a build with no shipped results still falls back to the network
+shutil.rmtree(pubdir)
+requests.get = fake_get
+importlib.reload(app_mod)
+assert app_mod._state["published_preset"] == "relaxed", \
+    "with nothing shipped locally, the network feed must still be used"
+print("no local copy — falls back to the network feed as before")
+
 print("\nALL PUBLISHED-RESULTS TESTS PASSED")

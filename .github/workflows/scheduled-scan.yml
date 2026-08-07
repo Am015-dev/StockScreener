@@ -75,6 +75,35 @@ jobs:
             --universe-max "${{ github.event.inputs.universe_max || '1500' }}" \
             --presets "${{ github.event.inputs.presets || '' }}"
 
+      # Also commit the results into the deployed branch, so a fresh web
+      # instance starts with data. Render wipes its disk on every deploy and
+      # a private repo cannot be read without a token, so without this the
+      # site is empty after each restart — which reads as "nothing shipped".
+      - name: Ship results into the deployed build
+        run: |
+          # Stash the results OUTSIDE the work tree first: the checkout below
+          # replaces the work tree, which would delete the very files being
+          # shipped.
+          stash=$(mktemp -d)
+          cp published/*.json "$stash"/ || { echo "nothing to ship"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH=claude/pullback-uptrend-screener-vvlzeb
+          git fetch origin "$BRANCH" --depth=1
+          git checkout -q -B ship "origin/$BRANCH"
+          mkdir -p published
+          cp "$stash"/*.json published/
+          git add -f published/*.json
+          if git diff --cached --quiet; then
+            echo "results unchanged — nothing to ship"
+          else
+            git commit -q -m "Published scan $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push -q "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+              HEAD:"$BRANCH"
+            echo "shipped $(ls published/*.json | wc -l) result files"
+          fi
+          git checkout -q -                       # back for the next step
+
       - name: Publish to the data branch
         run: |
           mkdir -p published/state

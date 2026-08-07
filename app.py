@@ -29,6 +29,21 @@ import screener
 
 app = Flask(__name__)
 
+
+@app.after_request
+def _no_stale_html(resp):
+    """Never let a browser serve yesterday's page.
+
+    The app ships its whole UI in one template, so a cached copy hides every
+    deployed change behind a hard refresh — which looks exactly like nothing
+    having been deployed at all. JSON is live state and must never be cached
+    either; static assets can be."""
+    ct = (resp.headers.get("Content-Type") or "")
+    if ct.startswith("text/html") or ct.startswith("application/json"):
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+    return resp
+
 RESULTS_CSV = os.environ.get("RESULTS_CSV", "/tmp/screener_results.csv")
 ALERT_PROFILE = os.environ.get("ALERT_PROFILE", "/tmp/alert_profile.json")
 TOP_N = 3
@@ -135,6 +150,12 @@ def _load_cached_csv():
 # a GitHub Actions runner and lands on the `screener-data` branch. This
 # instance just reads the finished JSON, so a page load costs a fetch
 # instead of a five-minute scan — and a visitor never waits on Yahoo.
+# A directory of published results committed alongside the code. Render
+# wipes /tmp on every deploy, and a private repository cannot be read from
+# raw.githubusercontent without a token — so without this a fresh instance
+# starts empty and every deploy looks like nothing changed.
+PUBLISHED_DIR = os.environ.get("PUBLISHED_DIR", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "published"))
 PUBLISHED_BASE = os.environ.get(
     "PUBLISHED_BASE",
     "https://raw.githubusercontent.com/Am015-dev/StockScreener/screener-data")
@@ -143,8 +164,16 @@ _published = {"ts": 0.0, "index": None}
 
 
 def _published_get(path: str):
-    """Fetch a published file. Private repositories need a token; public
-    ones need nothing, which is the main reason to make the repo public."""
+    """A published file: from the copy shipped with this build if present,
+    otherwise over the network. The local copy needs no token and survives
+    the disk wipe, so it is tried first."""
+    local = os.path.join(PUBLISHED_DIR, path)
+    try:
+        if os.path.exists(local):
+            with open(local) as f:
+                return json.load(f)
+    except Exception:
+        pass
     import requests as rq
     headers = {}
     tok = os.environ.get("PUBLISHED_TOKEN") or os.environ.get("GITHUB_TOKEN")
