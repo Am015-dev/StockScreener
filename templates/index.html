@@ -738,6 +738,36 @@ function scoreColor(s) { return s >= 70 ? "var(--green)" : s >= 50 ? "var(--ambe
 
 const STATUS_TEXT = {idle: "ready", running: "scanning…", done: "done", error: "failed"};
 
+// A 60-day price path with the three levels that define the trade drawn on
+// it. Inline SVG rather than a charting library: at this size a library
+// would be ~45KB of JavaScript per page to draw sixty points, and this has
+// no CDN to fail. The point is to SEE the dip, not to trade off the chart.
+function sparkSVG(p, w, h) {
+  const s = p.spark;
+  if (!s || s.length < 10) return "";
+  const lo = Math.min(...s, p.stop), hi = Math.max(...s, p.resistance);
+  const span = (hi - lo) || 1, pad = 3;
+  const y = v => pad + (h - 2 * pad) * (1 - (v - lo) / span);
+  const x = i => (w * i) / (s.length - 1);
+  const path = s.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const up = s[s.length - 1] >= s[0];
+  const line = (v, col, dash) =>
+    `<line x1="0" x2="${w}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"
+      stroke="${col}" stroke-width="1" stroke-dasharray="${dash}" opacity=".85"/>`;
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none"
+      role="img" aria-label="60-day price path with entry, stop and target levels">
+    ${line(p.resistance, "var(--green)", "4 3")}
+    ${line(p.stop, "var(--red)", "4 3")}
+    ${line(p.price, "var(--muted)", "1 3")}
+    <path d="${path}" fill="none" stroke="${up ? "var(--green)" : "var(--red)"}" stroke-width="1.6"/>
+  </svg>
+  <div class="hint" style="display:flex;gap:.7rem;justify-content:center;margin-top:.15rem">
+    <span style="color:var(--green)">━ target ${esc(p.resistance)}</span>
+    <span style="color:var(--muted)">┄ now ${esc(p.price)}</span>
+    <span style="color:var(--red)">━ stop ${esc(p.stop)}</span>
+  </div>`;
+}
+
 function renderTopPicks(picks) {
   const sec = document.getElementById("topSection");
   if (!picks || !picks.length) { sec.style.display = "none"; return; }
@@ -762,6 +792,7 @@ function renderTopPicks(picks) {
         <div><span data-tip="How often this stock's setup under your current rules hit target before stop in the 5-year simulation. Run the Simulation to compute it.">history</span> ${p.hist ? esc(p.hist) + " won" : "—"}</div>
         <div><span data-tip="Average analyst 12-month price target vs today's price.">their target</span> ${p.analyst_target_up_pct == null ? "—" : esc((p.analyst_target_up_pct > 0 ? "+" : "") + p.analyst_target_up_pct) + "%"}</div>
       </div>
+      ${sparkSVG(p, 260, 64)}
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
       ${p.flags ? `<div class="warn">⚠ ${esc(flagText(p.flags))}</div>` : ""}
       <button type="button" class="ghost" style="margin-top:.6rem;font-size:.78rem;padding:.3rem .8rem"

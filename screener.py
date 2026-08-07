@@ -695,6 +695,25 @@ def _sec_universe(progress=print) -> list[str]:
         return stale if hit and isinstance(stale, list) else []
 
 
+SPARK_BARS = 60      # ~3 months of closes: enough to see the trend and the dip
+
+
+def _spark(close: pd.Series) -> list:
+    """A compact recent price path for the row's inline chart.
+
+    Closes only, not OHLC: a 60-point sparkline shows the trend and the
+    pullback just as clearly, at a fraction of the payload — and this rides
+    along in every stored snapshot and published JSON file, so size is not
+    free."""
+    try:
+        tail = close.dropna().tail(SPARK_BARS)
+        if len(tail) < 10:
+            return []
+        return [round(float(v), 2) for v in tail.values]
+    except Exception:
+        return []
+
+
 def rel_strength(close: pd.Series, bench_close: pd.Series | None, days: int = 63) -> float | None:
     """Stock return minus benchmark return over `days` bars, in pct points."""
     if bench_close is None or len(close) < days + 1 or len(bench_close) < days + 1:
@@ -1383,6 +1402,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                            "analyst_target_up_pct": None,
                            "price": round(price, 2), "support": round(support, 2),
                            "stop": round(stop, 2), "resistance": round(resistance, 2),
+                           "spark": _spark(hist["Close"]),
                            "RR": round(rr, 2), "RSI": round(r, 1),
                            "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
                            "shares": shares,
@@ -1570,6 +1590,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     "resistance": round(resistance, 2),
                     "RR": round(rr, 2), "RSI": round(r, 1),
                     "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
+                    "spark": _spark(hist["Close"]),
                     "status": status, "sector_after": sector_after,
                     "friction_pct": friction_pct,
                     "shares": shares, "risk_EUR": actual_risk_eur,
