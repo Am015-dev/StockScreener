@@ -113,6 +113,13 @@ h = db.config_hash(P)
 assert db.config_hash(dict(P, require_market_uptrend=not P["require_market_uptrend"])) != h
 assert db.config_hash(dict(P, min_rs_3m=5.0)) != h
 assert db.config_hash(dict(P, ticket_eur=999.0)) == h   # sizing is not a rule
+# a filter set that has been through JSON must keep its identity, or a
+# published scan would never match the filters on screen
+import json as _json
+assert db.config_hash(_json.loads(_json.dumps(P, default=str))) == h
+assert db.scan_hash(dict(P, cash_eur=0)) == db.scan_hash(dict(P, cash_eur=0.0))
+assert db.config_hash(dict(P, require_market_uptrend=True)) != \
+       db.config_hash(dict(P, require_market_uptrend=1)), "bool is not 1"
 print("config identity OK: market gates change the hash, sizing does not")
 
 # and the reuse path must not hand back a run from different rules

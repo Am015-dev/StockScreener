@@ -96,8 +96,27 @@ def _conn():
     return conn
 
 
+def _norm(v):
+    """Normalise a parameter value for hashing.
+
+    Numbers must hash by value, not by Python type: a filter set that has
+    been through JSON comes back with 0.0 as 0, and an int/float split
+    would silently mint a second identity for identical rules — so a
+    published scan would never match the filters on screen. Booleans are
+    left alone, since bool is a subclass of int and True is not 1 here."""
+    if isinstance(v, bool) or v is None:
+        return v
+    if isinstance(v, (int, float)):
+        return round(float(v), 6)
+    if isinstance(v, (list, tuple)):
+        return [_norm(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _norm(x) for k, x in sorted(v.items())}
+    return v
+
+
 def config_hash(params: dict) -> str:
-    subset = {k: params.get(k) for k in TECH_PARAMS}
+    subset = {k: _norm(params.get(k)) for k in TECH_PARAMS}
     return hashlib.md5(json.dumps(subset, sort_keys=True).encode()).hexdigest()
 
 
@@ -296,7 +315,7 @@ SNAPSHOT_KEEP = 40    # distinct filter sets remembered, oldest evicted
 def scan_hash(params: dict) -> str:
     """Identity of a set of filters. Two scans share a snapshot exactly
     when every setting that affects their results matches."""
-    payload = {k: v for k, v in params.items() if k not in SNAPSHOT_SKIP}
+    payload = {k: _norm(v) for k, v in params.items() if k not in SNAPSHOT_SKIP}
     return hashlib.md5(
         json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
