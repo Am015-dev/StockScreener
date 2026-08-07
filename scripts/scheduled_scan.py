@@ -42,7 +42,7 @@ PRESETS = {
     # is legitimate to loosen — the reward:risk floor and the noise gate —
     # not where it changes what the tool claims to find.
     "relaxed": {"min_rr": 2.2, "rsi_high": 58, "min_stop_atr": 0.7,
-                "max_support_dist_pct": 9.0},
+                "max_support_dist_pct": 5.0},
     # "wide-net" previously set strict_gates False and pushed RSI to 68 and
     # the support distance to 15%, to stop the page looking empty. That was
     # the wrong trade twice over: it published picks whose earnings dates
@@ -51,8 +51,9 @@ PRESETS = {
     # reader it finds pullbacks. Looser, but inside the methodology and
     # still fail-closed.
     "wide-net": {"min_rr": 2.0, "rsi_low": 25, "rsi_high": 58,
-                 "min_stop_atr": 0.5, "max_support_dist_pct": 10.0,
-                 "min_dollar_vol_m": 50.0},
+                 "min_stop_atr": 0.5,
+                 "min_dollar_vol_m": 50.0,
+                 "max_support_dist_pct": 5.0},
 }
 
 # Exit codes. The distinction matters: "Yahoo throttled this runner" is an

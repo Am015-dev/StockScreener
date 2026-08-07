@@ -235,6 +235,9 @@
   td.score { font-weight: 660; }
   td.notes { text-align: left; font-size: .8125rem; color: var(--amber); max-width: 260px; }
   td.whynot { text-align: left; font-size: .8125rem; color: var(--amber); max-width: 240px; }
+  tr.blockedrow > td { opacity: .72; }
+  tr.blockedrow > td:first-child::after { content: " ⛔"; }
+  td.blockedcell { color: var(--amber); font-weight: 620; }
   .empty { color: var(--ink-3); font-style: italic; }
   .tablewrap { overflow-x: auto; }
   .hint { font-size: .8125rem; color: var(--ink-2); margin-top: var(--sp-2); }
@@ -1205,29 +1208,24 @@ function drawCurve(pts) {
 
 // ---- pending-verification picks: visible immediately, never hidden ----
 function renderPending(pending) {
+  // Blocked rows now render inside the results table (see renderTable), so
+  // this panel is kept only as the explanation of what "BLOCKED" means.
   const wrap = document.getElementById("pendingWrap");
   if (!pending || !pending.length) { wrap.style.display = "none"; return; }
   wrap.style.display = "block";
   document.getElementById("pendingTitle").textContent =
     `⏳ ${pending.length} pick(s) awaiting safety verification`;
+  // Deliberately NOT a second table. The old panel repeated each blocked
+  // setup with its technical score in the same green-to-red colour a
+  // qualified pick gets, which reads as a ranking — the fail-open
+  // presentation this whole change exists to remove. The rows themselves
+  // live in the results table, marked BLOCKED and unscored; this is only
+  // the pointer to them.
   document.getElementById("pendingTable").innerHTML =
-    "<table class=\"rsp\"><thead><tr>" +
-    `<th data-tip="Ticker — hover for the company name.">Stock</th>` +
-    `<th data-tip="Quality score of the technical setup.">Score</th>` +
-    `<th data-tip="Latest price — roughly where you'd buy.">Price</th>` +
-    `<th data-tip="Sell-stop level that caps your loss.">Stop-loss</th>` +
-    `<th data-tip="The recent high — where you'd take profit.">Target</th>` +
-    `<th data-tip="Possible gain vs possible loss.">Reward:Risk</th>` +
-    `<th data-tip="Suggested share count for your risk settings.">Buy (shares)</th>` +
-    `<th data-tip="Your worst case if the stop-loss is hit.">€ at risk</th>` +
-    "</tr></thead><tbody>" +
-    pending.map(r =>
-      `<tr><td data-l="Stock"${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
-      `<td class="score" style="color:${scoreColor(r.score)}" data-l="Score">${esc(r.score)}</td>` +
-      `<td data-l="Price">${esc(r.price)}</td><td data-l="Stop-loss">${esc(r.stop)}</td>` +
-      `<td data-l="Target">${esc(r.resistance)}</td><td class="rr" data-l="Reward:Risk">${esc(r.RR)}</td>` +
-      `<td data-l="Buy (shares)">${esc(r.shares)}</td><td data-l="€ at risk">€${esc(r.risk_EUR)}</td></tr>`)
-      .join("") + "</tbody></table>";
+    `<div class="hint" style="margin:0">Marked <b class="blockedcell">⛔ BLOCKED</b> at the ` +
+    `top of the results table: ` +
+    pending.map(r => `<b>${esc(r.ticker)}</b>`).join(", ") +
+    `. They are not scored and not ranked until their checks come back.</div>`;
 }
 
 // ---- edge mirror: simulation win-rates survive server disk wipes ----
@@ -1550,13 +1548,28 @@ async function refresh() {
       note.style.display = inactive.length ? "block" : "none";
       note.textContent = inactive.length ? "Not shown: " + inactive.join("; ") + "." : "";
     }
-    count.textContent = `(${s.results.length})`;
+    // blocked setups are shown in the same table, at the top, marked and
+    // unscored — never omitted, never scored as if they had passed
+    const blocked = (s.pending || []).map(r => Object.assign({}, r, {__blocked: true}));
+    const allRows = blocked.concat(s.results);
+    count.textContent = blocked.length
+      ? `(${s.results.length} + ${blocked.length} blocked)` : `(${s.results.length})`;
     csv.style.display = "";
     res.classList.remove("empty");
     res.innerHTML = "<table class=\"rsp\"><thead><tr>" +
       cols.map(([k, label, tip]) => `<th data-tip="${esc(tip)}">${esc(label)}</th>`).join("") +
       "</tr></thead><tbody>" +
-      s.results.map(row => "<tr>" + cols.map(([k, label, tip, fmt]) => {
+      allRows.map(row => `<tr${row.__blocked ? ' class="blockedrow"' : ""}>` +
+        cols.map(([k, label, tip, fmt]) => {
+        if (row.__blocked) {
+          // a blocked pick has no score and no share count: showing either
+          // would say the safety checks passed
+          if (k === "score") return `<td data-l="${esc(label)}" class="blockedcell">BLOCKED</td>`;
+          if (k === "shares" || k === "risk_EUR" || k === "cum_risk_EUR")
+            return `<td data-l="${esc(label)}">—</td>`;
+          if (k === "flags") return `<td data-l="${esc(label)}" class="notes blockedcell">` +
+            `${esc(row.blocked === "unverified" ? "safety checks could not be verified — not a pick" : (row.blocked || "blocked"))}</td>`;
+        }
         let v = (row[k] == null || row[k] === "") ? "—" : fmt(row[k]);
         if (k === "fits_risk_budget" && row[k] != null) v = row[k] ? "✓" : "✗";
         let cls = k === "RR" ? "rr" : k === "score" ? "score" : k === "flags" ? "notes" : "";
