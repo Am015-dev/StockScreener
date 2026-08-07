@@ -49,6 +49,8 @@ jobs:
         run: python tests/test_journal.py
       - name: Methodology + fail-closed invariants
         run: python tests/test_methodology.py
+      - name: Earnings gate (bulk calendar, complete vs holed window)
+        run: python tests/test_earnings_gate.py
       - name: Simulation realism (costs, ATR stops, hold cap, liquidity)
         run: python tests/test_realism.py
       - name: Stall detection (no silent scans)

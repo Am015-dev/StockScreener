@@ -1090,6 +1090,88 @@ def _finnhub_days_to_earnings(ticker: str) -> int | None:
     return days
 
 
+# --------------------- bulk earnings calendar ---------------------
+# Every other earnings source here asks Yahoo (or Finnhub) one ticker at a
+# time, and every one of them fails from a datacenter IP. With the gate
+# failing closed — as it must — that blocked all 28 candidates of a live
+# scan and published an empty page. Honest, and useless.
+#
+# The fix is to stop asking "when does THIS company report?" and instead
+# pull the whole calendar once. Nasdaq publishes it per date, free and
+# without a key. Two properties make it worth the requests:
+#
+#   - it is bulk: ~30 calls cover every US listing for six weeks, versus
+#     1,500 per-ticker calls that get throttled;
+#   - a COMPLETE calendar makes absence informative. A company that does
+#     not appear anywhere in the next 45 days is not reporting in the next
+#     45 days, which is exactly what the gate needs to know. That is a
+#     verified pass, not a guess — so it does not weaken fail-closed.
+#
+# The completeness flag is the whole safety argument: if any single day
+# fails to load, the window has a hole, absence proves nothing, and every
+# unlisted ticker goes back to being blocked.
+EARN_CAL_DAYS = 45          # how far ahead to build the calendar
+EARN_CAL_TTL = 6 * 3600     # dates move rarely; six hours is plenty
+NASDAQ_CAL = "https://api.nasdaq.com/api/calendar/earnings"
+# Nasdaq's API rejects the library default UA outright. This is not
+# evasion — it is a public JSON endpoint that expects a browser string.
+NASDAQ_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+
+def _earnings_calendar(days_ahead: int = EARN_CAL_DAYS,
+                       progress=None) -> tuple[dict[str, int], bool]:
+    """Map US symbol -> trading days until its next report, plus whether
+    the window is complete. Never raises; an incomplete window is reported,
+    not hidden."""
+    key = f"earncal:{days_ahead}"
+    hit, stored = cache_store.fetch(key, EARN_CAL_TTL)
+    if hit and isinstance(stored, dict) and "map" in stored:
+        # stored as days-from-that-date; re-base onto today
+        shift = int((pd.Timestamp.now().normalize()
+                     - pd.Timestamp(stored["as_of"])).days)
+        cal = {s: d - shift for s, d in stored["map"].items() if d - shift >= 0}
+        return cal, bool(stored.get("complete"))
+
+    today = pd.Timestamp.now().normalize()
+    cal: dict[str, int] = {}
+    complete, checked = True, 0
+    for i in range(days_ahead + 1):
+        day = today + pd.Timedelta(days=i)
+        if day.dayofweek >= 5:          # no US reports on the weekend
+            continue
+        try:
+            r = requests.get(NASDAQ_CAL, params={"date": day.strftime("%Y-%m-%d")},
+                             headers={"User-Agent": NASDAQ_UA,
+                                      "Accept": "application/json"},
+                             timeout=15)
+            if r.status_code != 200:
+                complete = False
+                continue
+            rows = ((r.json() or {}).get("data") or {}).get("rows") or []
+        except Exception:
+            complete = False
+            continue
+        checked += 1
+        for row in rows:
+            sym = (row.get("symbol") or "").strip().upper()
+            # first sighting wins: the loop walks forward in time, so that
+            # is the NEXT report, which is the only one the gate cares about
+            if sym and sym not in cal:
+                cal[sym] = i
+    # a window with no days at all is a failure, not an empty calendar
+    if checked == 0:
+        complete = False
+    if progress:
+        progress(f"Earnings calendar: {len(cal)} companies reporting in the next "
+                 f"{days_ahead} days ({checked} sessions"
+                 f"{'' if complete else ', INCOMPLETE — unlisted names stay blocked'}).")
+    if complete:
+        cache_store.put(key, {"as_of": str(today.date()), "map": cal,
+                              "complete": complete})
+    return cal, complete
+
+
 # ----------------------- indicators -----------------------
 def rsi(series: pd.Series, period: int = 14) -> float:
     delta = series.diff()
@@ -1263,7 +1345,12 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
     dist_to_support = (row["price"] - row["support"]) / row["price"]
     support_prox = 1.0 - min(dist_to_support / 0.05, 1.0)  # within 5% of support = best
     dte = row.get("days_to_earnings")
-    earn = 0.7 if dte is None else min(dte / 30.0, 1.0)
+    if dte is None and str(row.get("earnings_in") or "").startswith(">"):
+        # verified clear of the whole calendar window — that is the best
+        # possible answer to "is a report about to land?", not an unknown
+        earn = 1.0
+    else:
+        earn = 0.7 if dte is None else min(dte / 30.0, 1.0)
     rs = row.get("rs_3m")
     rs_score = 0.5 if rs is None else _clamp01((rs + 10.0) / 20.0)   # -10%..+10% -> 0..1
     vr = row.get("vol_ratio")
@@ -1322,6 +1409,16 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
     except Exception as e:
         progress(f"  fundamentals sign-in unavailable ({type(e).__name__}) — "
                  f"continuing; affected picks will be flagged.")
+    # one bulk call for every earnings date the gate will need, before the
+    # per-ticker work starts — see _earnings_calendar for why absence from
+    # a complete window is a verified pass rather than a guess
+    earn_cal, earn_cal_ok = {}, False
+    if p["earnings_drop_days"] > 0:
+        try:
+            earn_cal, earn_cal_ok = _earnings_calendar(progress=progress)
+        except Exception as e:
+            progress(f"  earnings calendar unavailable ({type(e).__name__}) — "
+                     f"picks whose date cannot be verified will be blocked.")
     progress("Building universe...")
     universe = build_universe(p, progress)
     progress(f"Universe: {len(universe)} tickers  [{time.time()-t0:.0f}s]")
@@ -1452,7 +1549,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                            "rs_3m": rs_3m, "vol_ratio": vol_ratio, "stop_atr": stop_atr,
                            "shares": shares,
                            "risk_EUR": round(_to_eur(shares * risk_ps, ticker), 2),
-                           "days_to_earnings": None,
+                           "days_to_earnings": None, "earnings_in": None,
                            "dollar_vol_m": round(dollar_vol / 1e6, 1),
                            "flags": ",".join(list(extra_flags))}
                     score, _ = score_row(row, p)
@@ -1550,8 +1647,25 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     near_reject("analyst", f"analyst consensus {rec_label} ({rec_mean:.1f})")
                     continue
 
-                # ---- earnings proximity (Yahoo, cross-checked via free Finnhub) ----
-                days_to_earnings = _get_days_to_earnings(ticker)
+                # ---- earnings proximity (bulk calendar first, then Yahoo/Finnhub) ----
+                # The calendar answers for nearly every US name in one shot;
+                # the per-ticker sources below only have to cover what it
+                # misses, which is what makes them survivable when Yahoo
+                # throttles a datacenter IP.
+                earn_txt = None
+                days_to_earnings = earn_cal.get(ticker.upper())
+                if days_to_earnings is not None:
+                    flags.append("earnings_from_calendar")
+                    earn_txt = f"{days_to_earnings}d"
+                elif earn_cal_ok and _region(ticker) == "US":
+                    # verified absent: a complete window that does not list
+                    # this company means it is not reporting inside it
+                    earn_txt = f">{EARN_CAL_DAYS}d"
+                if days_to_earnings is None:
+                    # Yahoo per-ticker: still the only source that covers
+                    # non-US listings, and the one that serves a stale
+                    # cached date when the live call is throttled
+                    days_to_earnings = _get_days_to_earnings(ticker)
                 days_fh = _finnhub_days_to_earnings(ticker)
                 if days_to_earnings is None and days_fh is not None:
                     days_to_earnings = days_fh
@@ -1566,17 +1680,24 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 if days_to_earnings is None and q7.get("earn_days") is not None:
                     days_to_earnings = q7["earn_days"]
                     flags.append("earnings_from_quote")
-                if days_to_earnings is None:
+                if days_to_earnings is None and earn_txt is None:
                     if p["strict_gates"] and p["earnings_drop_days"] > 0:
+                        why = ("no earnings calendar covers this listing"
+                               if _region(ticker) != "US" else
+                               "earnings date can't be verified")
                         near_reject("unverified",
-                                    f"earnings date can't be verified while your "
+                                    f"{why} while your "
                                     f"{p['earnings_drop_days']}-day earnings gate is "
                                     f"on — blocked (fail-closed)")
                         continue
                     flags.append("earnings_unverified")
+                elif days_to_earnings is None:
+                    flags.append("earnings_none_in_window")
                 if days_to_earnings is not None and days_to_earnings <= p["earnings_drop_days"]:
                     near_reject("earnings", f"earnings in {days_to_earnings}d")
                     continue
+                if earn_txt is None and days_to_earnings is not None:
+                    earn_txt = f"{days_to_earnings}d"
 
                 # ---- sizing off YOUR risk, not a fixed ticket ----
                 fx = _eur_to_listing(ticker)  # EUR budget -> quoted unit (GBp aware)
@@ -1640,6 +1761,11 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     "friction_pct": friction_pct,
                     "shares": shares, "risk_EUR": actual_risk_eur,
                     "days_to_earnings": days_to_earnings,
+                    # what the reader needs is "is a report about to land?",
+                    # and ">45d" answers that as definitively as "12d" —
+                    # leaving the column blank because the exact date is
+                    # unknown was the audit's fail-open finding
+                    "earnings_in": earn_txt,
                     "flags": ",".join(flags),
                 }
                 row["score"], row["rationale"] = score_row(row, p)

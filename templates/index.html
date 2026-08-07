@@ -620,7 +620,7 @@ const COLDEFS = [
   ["vol_ratio","Dip volume",   "Selling volume during the dip vs before it. Below 1× = calm, healthy dip. Above 1× = heavy selling, be careful.", v => v + "×"],
   ["stop_atr", "Stop room",    "Stop distance measured in average daily wiggles (ATR). Under ~1 the stop could be hit by pure noise.", v => v + " ATR"],
   ["support",  "Support",      "The price floor where buyers stepped in before — the stop-loss sits just below it.", fmtNum],
-  ["days_to_earnings","Earnings in","Days until the next earnings report. Reports can gap the price straight past a stop-loss.", v => v + "d"],
+  ["earnings_in","Earnings in","Time until the next earnings report. Reports can gap the price straight past a stop-loss. \">45d\" means the published calendar shows no report inside the next 45 days — verified clear, not unknown.", v => v],
   ["friction_pct","Costs",     "Commission + spread as % of the hoped-for profit on this trade.", v => v + "%"],
   ["cum_risk_EUR","Σ risk",    "Running total of € at risk if you took this pick and every pick above it.", v => "€" + v],
   ["fits_risk_budget","In budget?","✓ while the running total of risk still fits inside your portfolio's max total risk.", fmtNum],
@@ -1536,6 +1536,12 @@ async function refresh() {
   const count = document.getElementById("resultCount");
   const csv = document.getElementById("csvLink");
   if (s.results && s.results.length) {
+    // scans stored before the earnings calendar existed carry only the raw
+    // day count; derive the display form so an old snapshot keeps its
+    // earnings column instead of silently losing the safety-critical one
+    for (const r of s.results.concat(s.pending || []))
+      if (r.earnings_in == null && r.days_to_earnings != null)
+        r.earnings_in = r.days_to_earnings + "d";
     // only show columns that have data in at least one row
     const cols = COLDEFS.filter(([k]) => s.results.some(r => r[k] != null && r[k] !== ""));
     // Say WHY a feature's columns are absent. A missing column reads as a
