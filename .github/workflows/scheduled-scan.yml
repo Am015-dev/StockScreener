@@ -79,6 +79,21 @@ jobs:
       # instance starts with data. Render wipes its disk on every deploy and
       # a private repo cannot be read without a token, so without this the
       # site is empty after each restart — which reads as "nothing shipped".
+      - name: Publish to the data branch
+        run: |
+          mkdir -p published/state
+          cp /tmp/journal.db published/state/journal.db 2>/dev/null || true
+          cp /tmp/market.db  published/state/market.db  2>/dev/null || true
+          cd published
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Scheduled scan $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push -q --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            HEAD:screener-data
+
       - name: Ship results into the deployed build
         run: |
           # Stash the results OUTSIDE the work tree first: the checkout below
@@ -86,6 +101,10 @@ jobs:
           # shipped.
           stash=$(mktemp -d)
           cp published/*.json "$stash"/ || { echo "nothing to ship"; exit 0; }
+          # And REMOVE them: the deploy branch now tracks these same paths,
+          # so git refuses a checkout that would overwrite untracked files.
+          # Copying alone is not enough — that is what failed the last run.
+          rm -f published/*.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           BRANCH=claude/pullback-uptrend-screener-vvlzeb
@@ -103,21 +122,6 @@ jobs:
             echo "shipped $(ls published/*.json | wc -l) result files"
           fi
           git checkout -q -                       # back for the next step
-
-      - name: Publish to the data branch
-        run: |
-          mkdir -p published/state
-          cp /tmp/journal.db published/state/journal.db 2>/dev/null || true
-          cp /tmp/market.db  published/state/market.db  2>/dev/null || true
-          cd published
-          git init -q
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -q -m "Scheduled scan $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push -q --force \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-            HEAD:screener-data
 
       - name: Summary
         run: |
