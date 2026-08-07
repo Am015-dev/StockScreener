@@ -1376,7 +1376,15 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
         bits.append(f"RS vs mkt {rs:+.1f}%")
     if vr is not None:
         bits.append(f"pullback vol {vr:.2f}x" + (" (quiet)" if vr < 1 else ""))
-    bits.append("earnings date unknown" if dte is None else f"earnings in {dte}d")
+    ein = row.get("earnings_in")
+    if dte is not None:
+        bits.append(f"earnings in {dte}d")
+    elif ein:
+        # ">45d" is an answer, not a shrug — saying "unknown" here would
+        # understate what the calendar actually established
+        bits.append(f"no earnings due within {str(ein).lstrip('>')}")
+    else:
+        bits.append("earnings date unknown")
     if row.get("analyst"):
         bits.append(f"analysts: {row['analyst']}")
     return score, " · ".join(bits)
