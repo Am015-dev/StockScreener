@@ -103,9 +103,15 @@ CCY_SUFFIX = {"L": "GBp", "SW": "CHF", "CO": "DKK", "ST": "SEK", "OL": "NOK"}
 FX_FALLBACK = {"USD": 1.08, "GBP": 0.85, "CHF": 0.94,
                "DKK": 7.46, "SEK": 11.3, "NOK": 11.6}  # EUR -> ccy, static floor
 _fx = {"rates": None, "ts": 0.0}
+# per-symbol currency learned from Yahoo's own metadata — overrides the
+# suffix heuristic (e.g. VUAA.L is a USD line on the LSE, not pence)
+_ccy_override: dict = {}
 
 
 def _ccy(ticker: str) -> str:
+    o = _ccy_override.get(ticker)
+    if o:
+        return o
     if "." not in ticker:
         return "USD"
     return CCY_SUFFIX.get(ticker.rsplit(".", 1)[1].upper(), "EUR")
@@ -144,11 +150,12 @@ def _fx_rates() -> dict:
 def _eur_to_listing(ticker: str) -> float:
     """Multiplier from a EUR amount to the ticker's quoted unit."""
     ccy = _ccy(ticker)
-    if ccy == "EUR":
+    if ccy in ("EUR", None):
         return 1.0
-    if ccy == "GBp":
+    if ccy in ("GBp", "GBX"):
         return _fx_rates()["GBP"] * 100.0   # pounds -> pence
-    return _fx_rates()[ccy]
+    rate = _fx_rates().get(ccy)
+    return rate if rate else 1.0
 
 BENCHMARKS = {"US": "SPY", "EU": "^STOXX50E"}  # regime + relative-strength references
 
@@ -169,6 +176,8 @@ CACHE_TTL = 3600      # reuse universe/OHLC for an hour
 INFO_TTL = 86400      # fundamentals/earnings drift slowly — reuse for a day
 STALE_OK = float("inf")  # cache_store TTL meaning "any age beats no data"
 DOWNLOAD_CHUNK = 150  # tickers per batch: small enough for live partial results
+ALIAS_TTL = 7 * 86400      # remembered suffix resolutions (VUAA -> VUAA.L)
+ALIAS_SUFFIXES = (".L", ".DE", ".AS", ".PA", ".MI", ".SW")
 RATE_LIMIT_COOLDOWN = 180  # once Yahoo hard-429s us, stop live calls this long
 # per-API cooldowns: the quote API often clears within a minute, and only a
 # handful of calls need it per scan — give it a short window plus a retry
@@ -970,32 +979,83 @@ def _portfolio_state(p: dict, data, universe: list[str], progress=print) -> dict
     if not p["holdings"] and p["cash_eur"] <= 0:
         return None
     extra = {}
+    alias: dict = {}
     missing = [h["ticker"] for h in p["holdings"]
                if data is None or h["ticker"] not in universe]
+    # remembered resolutions first (VUAA -> VUAA.L etc., cached a week)
+    for t in missing:
+        if "." not in t:
+            hit, stored = cache_store.fetch(f"alias:{t}", ALIAS_TTL)
+            if hit and isinstance(stored, dict) and stored.get("symbol"):
+                alias[t] = stored["symbol"]
+                if stored.get("ccy"):
+                    _ccy_override[stored["symbol"]] = stored["ccy"]
     if missing:
+        fetch_syms = sorted({alias.get(t, t) for t in missing})
         try:
             ok, d2 = _yahoo_call(lambda: yf.download(
-                missing, period="5d", auto_adjust=True,
+                fetch_syms, period="5d", auto_adjust=True,
                 group_by="ticker", threads=True, progress=False), scope="chart")
             if ok and d2 is not None:
                 for t in missing:
-                    px = _last_close(d2, t)
+                    px = _last_close(d2, alias.get(t, t))
                     if px is not None:
                         extra[t] = px
         except Exception:
             pass
+    # discovery: a suffix-less holding with no US price is usually a
+    # European listing typed without its exchange suffix — find it
+    unresolved = [t for t in missing if t not in extra and "." not in t]
+    if unresolved:
+        cands = [t + s for t in unresolved for s in ALIAS_SUFFIXES]
+        d3 = None
+        try:
+            ok, d3 = _yahoo_call(lambda: yf.download(
+                cands, period="5d", auto_adjust=True,
+                group_by="ticker", threads=True, progress=False), scope="chart")
+            if not ok:
+                d3 = None
+        except Exception:
+            d3 = None
+        if d3 is not None:
+            for t in unresolved:
+                for s in ALIAS_SUFFIXES:
+                    px = _last_close(d3, t + s)
+                    if px is None:
+                        continue
+                    sym = t + s
+                    ccy = None
+                    try:  # Yahoo's own metadata beats the suffix heuristic
+                        okc, ccy = _yahoo_call(
+                            lambda sym=sym: yf.Ticker(sym).fast_info["currency"],
+                            scope="chart")
+                        if not okc:
+                            ccy = None
+                    except Exception:
+                        ccy = None
+                    alias[t] = sym
+                    extra[t] = px
+                    if ccy:
+                        _ccy_override[sym] = ccy
+                    cache_store.put(f"alias:{t}", {"symbol": sym, "ccy": ccy})
+                    progress(f"  portfolio: {t} matched to {sym}"
+                             + (f" (quoted in {ccy})" if ccy else ""))
+                    break
 
     positions, sector_val = {}, {}
     for h in p["holdings"]:
         t = h["ticker"]
+        sym = alias.get(t, t)
         price = extra.get(t)
         if price is None and data is not None:
             price = _last_close(data, t)
         if price is None:
-            progress(f"  portfolio: no price for {t} — position ignored in book math")
+            progress(f"  portfolio: no price for {t} — position ignored in book "
+                     f"math (if it's a European listing, add its exchange "
+                     f"suffix, e.g. {t}.L or {t}.DE)")
             continue
-        value_eur = _to_eur(price * h["shares"], t)
-        sector = _get_info(t).get("sector") or "?"
+        value_eur = _to_eur(price * h["shares"], sym)
+        sector = _get_info(sym).get("sector") or "?"
         pnl_pct = round((price / h["cost"] - 1) * 100, 1) if h["cost"] > 0 else None
         positions[t] = {"shares": h["shares"], "price": price, "value_eur": round(value_eur, 2),
                         "sector": sector, "pnl_pct": pnl_pct}
