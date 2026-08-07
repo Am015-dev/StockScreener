@@ -73,7 +73,8 @@ runpy.run_path({str(ROOT / "scripts" / "scheduled_scan.py")!r}, run_name="__main
 script = Path(TMP) / "drive.py"
 script.write_text(STUB)
 env = dict(os.environ, MARKET_DB=f"{TMP}/m.db", JOURNAL_DB=f"{TMP}/j.db",
-           SCREENER_CACHE_DB=f"{TMP}/c.db")
+           SCREENER_CACHE_DB=f"{TMP}/c.db",
+           SCAN_RETRY_WAIT_S="0")      # the retry is tested, not its wall clock
 proc = subprocess.run([sys.executable, str(script)], env=env,
                       capture_output=True, text=True, timeout=300)
 assert proc.returncode == 0, f"publisher failed:\n{proc.stdout}\n{proc.stderr}"
@@ -151,5 +152,35 @@ idx2 = json.loads((OUT2 / "index.json").read_text())
 assert idx2["presets"] == [] and len(idx2["failures"]) == 3
 assert not list(OUT2.glob("balanced.json")), "nothing should be published"
 print("a total failure publishes nothing and fails the job loudly")
+
+# ---- an UPSTREAM outage must not report as a defect ----
+# Yahoo throttling recurs by nature. Reporting it as a failed job trains
+# the reader to ignore the alert, and the real breakage gets ignored too.
+UPSTREAM = STUB.replace(
+    'if p["min_rr"] == 2.0:                       # the "wide-net" preset\n        raise RuntimeError("simulated download failure")',
+    'if True:\n        raise RuntimeError("every price download failed — Yahoo is rate-limiting")')
+assert "rate-limiting" in UPSTREAM, "upstream stub not wired"
+OUT4 = Path(TMP) / "published4"
+s4 = Path(TMP) / "drive_upstream.py"
+s4.write_text(UPSTREAM.replace(str(OUT), str(OUT4)))
+p4 = subprocess.run([sys.executable, str(s4)], env=env, capture_output=True,
+                    text=True, timeout=600)
+assert p4.returncode == 75, (p4.returncode, p4.stderr[-400:])
+assert "not a defect" in p4.stderr, p4.stderr[-300:]
+idx4 = json.loads((OUT4 / "index.json").read_text())
+assert idx4["presets"] == [] and len(idx4["failures"]) == 3
+print("an upstream outage exits 75 (warn), not 1 (broken)")
+
+# and a genuine code defect still exits 1
+BROKEN = STUB.replace(
+    'if p["min_rr"] == 2.0:                       # the "wide-net" preset\n        raise RuntimeError("simulated download failure")',
+    'if True:\n        raise TypeError("unsupported operand type")')
+OUT5 = Path(TMP) / "published5"
+s5 = Path(TMP) / "drive_broken.py"
+s5.write_text(BROKEN.replace(str(OUT), str(OUT5)))
+p5 = subprocess.run([sys.executable, str(s5)], env=env, capture_output=True,
+                    text=True, timeout=600)
+assert p5.returncode == 1, (p5.returncode, p5.stderr[-300:])
+print("a genuine defect still exits 1 (fails the job)")
 
 print("\nALL SCHEDULED-SCAN TESTS PASSED")
