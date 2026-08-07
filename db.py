@@ -4,7 +4,6 @@ Replaces "pickled DataFrames in a kv cache" with queryable, incrementally
 updatable tables:
 
   instruments      ticker registry (symbol, kind, currency)
-  bars_daily       canonical OHLCV, append-only, idempotent upserts
   strategy_configs every distinct set of *technical* rules, content-addressed
   signals          one row per (config, ticker, day) the rules fired
   signal_outcomes  how each signal resolved (target/stop/expired, R, MFE/MAE)
@@ -46,13 +45,6 @@ CREATE TABLE IF NOT EXISTS instruments (
     kind     TEXT NOT NULL DEFAULT 'stock',
     currency TEXT NOT NULL DEFAULT 'USD'
 );
-CREATE TABLE IF NOT EXISTS bars_daily (
-    instrument_id INTEGER NOT NULL,
-    d  TEXT NOT NULL,
-    o REAL, h REAL, l REAL, c REAL, volume REAL,
-    PRIMARY KEY (instrument_id, d)
-) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS bars_by_date ON bars_daily(d);
 CREATE TABLE IF NOT EXISTS strategy_configs (
     config_id  INTEGER PRIMARY KEY,
     param_hash TEXT NOT NULL UNIQUE,
@@ -125,29 +117,22 @@ def _iid(conn, symbol: str, currency: str = "USD", kind: str = "stock") -> int:
                         (symbol,)).fetchone()[0]
 
 
-def record_bars(frame, tickers: list[str], ccy_of=None) -> int:
-    """Idempotent upsert of a MultiIndex OHLCV frame into bars_daily."""
-    total = 0
+def _drop_dead_weight() -> None:
+    """bars_daily stored every downloaded OHLCV row and nothing ever read
+    one back: ~780k rows and ~80MB for a 5-year universe scan. On Render's
+    free tier /tmp is RAM-backed, so that was 80MB of a 512MB instance
+    spent on write-only data — and it contributed to an OOM restart.
+
+    Raw bars are already cached per download chunk in cache_store, and
+    finished simulations are replayable from signals + signal_outcomes,
+    which is both smaller and more useful. Drop the table on startup so
+    existing databases reclaim the space too."""
     try:
         with _conn() as c:
-            for t in tickers:
-                try:
-                    sub = frame[t].dropna()
-                except Exception:
-                    continue
-                if not len(sub):
-                    continue
-                iid = _iid(c, t, (ccy_of(t) if ccy_of else "USD"))
-                rows = [(iid, str(idx)[:10], float(r["Open"]), float(r["High"]),
-                         float(r["Low"]), float(r["Close"]), float(r["Volume"]))
-                        for idx, r in sub.iterrows()]
-                c.executemany("INSERT OR REPLACE INTO bars_daily "
-                              "(instrument_id, d, o, h, l, c, volume) "
-                              "VALUES (?,?,?,?,?,?,?)", rows)
-                total += len(rows)
+            c.execute("DROP TABLE IF EXISTS bars_daily")
+            c.execute("VACUUM")
     except Exception:
         pass
-    return total
 
 
 def record_backtest(params: dict, trades: list[dict], ccy_of=None,

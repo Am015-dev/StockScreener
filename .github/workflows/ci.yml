@@ -13,6 +13,9 @@
 #     while a scan too old to trade is withheld and its simulation kept
 #   - latency: hot-path DB reads (edge stats, journal snapshot) < 800ms at
 #     representative volume (5,000 trades / 800 symbols / 400 picks)
+#   - memory: two full 700-stock simulation passes stay under the RSS
+#     ceiling and the on-disk caches stay bounded — /tmp is RAM-backed on
+#     Render, so cache files are charged against the 512MB instance
 #
 # NOTE on deploy gating: Render currently auto-deploys the deploy branch on
 # push, so a red run here cannot physically stop that deploy. To make this
@@ -50,6 +53,8 @@ jobs:
         run: python tests/test_persistence.py
       - name: Cold start serves stored data
         run: python tests/test_app_startup.py
+      - name: Memory ceiling (512MB instance)
+        run: python tests/test_memory.py
       - name: 800ms hot-path latency budget
         run: python tests/test_latency.py
 

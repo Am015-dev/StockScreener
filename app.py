@@ -189,6 +189,7 @@ def _load_snapshot(params=None) -> bool:
     return True
 
 
+market_db._drop_dead_weight()   # reclaim the write-only bars table, once
 if not _load_snapshot():
     _load_cached_csv()
 try:

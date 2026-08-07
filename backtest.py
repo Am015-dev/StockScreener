@@ -150,7 +150,6 @@ def run_backtest(p: dict, data, universe: list[str], progress=print,
             if frame is None:
                 progress(f"  batch {ci + 1}/{n_chunks}: no data — skipped")
                 continue
-            db.record_bars(frame, chunk, ccy_of=screener._ccy)
             done = _simulate_block(p, frame, chunk, trades, bench)
             scanned += done
             progress(f"  batch {ci + 1}/{n_chunks}: {done} stocks simulated — "
