@@ -1128,9 +1128,10 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
         """Run every gate for one batch of tickers against its price frame."""
         for ticker in tickers:
             scanned_n[0] += 1
-            if scanned_n[0] % 100 == 0 or scanned_n[0] == len(universe):
+            if scanned_n[0] % 50 == 0 or scanned_n[0] == len(universe):
                 progress(f"  scanning {scanned_n[0]}/{len(universe)}  "
                          f"qualified so far: {len(rows)}  [{time.time()-t1:.0f}s]")
+                emit_partial()   # keep the page's live counter moving
             if ticker.split(".")[0].upper() in exclude:
                 continue
             try:
@@ -1438,6 +1439,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
             _cache.update(ohlc_key=key, ohlc=stored, ohlc_ts=time.time())
             data = stored
 
+    emit_partial()   # progress indicator live immediately (0 of N checked)
     if data is not None:
         scan_block(list(universe), data)
     else:
