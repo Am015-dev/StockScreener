@@ -609,6 +609,11 @@ const COLDEFS = [
   ["resistance","Target",      "The recent high the price could realistically climb back to — where you'd take profit.", fmtNum],
   ["RR",       "Reward:Risk",  "Possible gain vs possible loss. 3 = you stand to win €3 per €1 risked.", fmtNum],
   ["score",    "Score",        "Overall quality 0–100: 70+ strong, 50–69 okay, below 50 weak.", fmtNum],
+  // Earnings sits here, next to the score, and not near the end of the row.
+  // It is the column most likely to cost the reader money — a report can
+  // gap the price straight through a stop — and at the far right it was
+  // off the edge of a 1280px screen, which is the same as absent.
+  ["earnings_in","Earnings in","Time until the next earnings report. Reports can gap the price straight past a stop-loss. \">45d\" means the published calendar shows no report inside the next 45 days — verified clear, not unknown.", v => v],
   ["hist",     "Past win rate", "How often THIS stock's setup under YOUR current rules hit the target before the stop, in the 5-year simulation (shown as % of sample size; hidden under 5 samples). Run the Simulation below to compute/refresh it.", fmtNum],
   ["hist_avg_r", "Past avg", "This stock's average simulated outcome per trade under your rules, in R (units of planned risk).", v => (v > 0 ? "+" : "") + v + "R"],
   ["analyst",  "Analysts",     "Wall Street analyst consensus — the same rating broker apps show (via Yahoo's aggregation of bank research). (n) = number of analysts covering it.", fmtNum],
@@ -620,7 +625,6 @@ const COLDEFS = [
   ["vol_ratio","Dip volume",   "Selling volume during the dip vs before it. Below 1× = calm, healthy dip. Above 1× = heavy selling, be careful.", v => v + "×"],
   ["stop_atr", "Stop room",    "Stop distance measured in average daily wiggles (ATR). Under ~1 the stop could be hit by pure noise.", v => v + " ATR"],
   ["support",  "Support",      "The price floor where buyers stepped in before — the stop-loss sits just below it.", fmtNum],
-  ["earnings_in","Earnings in","Time until the next earnings report. Reports can gap the price straight past a stop-loss. \">45d\" means the published calendar shows no report inside the next 45 days — verified clear, not unknown.", v => v],
   ["friction_pct","Costs",     "Commission + spread as % of the hoped-for profit on this trade.", v => v + "%"],
   ["cum_risk_EUR","Σ risk",    "Running total of € at risk if you took this pick and every pick above it.", v => "€" + v],
   ["fits_risk_budget","In budget?","✓ while the running total of risk still fits inside your portfolio's max total risk.", fmtNum],
@@ -638,6 +642,8 @@ const FLAG_TEXT = {
   fundamentals_via_finnhub: "company data from Finnhub (Yahoo's fundamentals API was blocked)",
   fundamentals_via_quote: "company data via Yahoo's quote API (its fundamentals API was blocked)",
   earnings_from_quote: "earnings date via Yahoo's quote API",
+  earnings_from_calendar: "earnings date from the published market calendar",
+  earnings_none_in_window: "no earnings report scheduled in the next 45 days",
   gates_skipped: "profitability/earnings checks skipped (setup didn't qualify)",
   weekly_soft: "below its 30-week average — the larger weekly trend is softening",
   risk_throttled: "position size reduced — weak market breadth (defensive mode)",
@@ -645,8 +651,17 @@ const FLAG_TEXT = {
   cash_capped: "position size reduced to fit your available cash",
   sector_cap: "would push this sector above your portfolio cap",
 };
-function flagText(flags) {
+// Some flags say only where a number came from. Rendering those behind a
+// ⚠ told the reader something was wrong with a pick whose earnings date
+// was in fact verified — the warning and the good news looked identical.
+const PROVENANCE_FLAGS = new Set([
+  "earnings_from_calendar", "earnings_none_in_window",
+  "earnings_from_finnhub", "earnings_from_quote",
+]);
+function flagText(flags, kind) {
   return String(flags || "").split(",").filter(Boolean)
+    .filter(f => kind === "warn" ? !PROVENANCE_FLAGS.has(f)
+               : kind === "source" ? PROVENANCE_FLAGS.has(f) : true)
     .map(f => FLAG_TEXT[f] || f).join("; ");
 }
 
@@ -942,7 +957,8 @@ function renderTopPicks(picks, near) {
       ${sparkSVG(p, 260, 64)}
       ${p.why_not ? `<div class="warn">Fell short: ${esc(p.why_not)}</div>` : ""}
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
-      ${p.flags ? `<div class="warn">⚠ ${esc(flagText(p.flags))}</div>` : ""}
+      ${flagText(p.flags, "warn") ? `<div class="warn">⚠ ${esc(flagText(p.flags, "warn"))}</div>` : ""}
+      ${flagText(p.flags, "source") ? `<div class="why">${esc(flagText(p.flags, "source"))}</div>` : ""}
       <button type="button" class="ghost" style="margin-top:.6rem;font-size:.78rem;padding:.3rem .8rem"
         data-tip="Copies the complete bracket order — buy, stop-loss, take-profit, share count — ready to paste into your broker."
         onclick="copyTicket(${i}, this)">📋 Copy order ticket</button>
@@ -1595,10 +1611,14 @@ async function refresh() {
         if (k === "flags") {
           // keep rows compact: a ⚠ count in the cell, the full plain-language
           // explanation on hover (cards above show it in full)
-          const t = flagText(row[k]);
-          const n = t ? t.split("; ").length : 0;
+          // the count must be of WARNINGS only — counting "earnings date
+          // from the market calendar" as a warning put a ⚠ on every
+          // correctly-verified row
+          const warn = flagText(row[k], "warn");
+          const all = flagText(row[k]);
+          const n = warn ? warn.split("; ").length : 0;
           v = n ? `⚠ ${n}` : "—";
-          if (t) tipAttr = ` data-tip="${esc(t)}"`;
+          if (all) tipAttr = ` data-tip="${esc(all)}"`;
         }
         return `<td class="${cls}"${style}${tipAttr} data-l="${esc(label)}">${esc(v)}</td>`;
       }).join("") + "</tr>").join("") +
