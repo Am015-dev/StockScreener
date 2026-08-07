@@ -439,13 +439,15 @@
     <div id="btBody" style="display:none">
       <div class="tiles" id="btTiles"></div>
       <div class="hint" id="btBreak" style="margin:.2rem 0 .4rem"></div>
+      <div id="btPortfolio" class="hint" style="display:none;margin:.3rem 0 .5rem"></div>
       <div id="btGate" style="display:none;font-weight:600;margin:.3rem 0 .5rem"></div>
       <svg id="btCurve" viewBox="0 0 640 170" preserveAspectRatio="none"></svg>
       <div class="curve-note" id="btCurveNote"></div>
-      <div class="hint">*drawdown, Sortino and % figures assume every signal taken
-        with 1% of the account at risk, no compounding, no costs — an idealization
-        that overstates smoothness; real accounts can't take hundreds of concurrent
-        positions.</div>
+      <div class="hint">*drawdown, Sortino and % figures come from the realistic
+        portfolio replay above — a capped number of positions held at once, 1% of
+        the account at risk each, no compounding and no trading costs. The
+        all-signals numbers alongside them are shown for completeness only: they
+        assume a position count no real account could carry.</div>
       <div class="hint">Honest limits: technical rules only (profitability/earnings/analyst
         gates need data that doesn't exist historically on a free feed) · entry at the signal
         day's close, exit exactly at stop/target (at the open when the price gaps past) ·
@@ -832,9 +834,19 @@ function renderBacktest(bt, btStatus) {
     [bt.win_rate_pct + "%", "ended in profit", "Share of simulated trades that ended with a gain."],
     [rFmt(bt.avg_r), "avg outcome", "Average result per trade in units of planned risk. Above 0R = the method made money on paper."],
     [pf, "profit factor", "Gross profit ÷ gross loss. Below 1.5 = churning money for little edge; 1.75+ is high quality."],
-    [bt.mdd_pct == null ? "—" : "−" + bt.mdd_pct + "%", "max drawdown*", "Worst peak-to-trough loss of the simulated account (at 1% risk per trade). Beyond −15…−20% is psychologically untradeable for most people."],
-    [bt.sortino == null ? "—" : bt.sortino, "Sortino ratio*", "Risk-adjusted return penalizing only downside volatility (annualized from monthly results at 1% risk per trade). Below 1.0 = too much catastrophic risk for the return."],
   ];
+  // The realistic view: a real account holds a handful of positions, not all
+  // of them. Taking every signal implies dozens open at once, which inflates
+  // the drawdown into a number nobody could ever have experienced.
+  const pf_v = bt.portfolio && bt.portfolio.n ? bt.portfolio : null;
+  const mdd_v = pf_v ? pf_v.mdd_pct : bt.mdd_pct;
+  const sortino_v = pf_v ? pf_v.sortino : bt.sortino;
+  tiles.push(
+    [mdd_v == null ? "—" : "−" + mdd_v + "%", "max drawdown*",
+     "Worst peak-to-trough loss of the account, replayed holding at most " +
+     (pf_v ? pf_v.slots : 5) + " positions at once at 1% risk each. Beyond −15…−20% is psychologically untradeable for most people."],
+    [sortino_v == null ? "—" : sortino_v, "Sortino ratio*",
+     "Risk-adjusted return penalizing only downside volatility, annualized from monthly results on that same realistic portfolio. Below 1.0 = too much catastrophic risk for the return."]);
   document.getElementById("btTiles").innerHTML = tiles.map(([v, l, tip]) => {
     const s = String(v);
     const col = /^[+]/.test(s) ? "var(--green)" : /^[-]/.test(s) ? "var(--red)" : "var(--text)";
@@ -847,17 +859,28 @@ function renderBacktest(bt, btStatus) {
     `total ${esc(rFmt(bt.total_r))} (≈${esc(bt.return_pct)}% at 1% risk/trade) · ` +
     `best ${esc(bt.best.ticker)} ${esc(rFmt(bt.best.outcome_r))} · worst ${esc(bt.worst.ticker)} ${esc(rFmt(bt.worst.outcome_r))}` +
     (bt.spy ? ` · SPY same window: ${esc(bt.spy.return_pct)}% return, −${esc(bt.spy.mdd_pct)}% max drawdown` : "");
+  const pbox = document.getElementById("btPortfolio");
+  if (pf_v) {
+    pbox.style.display = "block";
+    pbox.innerHTML = `<b>Realistic portfolio (max ${esc(pf_v.slots)} positions at once, 1% risk each):</b> ` +
+      `took ${esc(pf_v.n)} of ${esc(bt.n)} signals (${esc(pf_v.missed)} arrived with every slot full) · ` +
+      `${esc(pf_v.win_rate_pct)}% ended in profit · profit factor ${esc(pf_v.profit_factor == null ? "∞" : pf_v.profit_factor)} · ` +
+      `total ${esc(rFmt(pf_v.total_r))} (≈${esc(pf_v.return_pct)}%) · max drawdown −${esc(pf_v.mdd_pct)}%. ` +
+      `<span style="color:var(--muted)">Taking every signal instead would mean dozens of positions open simultaneously — ` +
+      `that path shows −${esc(bt.mdd_pct)}% drawdown, which is an artifact of an impossible position count, not the rules.</span>`;
+  } else pbox.style.display = "none";
 
   // the paywall bar: hard thresholds, verdict stated in public
   const checks = [];
-  if (bt.profit_factor != null)
-    checks.push([bt.profit_factor >= 1.5, `profit factor ${bt.profit_factor} (need ≥ 1.5)`]);
-  if (bt.mdd_pct != null && bt.spy)
-    checks.push([bt.mdd_pct <= bt.spy.mdd_pct, `max drawdown −${bt.mdd_pct}% vs SPY −${bt.spy.mdd_pct}% (must not be worse)`]);
-  else if (bt.mdd_pct != null)
-    checks.push([bt.mdd_pct <= 20, `max drawdown −${bt.mdd_pct}% (need no worse than −20%; SPY comparison unavailable)`]);
-  if (bt.sortino != null)
-    checks.push([bt.sortino >= 1.0, `Sortino ${bt.sortino} (need ≥ 1.0)`]);
+  const gpf = pf_v && pf_v.profit_factor != null ? pf_v.profit_factor : bt.profit_factor;
+  if (gpf != null)
+    checks.push([gpf >= 1.5, `profit factor ${gpf} (need ≥ 1.5)`]);
+  if (mdd_v != null && bt.spy)
+    checks.push([mdd_v <= bt.spy.mdd_pct, `max drawdown −${mdd_v}% vs SPY −${bt.spy.mdd_pct}% (must not be worse)`]);
+  else if (mdd_v != null)
+    checks.push([mdd_v <= 20, `max drawdown −${mdd_v}% (need no worse than −20%; SPY comparison unavailable)`]);
+  if (sortino_v != null)
+    checks.push([sortino_v >= 1.0, `Sortino ${sortino_v} (need ≥ 1.0)`]);
   const gate = document.getElementById("btGate");
   if (checks.length) {
     const pass = checks.every(c => c[0]);
@@ -867,9 +890,10 @@ function renderBacktest(bt, btStatus) {
       checks.map(([ok, txt]) => `${ok ? "✓" : "✗"} ${esc(txt)}`).join(" · ") +
       (pass ? "" : `<div class="hint" style="color:var(--muted)">Adjust the filters and re-run the simulation — the bar must clear before trusting this configuration with money.</div>`);
   } else gate.style.display = "none";
-  drawCurve(bt.curve || []);
-  document.getElementById("btCurveNote").textContent =
-    "Cumulative result in R if every signal had been taken with equal risk — rising line = the edge is real in this sample.";
+  drawCurve((pf_v && pf_v.curve && pf_v.curve.length ? pf_v.curve : bt.curve) || []);
+  document.getElementById("btCurveNote").textContent = pf_v
+    ? `Cumulative result in R for the realistic ${pf_v.slots}-position portfolio — the path a person could actually have traded.`
+    : "Cumulative result in R if every signal had been taken with equal risk — rising line = the edge is real in this sample.";
 }
 
 function drawCurve(pts) {

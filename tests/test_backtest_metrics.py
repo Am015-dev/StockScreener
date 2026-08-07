@@ -90,4 +90,52 @@ backtest._fetch_chunk = lambda chunk, progress=print: None
 assert backtest._spy_benchmark("2021-01-04", "2021-12-31") is None
 print("SPY benchmark math OK (+30.0% return, -20.0% MDD on synthetic path)")
 
+
+# ---- portfolio replay: at most N positions open at once ----
+def PT(i, r, d_from, d_to):
+    return {"ticker": f"P{i}", "date": d_from, "exit_date": d_to,
+            "outcome_r": r, "status": "target" if r > 0 else "stop",
+            "rr_planned": 3.0, "entry": 100.0, "stop_px": 95.0,
+            "target_px": 115.0, "bars_held": 5, "mfe_r": 1.0, "mae_r": -0.5}
+
+
+# five signals all opening on the same day, only 2 slots -> 3 missed
+same_day = [PT(i, 1.0, "2025-01-06", "2025-01-20") for i in range(5)]
+ps = backtest._portfolio_sim(same_day, slots=2)
+assert ps["n"] == 2 and ps["missed"] == 3, ps
+assert ps["total_r"] == 2.0 and ps["slots"] == 2
+
+# slots free up: two trades exit before the third opens -> all three taken
+staggered = [PT(0, 1.0, "2025-01-06", "2025-01-10"),
+             PT(1, -1.0, "2025-01-06", "2025-01-10"),
+             PT(2, 2.0, "2025-01-13", "2025-01-17")]
+ps2 = backtest._portfolio_sim(staggered, slots=2)
+assert ps2["n"] == 3 and ps2["missed"] == 0, ps2
+assert ps2["total_r"] == 2.0
+
+# a still-open position blocks the slot (exit date after the new signal)
+blocked = [PT(0, 1.0, "2025-01-06", "2025-03-01"),
+           PT(1, 5.0, "2025-01-13", "2025-01-20")]
+ps3 = backtest._portfolio_sim(blocked, slots=1)
+assert ps3["n"] == 1 and ps3["missed"] == 1 and ps3["total_r"] == 1.0, ps3
+
+# drawdown is computed on the TAKEN trades only, in exit order
+dd_seq = [PT(0, 3.0, "2025-01-06", "2025-01-10"),
+          PT(1, -1.0, "2025-01-13", "2025-01-17"),
+          PT(2, -1.0, "2025-01-20", "2025-01-24")]
+ps4 = backtest._portfolio_sim(dd_seq, slots=1)
+assert ps4["n"] == 3 and ps4["mdd_r"] == 2.0, ps4   # peak 3 -> trough 1
+assert ps4["profit_factor"] == 1.5, ps4
+
+# unlimited slots must reproduce the all-signals totals exactly
+ps5 = backtest._portfolio_sim(trades, slots=999)
+assert ps5["n"] == 7 and ps5["missed"] == 0
+assert ps5["total_r"] == res["total_r"] and ps5["mdd_r"] == res["mdd_r"]
+assert backtest._portfolio_sim([]) == {}
+print("portfolio replay OK (slot contention, blocking, drawdown on taken only)")
+
+# _aggregate attaches the realistic portfolio view
+assert res["portfolio"]["slots"] == backtest.PORTFOLIO_SLOTS
+assert res["portfolio"]["n"] <= res["n"]
+
 print("\nALL BACKTEST-METRICS TESTS PASSED")

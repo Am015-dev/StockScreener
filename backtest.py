@@ -233,6 +233,72 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list) -> int:
     return scanned
 
 
+PORTFOLIO_SLOTS = 5   # a ~EUR 15k book realistically carries this many trades
+PORTFOLIO_RISK_PCT = 1.0
+
+
+def _portfolio_sim(trades: list[dict], slots: int = PORTFOLIO_SLOTS,
+                   risk_pct: float = PORTFOLIO_RISK_PCT) -> dict:
+    """Replay the signals as a REAL account would experience them: at most
+    `slots` positions open at once, signals arriving while every slot is full
+    are missed (not queued — the setup is gone by the time a slot frees).
+
+    Why this matters more than the raw all-signals numbers: taking every
+    signal means holding ~80 positions at once, i.e. ~80% of the account at
+    risk simultaneously. The drawdown that produces is an artifact of an
+    impossible position count, not a property of the rules. This is the
+    curve a person could actually have traded."""
+    if not trades:
+        return {}
+    order = sorted(trades, key=lambda t: t["date"])
+    open_until: list[str] = []      # exit dates of currently-held positions
+    taken, missed = [], 0
+    for t in order:
+        open_until = [d for d in open_until if d > t["date"]]
+        if len(open_until) >= slots:
+            missed += 1
+            continue
+        open_until.append(t["exit_date"])
+        taken.append(t)
+    if not taken:
+        return {}
+
+    taken.sort(key=lambda t: t["exit_date"])
+    equity, peak, mdd = 0.0, 0.0, 0.0
+    curve, monthly = [], defaultdict(float)
+    for t in taken:
+        equity += t["outcome_r"]
+        peak = max(peak, equity)
+        mdd = min(mdd, equity - peak)
+        monthly[t["exit_date"][:7]] += t["outcome_r"]
+        curve.append((t["exit_date"], round(equity, 2)))
+
+    rs = [t["outcome_r"] for t in taken]
+    gross_p = sum(x for x in rs if x > 0)
+    gross_l = -sum(x for x in rs if x <= 0)
+    m_rets = [v * risk_pct / 100.0 for v in monthly.values()]
+    sortino = None
+    if len(m_rets) >= 6:
+        mean_m = sum(m_rets) / len(m_rets)
+        dd = (sum(min(0.0, v) ** 2 for v in m_rets) / len(m_rets)) ** 0.5
+        if dd > 1e-9:
+            sortino = round((mean_m * 12) / (dd * 12 ** 0.5), 2)
+    step = max(1, len(curve) // CURVE_POINTS)
+    curve = curve[::step] + ([curve[-1]] if (len(curve) - 1) % step else [])
+    return {
+        "slots": slots, "risk_pct": risk_pct,
+        "n": len(taken), "missed": missed,
+        "wins": sum(1 for x in rs if x > 0),
+        "win_rate_pct": round(sum(1 for x in rs if x > 0) / len(rs) * 100),
+        "total_r": round(sum(rs), 2),
+        "return_pct": round(sum(rs) * risk_pct, 1),
+        "profit_factor": (round(gross_p / gross_l, 2) if gross_l > 0 else None),
+        "mdd_r": round(-mdd, 2), "mdd_pct": round(-mdd * risk_pct, 1),
+        "sortino": sortino, "n_months": len(monthly),
+        "curve": [{"date": d, "cum_r": v} for d, v in curve],
+    }
+
+
 def _aggregate(trades: list[dict], scanned: int) -> dict:
     if not trades:
         return {"n": 0, "n_stocks": scanned}
@@ -284,4 +350,5 @@ def _aggregate(trades: list[dict], scanned: int) -> dict:
         "curve": [{"date": d, "cum_r": v} for d, v in curve],
         "best": max(trades, key=lambda t: t["outcome_r"]),
         "worst": min(trades, key=lambda t: t["outcome_r"]),
+        "portfolio": _portfolio_sim(trades),
     }
