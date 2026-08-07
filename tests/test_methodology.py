@@ -36,8 +36,8 @@ for key, ceiling in screener.METHODOLOGY_MAX.items():
     assert any(key in c for c in p["methodology_clamped"]), \
         "a clamp must be reported, never silent"
 # and a value inside the bounds passes through untouched, unreported
-ok = screener.clean_params({"rsi_high": 55, "max_support_dist_pct": 6})
-assert ok["rsi_high"] == 55 and ok["max_support_dist_pct"] == 6
+ok = screener.clean_params({"rsi_high": 55, "max_support_dist_pct": 4})
+assert ok["rsi_high"] == 55 and ok["max_support_dist_pct"] == 4
 assert ok["methodology_clamped"] == []
 print(f"methodology ceilings enforced and reported: {screener.METHODOLOGY_MAX}")
 
@@ -45,7 +45,11 @@ print(f"methodology ceilings enforced and reported: {screener.METHODOLOGY_MAX}")
 for rsi in (62, 65, 67):
     assert rsi > screener.clean_params({"rsi_high": 99})["rsi_high"], \
         f"RSI {rsi} would still qualify — that is a momentum name, not a dip"
-for dist in (12.0, 11.9):
+# 8-12% was the range the audit found live; the rubric draws the line at 5%,
+# because the whole argument for this setup is that the stop sits just under
+# support, so a loss stays cheap. An entry 8% above support is a different
+# trade wearing the same name.
+for dist in (12.0, 11.9, 8.0, 5.1):
     assert dist > screener.clean_params({"max_support_dist_pct": 99})["max_support_dist_pct"], \
         f"an entry {dist}% above support is not 'near support'"
 print("the exact rows the audit flagged (RSI 62-67, entries 8-12% above "

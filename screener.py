@@ -72,7 +72,7 @@ DEFAULTS = {
     "pivot_k": 3,                # bars each side for a pivot low
     "stop_buffer_pct": 1.5,      # stop % below support
     "min_stop_atr": 1.0,         # stop must sit >= this many ATRs away (noise gate)
-    "max_support_dist_pct": 8.0,  # entry at most this % above support (0 = off)
+    "max_support_dist_pct": 5.0,  # entry at most this % above support (0 = off)
     "min_rs_3m": 0.0,            # min 3-month outperformance vs benchmark, pts (0 = off)
     "min_price": 5.0,            # no sub-$5 lines: the spread eats the edge
     "min_share_vol": 500000.0,   # min 30-day average shares/day
@@ -274,8 +274,12 @@ def _num(v, default, lo, hi, cast=float):
 # or URL parameter may exceed, and exceeding one is reported rather than
 # silently clamped.
 METHODOLOGY_MAX = {
-    "rsi_high": 60.0,              # above this is strength, not a dip
-    "max_support_dist_pct": 10.0,  # further than this is not "near support"
+    "rsi_high": 60.0,             # above this is strength, not a dip
+    # 5%, not 10%. The whole argument for this setup is that the stop can
+    # sit just under support, so a losing trade stays cheap. Enter 10% above
+    # support and the stop is 10% away, the trade is no longer the one being
+    # described, and the reward:risk on the row is flattered by the gap.
+    "max_support_dist_pct": 5.0,
 }
 # A reward:risk this large means the swing high being used as a target is
 # stale or structurally meaningless, not that the trade is extraordinary.
