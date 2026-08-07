@@ -59,8 +59,45 @@ def make_chunk(offset: int):
 
 P = screener.clean_params({})
 
-# the write-only bars table must be gone, and stay gone
+# ---- the legacy write-only bars table must be dropped AND its space
+# ---- actually returned to the filesystem
+import datetime
+import sqlite3
+import time
+
+legacy = sqlite3.connect(os.environ["MARKET_DB"])
+legacy.executescript(db._SCHEMA)
+legacy.execute("""CREATE TABLE IF NOT EXISTS bars_daily (
+    instrument_id INTEGER, d TEXT, o REAL, h REAL, l REAL, c REAL, volume REAL,
+    PRIMARY KEY (instrument_id, d))""")
+day0 = datetime.date(2021, 1, 4)
+legacy.executemany(
+    "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?)",
+    [(t, (day0 + datetime.timedelta(days=b)).isoformat(), 1., 2., 3., 4., 5.)
+     for t in range(400) for b in range(700)])       # 280k rows, as a real run left
+legacy.commit()
+legacy.close()
+
+before = db_bytes()
+assert before > 10e6, f"fixture should be big enough to matter, got {before/1e6:.0f}MB"
+t0 = time.time()
 db._drop_dead_weight()
+after = db_bytes()
+# NB: the footprint must SHRINK. A VACUUM in WAL mode writes the rebuilt
+# database into the log, so without a truncating checkpoint this DOUBLES
+# instead — which is how the first version of this migration behaved.
+assert after < before * 0.1, \
+    f"space not reclaimed: {before/1e6:.0f}MB -> {after/1e6:.0f}MB (WAL not checkpointed?)"
+assert not sqlite3.connect(os.environ["MARKET_DB"]).execute(
+    "SELECT 1 FROM sqlite_master WHERE name='bars_daily'").fetchone()
+print(f"legacy bars table reclaimed: {before/1e6:.0f}MB -> {after/1e6:.2f}MB "
+      f"in {time.time() - t0:.2f}s")
+
+# and it must not pay that cost again on every subsequent startup
+t0 = time.time()
+db._drop_dead_weight()
+assert time.time() - t0 < 0.1, "migration must skip once there is nothing to drop"
+
 assert not hasattr(db, "record_bars"), \
     "record_bars stored rows nothing ever read — it must not come back"
 assert "bars_daily" not in db._SCHEMA, "bars_daily must not be recreated"

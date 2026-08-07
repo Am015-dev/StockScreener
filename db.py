@@ -129,8 +129,26 @@ def _drop_dead_weight() -> None:
     existing databases reclaim the space too."""
     try:
         with _conn() as c:
+            present = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                "AND name='bars_daily'").fetchone()
+        if not present:
+            return                      # nothing to reclaim; skip the rewrite
+        with _conn() as c:
             c.execute("DROP TABLE IF EXISTS bars_daily")
-            c.execute("VACUUM")
+        # VACUUM cannot run inside a transaction, and DROP TABLE opens one —
+        # so it needs its own autocommit connection. Without this the table
+        # is dropped but the pages are never returned to the filesystem,
+        # which on a RAM-backed /tmp means the memory is never freed.
+        vac = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+        try:
+            vac.execute("VACUUM")
+            # In WAL mode VACUUM writes the rebuilt database into the log
+            # rather than the main file, so without this checkpoint the disk
+            # footprint DOUBLES instead of shrinking. TRUNCATE folds the log
+            # back and returns the space to the filesystem.
+            vac.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            vac.close()
     except Exception:
         pass
 
