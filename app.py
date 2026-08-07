@@ -261,7 +261,12 @@ def _methodology_violations(row: dict) -> list[str]:
         price, support = row.get("price"), row.get("support")
         dist_max = screener.METHODOLOGY_MAX.get("max_support_dist_pct")
         if price and support and dist_max is not None:
-            dist = (float(price) - float(support)) / float(price) * 100
+            # measured off support, exactly as the screener measures it
+            # (screener.py: (price / support - 1) * 100). Dividing by price
+            # instead gives a smaller number, so a row the screener would
+            # now reject at 5.2% reads as 4.9% here and survives the
+            # revalidation — a filter looser than the rule it enforces.
+            dist = (float(price) / float(support) - 1) * 100
             if dist > dist_max:
                 why.append(f"entry {dist:.1f}% above support (max {dist_max:g}%)")
     except (TypeError, ValueError):
