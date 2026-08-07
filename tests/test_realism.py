@@ -37,6 +37,20 @@ def frame(closes, price_scale=1.0, share_vol=5e7):
          "Volume": np.full(N, share_vol)}, index=IDX)}, axis=1)
 
 
+# The knobs must exist in DEFAULTS and survive clean_params — an earlier
+# version of this file passed them only as dict overrides, so it went green
+# while the shipped app knew nothing about them.
+_d = screener.clean_params({})
+for _k, _lo, _hi in (("cost_pct", 0, 5), ("stop_atr_mult", 0.5, 6),
+                     ("max_hold_bars", 5, 250), ("min_price", 0, 1000),
+                     ("min_share_vol", 0, 1e9)):
+    assert _k in screener.DEFAULTS, f"{_k} missing from DEFAULTS"
+    assert _lo <= _d[_k] <= _hi, (_k, _d[_k])
+assert _d["stop_mode"] in ("pivot", "atr")
+assert screener.clean_params({"stop_mode": "nonsense"})["stop_mode"] == "pivot"
+assert screener.clean_params({"cost_pct": 999})["cost_pct"] <= 5
+print("knobs are real parameters: present in DEFAULTS, clamped by clean_params")
+
 BASE = screener.clean_params({
     "min_dollar_vol_m": 1, "min_rr": 0.5, "rsi_low": 0, "rsi_high": 100,
     "min_stop_atr": 0, "pivot_k": 2, "stop_buffer_pct": 1.0,
