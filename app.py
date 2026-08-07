@@ -249,6 +249,31 @@ def _save_snapshot(params=None):
         pass
 
 
+def _autoload_backtest(params) -> bool:
+    """Show the simulation without anyone asking for it.
+
+    A stored run rebuilds from the database in milliseconds, so requiring a
+    button press to see any analytics at all was pure friction — and on a
+    fresh instance it meant the whole analytics half of the page was blank."""
+    if not params or _state.get("bt_status") == "running":
+        return False
+    try:
+        stored = market_db.load_backtest(params)
+        if not stored or not stored.get("trades"):
+            return False
+        res = backtest_mod._aggregate(stored["trades"], stored["n_stocks"])
+        if not res.get("n"):
+            return False
+        res["from_db"] = True
+        res["ran_at"] = stored.get("ran_at")
+        _state["backtest"] = res
+        _state["bt_status"] = "done"
+        _state["bt_rules"] = {k: params.get(k) for k in market_db.TECH_PARAMS}
+        return True
+    except Exception:
+        return False
+
+
 def _load_snapshot(params=None) -> bool:
     """Rehydrate a stored scan: the one matching `params` when given, else
     the most recent under any filters (the cold-start case, before the page
@@ -280,6 +305,8 @@ def _load_snapshot(params=None) -> bool:
     _state["results_ts"] = ts
     _state["restored"] = True
     _state["params_used"] = snap.get("_params") or _state.get("params_used")
+    if not _state.get("backtest"):
+        _autoload_backtest(_state.get("params_used"))
     n = len(_state.get("results") or [])
     _state["log"] = [
         f"Loaded the last scan from the database — {n} pick(s), "
@@ -369,6 +396,9 @@ def _run_scan(params):
 
         _state["status"] = "done"
         _state["restored"] = False
+        if _autoload_backtest(params):
+            _progress("Loaded this rule set's stored simulation — "
+                      "the track record below needed no re-run.")
         _save_snapshot(params)
         if _state["pending"]:
             _start_auto_reverify(dict(params or {}))

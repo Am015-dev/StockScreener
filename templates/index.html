@@ -236,6 +236,8 @@
     <button class="ghost" style="margin-left:.5rem" onclick="cancelScan()">
       Abandon it and show my last results</button>
   </div>
+  <div id="topFallback" class="hint" style="display:none;margin:.2rem 0 .6rem;
+       padding:.55rem .8rem;border:1px solid var(--amber);border-radius:8px;color:var(--amber)"></div>
   <div id="asOf" style="display:none;font-weight:600;margin:.1rem 0 .4rem"></div>
   <div id="snapNote" class="hint" style="display:none;margin:.2rem 0 .6rem"></div>
 
@@ -768,10 +770,29 @@ function sparkSVG(p, w, h) {
   </div>`;
 }
 
-function renderTopPicks(picks) {
+// A pullback screener on a market that is not pulling back qualifies
+// nothing — which is honest, and useless. Showing an empty page was the
+// single worst thing about this tool: it looked broken and gave the reader
+// nothing to act on or learn from. So when nothing clears every rule, the
+// closest candidates are promoted here and labelled as exactly that.
+function renderTopPicks(picks, near) {
   const sec = document.getElementById("topSection");
-  if (!picks || !picks.length) { sec.style.display = "none"; return; }
+  const banner = document.getElementById("topFallback");
+  let shown = picks || [], fallback = false;
+  if (!shown.length && near && near.length) {
+    shown = near.slice(0, 3);
+    fallback = true;
+  }
+  if (!shown.length) { sec.style.display = "none"; return; }
   sec.style.display = "";
+  if (fallback) {
+    banner.style.display = "block";
+    banner.innerHTML = "⚠ <b>Nothing met every rule today</b> — the market is " +
+      "not offering this setup right now. These are the closest candidates, " +
+      "each with the reason it fell short. They are <b>not</b> trade signals; " +
+      "treat them as a watchlist.";
+  } else banner.style.display = "none";
+  picks = shown;
   document.getElementById("topCards").innerHTML = picks.map((p, i) => `
     <div class="card">
       <div class="rank">${medal(i)}</div>
@@ -793,6 +814,7 @@ function renderTopPicks(picks) {
         <div><span data-tip="Average analyst 12-month price target vs today's price.">their target</span> ${p.analyst_target_up_pct == null ? "—" : esc((p.analyst_target_up_pct > 0 ? "+" : "") + p.analyst_target_up_pct) + "%"}</div>
       </div>
       ${sparkSVG(p, 260, 64)}
+      ${p.why_not ? `<div class="warn">Fell short: ${esc(p.why_not)}</div>` : ""}
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
       ${p.flags ? `<div class="warn">⚠ ${esc(flagText(p.flags))}</div>` : ""}
       <button type="button" class="ghost" style="margin-top:.6rem;font-size:.78rem;padding:.3rem .8rem"
@@ -1280,7 +1302,7 @@ async function refresh() {
       (s.universe_size ? ` · ${s.universe_size} stocks scanned` : "");
   }
 
-  renderTopPicks(s.top_picks);
+  renderTopPicks(s.top_picks, s.near_board);
   renderNearBoard(s.near_board, s.relax_hints, (s.results || []).length);
   window.__btRules = s.bt_rules || null;
   renderBacktest(s.backtest, s.bt_status || "idle");
