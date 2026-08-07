@@ -455,6 +455,7 @@
         entry, stop, target and sizing are ready — but their safety checks (profitability,
         earnings date) couldn't get data yet. They verify automatically within minutes;
         nothing is published unchecked.</div>
+      <div id="inactiveNote" class="hint" style="display:none;margin:0 0 .5rem"></div>
       <div class="tablewrap"><div id="pendingTable"></div></div>
     </div>
     <div id="relaxHints" class="chips" style="display:none"></div>
@@ -1539,6 +1540,16 @@ async function refresh() {
   if (s.results && s.results.length) {
     // only show columns that have data in at least one row
     const cols = COLDEFS.filter(([k]) => s.results.some(r => r[k] != null && r[k] !== ""));
+    // Say WHY a feature's columns are absent. A missing column reads as a
+    // broken feature; "you have not entered a portfolio" reads as a choice.
+    const inactive = [];
+    if (!s.portfolio) inactive.push("portfolio checks (sector concentration, " +
+      "cash and total-risk limits) — paste your holdings under Filters to enable them");
+    const note = document.getElementById("inactiveNote");
+    if (note) {
+      note.style.display = inactive.length ? "block" : "none";
+      note.textContent = inactive.length ? "Not shown: " + inactive.join("; ") + "." : "";
+    }
     count.textContent = `(${s.results.length})`;
     csv.style.display = "";
     res.classList.remove("empty");

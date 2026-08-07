@@ -36,11 +36,23 @@ import screener
 # setups today".
 PRESETS = {
     "balanced": {},
-    "relaxed": {"min_rr": 2.2, "rsi_high": 62, "min_stop_atr": 0.7,
-                "max_support_dist_pct": 12.0},
-    "wide-net": {"min_rr": 2.0, "rsi_low": 25, "rsi_high": 68,
-                 "min_stop_atr": 0.5, "max_support_dist_pct": 15.0,
-                 "min_dollar_vol_m": 50.0, "strict_gates": False},
+    # RSI 62 and a 12% entry distance were both outside the methodology —
+    # the audit found exactly these rows on the live site (MEDP, GLEN, GSK
+    # at RSI 62-67; STM, GFS, NOK 8-12% above support). Loosened where it
+    # is legitimate to loosen — the reward:risk floor and the noise gate —
+    # not where it changes what the tool claims to find.
+    "relaxed": {"min_rr": 2.2, "rsi_high": 58, "min_stop_atr": 0.7,
+                "max_support_dist_pct": 9.0},
+    # "wide-net" previously set strict_gates False and pushed RSI to 68 and
+    # the support distance to 15%, to stop the page looking empty. That was
+    # the wrong trade twice over: it published picks whose earnings dates
+    # were never verified (fail-open, the exact defect this project set out
+    # to remove), and it listed momentum names in a tool that tells the
+    # reader it finds pullbacks. Looser, but inside the methodology and
+    # still fail-closed.
+    "wide-net": {"min_rr": 2.0, "rsi_low": 25, "rsi_high": 58,
+                 "min_stop_atr": 0.5, "max_support_dist_pct": 10.0,
+                 "min_dollar_vol_m": 50.0},
 }
 
 # Exit codes. The distinction matters: "Yahoo throttled this runner" is an
@@ -87,9 +99,27 @@ def simulate(p: dict, universe: list, progress) -> dict | None:
         return None
 
 
+def _assert_publishable(name: str, p: dict) -> None:
+    """Refuse to publish a rule set that would show unverified picks.
+
+    A preset is a recommendation with this project's name on it. Shipping
+    one that fails open is worse than shipping nothing, because the reader
+    cannot tell the difference from the page."""
+    if not p.get("strict_gates"):
+        raise ValueError(
+            f"preset {name!r} disables strict_gates — a published preset may "
+            f"never show picks whose safety gates could not be verified")
+    if p.get("methodology_clamped"):
+        raise ValueError(
+            f"preset {name!r} exceeds the methodology bounds "
+            f"({'; '.join(p['methodology_clamped'])}) — a pullback screener "
+            f"must not publish momentum entries")
+
+
 def run_preset(name: str, overrides: dict, universe_max: int,
                with_simulation: bool = True) -> dict:
     p = screener.clean_params(dict(overrides, universe_max=universe_max))
+    _assert_publishable(name, p)
     log: list[str] = []
 
     def progress(m):

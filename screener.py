@@ -266,6 +266,22 @@ def _num(v, default, lo, hi, cast=float):
         return default
 
 
+# ---- methodology bounds -------------------------------------------------
+# This tool claims to find PULLBACKS in uptrends. A name at RSI 67 sitting
+# 12% above its support is a momentum chase, and listing it is wrong even
+# when every number in the row is accurate — the reader has been told they
+# are looking at dips. These are hard ceilings that no preset, saved filter
+# or URL parameter may exceed, and exceeding one is reported rather than
+# silently clamped.
+METHODOLOGY_MAX = {
+    "rsi_high": 60.0,              # above this is strength, not a dip
+    "max_support_dist_pct": 10.0,  # further than this is not "near support"
+}
+# A reward:risk this large means the swing high being used as a target is
+# stale or structurally meaningless, not that the trade is extraordinary.
+RR_SANE_MAX = 8.0
+
+
 def clean_params(overrides: dict | None) -> dict:
     """Merge user overrides onto DEFAULTS, coercing and clamping everything.
 
@@ -299,6 +315,13 @@ def clean_params(overrides: dict | None) -> dict:
     p["max_support_dist_pct"] = _num(o.get("max_support_dist_pct"),
                                      p["max_support_dist_pct"], 0, 50)
     p["min_rs_3m"] = _num(o.get("min_rs_3m"), p["min_rs_3m"], -50, 50)
+    # clamp to the methodology, and record it so the clamp is never silent
+    clamped = []
+    for _k, _ceil in METHODOLOGY_MAX.items():
+        if p.get(_k) is not None and p[_k] > _ceil:
+            clamped.append(f"{_k} {p[_k]:g}->{_ceil:g}")
+            p[_k] = _ceil
+    p["methodology_clamped"] = clamped
     p["min_price"] = _num(o.get("min_price"), p["min_price"], 0, 1000)
     p["min_share_vol"] = _num(o.get("min_share_vol"), p["min_share_vol"], 0, 1e9)
     p["stop_atr_mult"] = _num(o.get("stop_atr_mult"), p["stop_atr_mult"], 0.5, 6)
@@ -1245,9 +1268,13 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
     an_score = 0.5 if am is None else _clamp01((4.0 - am) / 3.0)     # 1.0 -> 1, 4.0 -> 0
 
     flags = [f for f in str(row.get("flags") or "").split(",") if f]
+    # A consensus of Sell is not worth 7.5% of a score. Analysts covering a
+    # name and concluding "sell" contradicts the whole premise of buying its
+    # dip, so it is a standing deduction, not a weighted input.
+    sell_penalty = 25 if (am is not None and am >= 3.5) else 0
     score = round(100 * (0.30 * rr_score + 0.15 * rs_score + 0.15 * pullback +
                          0.15 * support_prox + 0.10 * vol_score +
-                         0.075 * earn + 0.075 * an_score)
+                         0.075 * earn + 0.075 * an_score) - sell_penalty
                   - 5 * len(flags))
     score = max(min(score, 100), 0)
 
@@ -1365,6 +1392,12 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 rr = reward_ps / risk_ps if risk_ps > 0 else float("nan")
                 if not np.isfinite(rr):
                     reject(ticker, "degenerate risk math")
+                    continue
+                if rr > RR_SANE_MAX:
+                    # the swing high is stale or structurally meaningless;
+                    # displaying "R:R 16.5" invites a trade that is not there
+                    reject(ticker, f"implausible reward:risk {rr:.1f} "
+                                   f"(> {RR_SANE_MAX:g}) — target level is stale")
                     continue
 
                 # ---- Stage 1 soft gates: a failure here still leaves a complete
