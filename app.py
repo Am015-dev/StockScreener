@@ -1445,17 +1445,27 @@ def _warm_credit():
     if not board:
         print("[warm] credit: no board to measure", flush=True)
         return
-    t0, done = time.time(), 0
+    t0, done, misses = time.time(), 0, 0
     for t in board:
         try:
-            # patient, but not unbounded: this shares one gunicorn worker
-            # with every request, and a name that cannot be read in half a
-            # minute is better skipped than left holding a thread
             if _credit_for(t, budget_s=30).get("dd") is not None:
                 done += 1
+                misses = 0
+            else:
+                misses += 1
         except Exception:
-            pass
-        time.sleep(0.5)          # SEC asks for 10 requests/second; this is 2
+            misses += 1
+        # The SEC rate-limits by IP and this instance shares one with
+        # everything else the box does. Walking the whole board while it is
+        # refusing turns a temporary block into a sustained one, and every
+        # live /credit call competes with it — a reader gets "the SEC did
+        # not answer in time" for every company while the warmer is busy
+        # earning that refusal. Stop and let the next boot try.
+        if misses >= 3:
+            print(f"[warm] credit: the SEC refused {misses} in a row after "
+                  f"{done} — stopping rather than pressing", flush=True)
+            return
+        time.sleep(2.0)          # SEC asks for 10/second; this is one per two
     print(f"[warm] credit: {done}/{len(board)} of the board measured in "
           f"{time.time() - t0:.0f}s", flush=True)
 
