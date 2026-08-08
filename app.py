@@ -89,6 +89,7 @@ _state = {
     "restored": False,         # results came from storage, not a scan just run
     "last_progress_ts": None,  # when the running scan last said anything
     "published_preset": None,  # which scheduled-scan preset is on screen
+    "capped_universe": None,   # a page scan was trimmed from this many stocks
 }
 
 
@@ -258,14 +259,29 @@ def _adopt_published(preset: dict) -> bool:
     return True
 
 
-def _load_published(force: bool = False) -> bool:
-    """Adopt the freshest published preset that is newer than what we have."""
+def _load_published(force: bool = False, override_newer: bool = False) -> bool:
+    """Adopt the freshest published preset.
+
+    `force` skips the index cache. `override_newer` additionally
+    replaces results that are newer than the published ones — only
+    ever set when a human explicitly asks for the full scan back.
+    """
     idx = _published_index(force)
     if not idx or not idx.get("presets"):
         return False
     best = max(idx["presets"], key=lambda p: p.get("results_ts") or 0)
     have = float(_state.get("results_ts") or 0)
-    if float(best.get("results_ts") or 0) <= have:
+    # Two different questions, and they were sharing one flag. `force` only
+    # ever meant "skip the index cache". `override_newer` means a human
+    # asked for the published scan back.
+    #
+    # That second case had no way to say yes, and it made a recoverable
+    # state permanent: a 250-stock scan started from the page is NEWER than
+    # the 1,500-stock scheduled scan, so it blocked its own replacement.
+    # Pressing Run once left the site on the smaller result — 0 rows, in
+    # the run that found this — until the next scheduled scan hours later.
+    # Automatic polling must still refuse; only an explicit request wins.
+    if not override_newer and float(best.get("results_ts") or 0) <= have:
         return False
     return _adopt_published(best)
 
@@ -945,7 +961,7 @@ def published_refresh():
     with _lock:
         if _state["status"] == "running":
             return jsonify({"ok": False, "message": "A scan is running."}), 409
-        adopted = _load_published(force=True)
+        adopted = _load_published(force=True, override_newer=True)
     return jsonify({"ok": True, "adopted": adopted,
                     "results_ts": _state.get("results_ts"),
                     "n_results": len(_state.get("results") or [])})
