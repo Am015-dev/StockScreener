@@ -755,12 +755,34 @@ _book = {"ts": 0.0, "data": None}
 BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
 
 
-def _price_book() -> dict:
+def _price_book(fetch: bool = False) -> dict:
+    """Whatever is in memory. Only the warmer passes fetch=True.
+
+    Same rule as the earnings calendar, for the same reason: this is a
+    ~600KB read over the network, and a request that performs it is a
+    request that can take ten seconds. The warmer owns the fetch; every
+    request reads the result or gets nothing and says so.
+    """
     if _book["data"] is not None and time.time() - _book["ts"] < BOOK_TTL:
         return _book["data"]
+    if not fetch:
+        return _book["data"] or {}
+    t0 = time.time()
     data = _published_get("prices.json") or {}
     _book.update(data=data, ts=time.time())
+    print(f"[warm] price book fetched: {len(data)} tickers in "
+          f"{time.time() - t0:.1f}s", flush=True)
     return data
+
+
+def _book_refresher():
+    """Keep the book warm without ever making a request wait for it."""
+    while True:
+        try:
+            _price_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] price book refresh failed: {e}", flush=True)
+        time.sleep(max(300.0, BOOK_TTL * 0.9))
 
 
 @app.route("/check", methods=["POST"])
@@ -768,6 +790,7 @@ def check_trade():
     """What a reader cannot work out from a free screener: how much of this
     trade they already own, whether the earnings date is genuinely verified,
     and whether their book gets wider or just heavier."""
+    _t_start = time.time()
     body = request.get_json(silent=True) or {}
     ticker = str(body.get("ticker") or "").strip().upper()
     if not ticker:
@@ -806,6 +829,7 @@ def check_trade():
         friction_pct=(row or {}).get("friction_pct"))
     res["ok"] = True
     res["book_size"] = len(book)
+    res["ms"] = round((time.time() - _t_start) * 1000)
     res["in_todays_scan"] = row is not None
     return jsonify(res)
 
@@ -996,13 +1020,14 @@ def _warm_check_data():
     except Exception as e:
         print(f"[warm] earnings calendar failed: {e}", flush=True)
     try:
-        book = _price_book()
+        book = _price_book(fetch=True)
         print(f"[warm] price book: {len(book)} tickers", flush=True)
     except Exception as e:
         print(f"[warm] price book failed: {e}", flush=True)
 
 
 threading.Thread(target=_warm_check_data, daemon=True).start()
+threading.Thread(target=_book_refresher, daemon=True).start()
 threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 
