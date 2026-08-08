@@ -65,30 +65,44 @@
 
   {% if b.action %}
   <div class="card act">
+    {% if b.tradeable %}
     <p class="lead">One action today: buy <span class="tk">{{ b.action.ticker }}</span>.</p>
     <p>Buy <span class="num">{{ b.action.shares }}</span> shares of
        {{ b.action.name }} at <span class="num">${{ '%.2f'|format(b.action.price) }}</span>
        — <span class="num">{{ b.action.cost }}</span> in total.</p>
+    {% else %}
+    <p class="lead">Today's paper trade: <span class="tk">{{ b.action.ticker }}</span>.</p>
+    <p class="warn" style="font-weight:600;margin-bottom:.8rem">Not for real money.
+       These rules have not yet earned it — see the record below. This is the trade
+       the tool is putting on the board today so you can watch how it turns out.</p>
+    <p>If you were trading it: buy <span class="num">{{ b.action.shares }}</span> shares
+       of {{ b.action.name }} at
+       <span class="num">${{ '%.2f'|format(b.action.price) }}</span> —
+       <span class="num">{{ b.action.cost }}</span> in total.</p>
+    {% endif %}
     <p>Sell if it falls to <span class="num">${{ '%.2f'|format(b.action.stop) }}</span> —
-       you lose <span class="loss">€{{ '%.2f'|format(b.action.risk_eur) }}</span>.</p>
+       that costs <span class="loss">€{{ '%.2f'|format(b.action.risk_eur) }}</span>.</p>
     <p>Target <span class="num">${{ '%.2f'|format(b.action.target) }}</span> —
-       you make <span class="gain">€{{ '%.2f'|format(b.action.reward_eur) }}</span>.</p>
+       that pays <span class="gain">€{{ '%.2f'|format(b.action.reward_eur) }}</span>.</p>
     <p>
       {% if b.action.earnings_clear %}
-        <span class="ok">✓ Earnings confirmed clear of your trade</span> — the published
-        calendar shows no report in the next 45 days.
+        <span class="ok">✓ No earnings report due</span> in the next 45 days, so nothing
+        scheduled can gap the price through your stop.
       {% else %}
-        <span class="warn">Earnings in {{ b.action.earnings }}</span> — confirmed against
-        the published calendar.
+        <span class="warn">Earnings in {{ b.action.earnings }}</span> — a report can gap
+        the price straight past your stop.
       {% endif %}
     </p>
-    <p class="muted">Why: {{ b.action.why }}.</p>
-    {% if b.action.edge_r is not none %}
-    <p class="tiny">Under these exact rules this setup has been replayed
-      {{ b.action.edge_n }} times on {{ b.action.ticker }} and averaged
-      {{ '%+.2f'|format(b.action.edge_r) }}R. After removing the part of the bet
-      you would already own, it adds {{ '%+.3f'|format(b.action.adds_r) }}R.
-      Costs eat {{ b.action.friction_pct }}% of the target profit.</p>
+    <p class="muted">Why this one: {{ b.action.why }}.</p>
+    {% if b.action.edge_eur is not none %}
+    <p class="muted">Last {{ b.action.edge_n }} times this setup appeared on
+      {{ b.action.ticker }} under these rules it averaged
+      <b>{{ '%+.2f'|format(b.action.edge_eur) }} euro</b> at this position size. Counting
+      only the part of the bet you would not already own,
+      <b>{{ '%+.2f'|format(b.action.adds_eur) }} euro</b>.
+      {% if b.action.friction_eur %}Fees and spread take about
+      €{{ '%.2f'|format(b.action.friction_eur) }} of the €{{ '%.2f'|format(b.action.reward_eur) }}
+      if it works.{% endif %}</p>
     {% endif %}
   </div>
   {% else %}
@@ -147,18 +161,21 @@
   {% if b.also %}
   <div class="card">
     <h2>Also qualified — not today's action</h2>
-    <p class="tiny" style="margin-bottom:.6rem">Ranked by what each adds to a book that
-      already holds the pick above it, not by how good the chart looks on its own.
-      {% if b.concentration.effective_bets %}
-      All {{ b.concentration.n_picks }} qualifying names amount to about
-      {{ b.concentration.effective_bets }} genuinely separate bets.{% endif %}</p>
+    <p class="tiny" style="margin-bottom:.6rem">Ordered by what each would add on top of
+      the one above it — not by how good the chart looks on its own.</p>
     <ul>
       {% for a in b.also %}
       <li>{{ a.ticker }} — {{ a.name }}
-        {% if a.adds_r is not none %}<span class="tiny">adds
-        {{ '%+.3f'|format(a.adds_r) }}R</span>{% endif %}</li>
+        {% if a.adds_eur is not none %}<span class="tiny">adds
+        {{ '%+.2f'|format(a.adds_eur) }} euro</span>{% endif %}</li>
       {% endfor %}
     </ul>
+    {% if b.one_trade %}
+    <p class="tiny" style="margin-top:.7rem"><b>Do not buy all of these.</b>
+      {{ b.one_trade.tickers|join(', ') }} move together — buying
+      {{ b.one_trade.n }} of them is one position in {{ b.one_trade.n }} pieces, and one
+      bad morning takes out every piece.</p>
+    {% endif %}
   </div>
   {% endif %}
 

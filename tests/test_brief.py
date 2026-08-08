@@ -60,6 +60,36 @@ assert a["earnings_clear"] is True
 print(f"action: buy {a['shares']} {a['ticker']} for {a['cost']}, "
       f"risk EUR{a['risk_eur']}, reward EUR{a['reward_eur']}")
 
+# ---- every number a reader sees must be in money, not in R ----
+# "+0.229R" was the most novel figure on the card and the least readable:
+# R is units of planned risk, it is meaningless outside trading, and the
+# page never defined it. Multiplying by the euro risk needs no glossary.
+assert a["edge_eur"] == round(0.28 * 12.86, 2), a["edge_eur"]
+assert a["adds_eur"] == round(0.229 * 12.86, 2), a["adds_eur"]
+assert "adds_r" not in a and "edge_r" not in a, \
+    "R-denominated figures must not reach the card"
+for x in b["also"]:
+    assert "adds_r" not in x, x
+print(f"expectancy in money: EUR{a['edge_eur']} average, EUR{a['adds_eur']} after "
+      f"removing what you already own")
+
+# ---- the card must not tell a reader to buy what it also warns them off ----
+# It said "One action today: buy MAR" and, four inches lower, "do not put
+# real money behind this yet". Both were true; together they were useless.
+assert b["tradeable"] is False, "PF 0.62 cannot read as tradeable"
+passing_b = brief.build(dict(STATE, backtest={"portfolio": {"profit_factor": 1.8,
+                                                            "sortino": 1.2}}))
+assert passing_b["tradeable"] is True
+print("headline follows the evidence: tradeable=False at PF 0.62, True at PF 1.8")
+
+# ---- the concentration finding must arrive as an instruction ----
+withc = brief.build(dict(STATE, concentration={
+    "n_picks": 25, "effective_bets": 13.4,
+    "biggest_cluster": {"n": 3, "tickers": ["WM", "RSG", "WCN"], "mean_corr": 0.85}}))
+assert withc["one_trade"]["tickers"] == ["WM", "RSG", "WCN"], withc["one_trade"]
+assert brief.build(dict(STATE, concentration={"n_picks": 3}))["one_trade"] is None
+print(f"cluster surfaces as a do-not: {withc['one_trade']['tickers']} are one trade")
+
 # the "why" must be a sentence, not a set of ratios
 why = a["why"]
 for jargon in ("RSI", "R:R", "ATR", "reward:risk"):
