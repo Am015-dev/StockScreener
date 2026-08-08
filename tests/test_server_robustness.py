@@ -68,6 +68,34 @@ A._on_partial([{"ticker": "LIVE", "score": 9}], 10, 10,
 assert A._state["results"][0]["ticker"] == "LIVE", "the current scan still writes"
 print("a cancelled scan's rows and log lines are dropped; the new one's are kept")
 
+# and the explanation the reader cancelled to get must survive the restore
+# that follows it. Restoring stored results reports its own status, which
+# overwrote the abandoned-scan verdict with "done" — so the page claimed
+# the scan had finished, which is the opposite of what happened.
+A._state.update(status="running", generation=A._state["generation"],
+                started_at=time.time(), last_progress_ts=time.time() - 999,
+                error=None)
+_restored = {"n": 0}
+_real_snap = A._load_snapshot
+
+
+def _snap_that_reports_done():
+    _restored["n"] += 1
+    A._state.update(status="done", error=None, results=[{"ticker": "OLD"}])
+    return True
+
+
+A._load_snapshot = _snap_that_reports_done
+assert client.post("/cancel").status_code == 200
+A._load_snapshot = _real_snap
+assert _restored["n"] == 1, "the restore did not run"
+st = client.get("/status").get_json()
+assert st["status"] == "error", st["status"]
+assert "abandoned" in (st["error"] or "").lower(), st["error"]
+assert any(r.get("ticker") == "OLD" for r in st.get("results") or []), \
+    "stored results are still worth showing alongside the explanation"
+print("cancelling keeps its explanation even when stored results are restored")
+
 
 # ---- /alert must not run a scan on the web instance ----
 # It ran a full 1,000-stock scan inline in the request thread, on an

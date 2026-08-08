@@ -1425,7 +1425,15 @@ def cancel():
         _state["generation"] = _state.get("generation", 0) + 1
     # Reloading the published board here means a reader trying to escape a
     # hang waits on two network fetches to do it. The poller picks it up.
+    #
+    # The restore below reports its own status, which would overwrite the
+    # explanation the reader cancelled to get. Stored results ARE worth
+    # showing, but not at the cost of the page silently claiming the scan
+    # finished — so the verdict is put back after.
+    why = _state["error"]
     restored = _load_snapshot()
+    with _lock:
+        _state.update(status="error", error=why)
     return jsonify({"ok": True, "restored_previous": bool(restored)})
 
 
