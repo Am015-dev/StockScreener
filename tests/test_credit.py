@@ -153,3 +153,182 @@ assert credit.balance_sheet(mismatch)["total_liabilities"] is None, \
 print("two dates are never subtracted from one another to manufacture a total")
 
 print("\nALL CREDIT-MODEL TESTS PASSED")
+
+# ---- fetching: the cheap endpoint is an optimisation, not the truth ----
+# companyconcept is 19KB per tag against 3.7MB for the whole filer, so it
+# is tried first. But the two are not equivalent: for Ford, companyconcept
+# returns ZERO rows for `Liabilities` while companyfacts returns 139, most
+# recent 2026-03-31. Trusting the cheap one alone made those companies
+# report "cannot assess" while the data sat in the other endpoint.
+CONCEPT = "companyconcept"
+FACTS = "companyfacts"
+
+
+def fake_sec(concept_rows: dict, facts_node: dict | None = None,
+             fail: set = frozenset(), calls: list | None = None):
+    def get_json(url):
+        if calls is not None:
+            calls.append(url)
+        if FACTS in url:
+            if FACTS in fail:
+                raise RuntimeError("companyfacts unavailable")
+            if facts_node is None:
+                raise RuntimeError("no companyfacts")
+            return facts_node
+        tag = url.rsplit("/", 1)[-1].replace(".json", "")
+        if tag in fail:
+            raise RuntimeError("refused")
+        return {"units": concept_rows.get(tag, {})}
+    return get_json
+
+
+ROW = [{"form": "10-Q", "end": "2026-06-27", "val": 275e9}]
+CUR = [{"form": "10-Q", "end": "2026-06-27", "val": 149e9}]
+
+# happy path: the cheap endpoint answers, the big one is never touched
+calls = []
+bs = credit.fetch_balance_sheet(320193, fake_sec(
+    {"Liabilities": {"USD": ROW}, "LiabilitiesCurrent": {"USD": CUR}}, calls=calls))
+assert bs["total_liabilities"] == 275e9 and bs["current_liabilities"] == 149e9
+assert bs["source_endpoint"] == CONCEPT
+assert not any(FACTS in c for c in calls), \
+    "the 3.7MB endpoint must not be fetched when the cheap one answered"
+print(f"cheap endpoint answers in {len(calls)} small calls; the 3.7MB one is not touched")
+
+# the Ford case: concept present but EMPTY, facts has the data
+calls = []
+ford_facts = {"facts": {"us-gaap": {
+    "Liabilities": {"units": {"USD": [{"form": "10-Q", "end": "2026-03-31",
+                                       "val": 244.95e9}]}},
+    "LiabilitiesCurrent": {"units": {"USD": [{"form": "10-Q", "end": "2026-03-31",
+                                              "val": 106.7e9}]}}}}}
+bs = credit.fetch_balance_sheet(37996, fake_sec(
+    {"Liabilities": {"USD": []}, "LiabilitiesCurrent": {"USD": []}},
+    facts_node=ford_facts, calls=calls))
+assert bs["total_liabilities"] == 244.95e9, bs
+assert bs["source_endpoint"] == FACTS
+assert any(FACTS in c for c in calls), "an empty cheap response must fall through"
+print("an empty companyconcept response falls through to companyfacts (the Ford case)")
+
+# an empty unit list is a MISS, not a zero
+bs = credit.fetch_balance_sheet(1, fake_sec({"Liabilities": {"USD": []}}))
+assert bs["total_liabilities"] is None
+assert "Liabilities" in bs["tags_failed"], bs["tags_failed"]
+print("an empty unit list counts as a failed tag, never as a balance of zero")
+
+# both endpoints down: refuse, do not invent
+bs = credit.fetch_balance_sheet(1, fake_sec({}, fail={"Liabilities",
+                                                      "LiabilitiesCurrent", FACTS}))
+assert bs["total_liabilities"] is None and bs["current_liabilities"] is None
+r = credit.report("X", 1e11, rising, bs["current_liabilities"], bs["total_liabilities"])
+assert r["dd"] is None and "Cannot assess" in r["verdict"]
+print("with both endpoints refusing, the report refuses too")
+
+# a partial outage must not produce a half-built answer
+bs = credit.fetch_balance_sheet(1, fake_sec(
+    {"LiabilitiesCurrent": {"USD": CUR}}, fail={"Liabilities", FACTS}))
+assert bs["current_liabilities"] == 149e9
+assert bs["total_liabilities"] is None
+assert credit.default_point(bs["current_liabilities"],
+                            bs["total_liabilities"]) is None
+print("half a balance sheet yields no default point — the missing half is not assumed")
+
+print("\nALL SEC-FETCH TESTS PASSED")
+
+
+# ---- the share count: market capitalisation without a market data feed ----
+# Equity value is shares x last close. The share count is the only part of
+# that which has to come from filings, and it is the part most likely to be
+# silently wrong: Ford's cover-page tag has been frozen at its 2011 share
+# register for fifteen years and the SEC endpoint still returns it without
+# complaint. Every case below is taken from a live response.
+TODAY = "2026-08-08"
+
+
+def dei_facts(rows, gaap_rows=None):
+    node = {"dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": rows}}}}
+    if gaap_rows is not None:
+        node["us-gaap"] = {"WeightedAverageNumberOfSharesOutstandingBasic":
+                           {"units": {"shares": gaap_rows}}}
+    return {"facts": node}
+
+
+CURRENT = [{"form": "10-Q", "end": "2026-07-17", "val": 14594180000}]
+
+# happy path: the cover-page count is current, and one 19KB call settles it
+calls = []
+s = credit.shares_outstanding(320193, fake_sec(
+    {"EntityCommonStockSharesOutstanding": {"shares": CURRENT}}, calls=calls),
+    today=TODAY)
+assert s["shares"] == 14594180000, s
+assert s["tag"] == "dei:EntityCommonStockSharesOutstanding"
+assert not any(FACTS in c for c in calls), \
+    "the 3.7MB endpoint must not be fetched when the cheap one answered"
+print(f"share count: cover-page tag settles it in {len(calls)} small call")
+
+# the Coca-Cola case: companyconcept returns ZERO rows, companyfacts is current
+calls = []
+s = credit.shares_outstanding(21344, fake_sec(
+    {"EntityCommonStockSharesOutstanding": {"shares": []}},
+    facts_node=dei_facts([{"form": "10-Q", "end": "2026-04-28",
+                           "val": 4302482418}]), calls=calls), today=TODAY)
+assert s["shares"] == 4302482418, s
+assert any(FACTS in c for c in calls), "an empty cheap response must fall through"
+print("share count: an empty companyconcept falls through to companyfacts (Coca-Cola)")
+
+# the Ford case: the cover-page count is fifteen years stale. It must be
+# passed over rather than used, and the substitute must be named.
+s = credit.shares_outstanding(37996, fake_sec(
+    {"EntityCommonStockSharesOutstanding": {
+        "shares": [{"form": "10-Q", "end": "2011-04-28", "val": 3727332952}]},
+     "WeightedAverageNumberOfSharesOutstandingBasic": {
+        "shares": [{"form": "10-Q", "end": "2026-03-31", "val": 3991000000}]}}),
+    today=TODAY)
+assert s["shares"] == 3991000000, s
+assert s["tag"].endswith("WeightedAverageNumberOfSharesOutstandingBasic"), s
+assert s["as_of"] == "2026-03-31"
+print("share count: a 2011 register is passed over for a current tag, and named (Ford)")
+
+# both stale: refuse, and carry the date so the refusal can say why
+s = credit.shares_outstanding(37996, fake_sec(
+    {"EntityCommonStockSharesOutstanding": {
+        "shares": [{"form": "10-Q", "end": "2011-04-28", "val": 3727332952}]}},
+    facts_node=dei_facts([{"form": "10-Q", "end": "2011-04-28", "val": 3727332952}],
+                         gaap_rows=[{"form": "10-K", "end": "2014-12-31",
+                                     "val": 3900000000}])), today=TODAY)
+assert s["shares"] is None, s
+assert s["stale_as_of"] == "2011-04-28", s
+print("share count: with every tag stale it refuses, and reports the date it refused on")
+
+# the boundary is a date, not a vibe
+edge = [{"form": "10-K", "end": "2025-06-04", "val": 1000}]      # 430 days
+over = [{"form": "10-K", "end": "2025-06-03", "val": 1000}]      # 431 days
+assert credit._days_old("2025-06-04", TODAY) == credit.SHARES_MAX_AGE_DAYS
+assert credit.shares_outstanding(1, fake_sec(
+    {"EntityCommonStockSharesOutstanding": {"shares": edge}}),
+    today=TODAY)["shares"] == 1000
+assert credit.shares_outstanding(1, fake_sec(
+    {"EntityCommonStockSharesOutstanding": {"shares": over}},
+    facts_node=dei_facts(over)), today=TODAY)["shares"] is None
+print(f"share count: {credit.SHARES_MAX_AGE_DAYS} days old is accepted, "
+      f"{credit.SHARES_MAX_AGE_DAYS + 1} is not")
+
+# treasury shares are not outstanding shares. Coca-Cola has issued 7.04bn
+# against 4.30bn outstanding, so tagging the wrong one overstates market
+# capitalisation by 64% and moves the company into a safer band than it is in.
+assert not any(tag == "CommonStockSharesIssued" for _, tag in credit.SHARES_TAGS), \
+    "issued shares include treasury stock and must never stand in for outstanding"
+print("share count: issued shares are never substituted for outstanding shares")
+
+# nothing available anywhere: a clean refusal, not an exception
+s = credit.shares_outstanding(1, fake_sec({}, fail={
+    "EntityCommonStockSharesOutstanding",
+    "WeightedAverageNumberOfSharesOutstandingBasic", FACTS}))
+assert s["shares"] is None and s["stale_as_of"] is None, s
+
+# and a refused share count must leave the report refusing, never guessing
+r = credit.report("F", None, rising, 106.7e9, 244.95e9)
+assert r["dd"] is None and "market" in " ".join(r["missing"]).lower(), r
+print("share count: an unavailable count refuses the whole report, it does not guess")
+
+print("\nALL SHARE-COUNT TESTS PASSED")

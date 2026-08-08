@@ -24,6 +24,7 @@ import backtest as backtest_mod
 import brief
 import db as market_db
 import cache_store
+import credit
 import journal
 import market_clock
 import portfolio_import
@@ -832,6 +833,119 @@ def check_trade():
     res["ms"] = round((time.time() - _t_start) * 1000)
     res["in_todays_scan"] = row is not None
     return jsonify(res)
+
+
+# ---- credit standing, from filings the SEC gives away ----
+CREDIT_TTL = float(os.environ.get("CREDIT_TTL", "86400"))   # filings are quarterly
+_cik_map = {"ts": 0.0, "data": None}
+
+
+def _sec_json(url: str):
+    import requests as rq
+    r = rq.get(url, headers={"User-Agent": screener.SEC_UA}, timeout=15)
+    if r.status_code != 200:
+        raise RuntimeError(f"SEC {r.status_code}")
+    return r.json()
+
+
+def _cik_for(ticker: str) -> int | None:
+    """Ticker -> CIK, from the same SEC file the universe already uses."""
+    if _cik_map["data"] is None or time.time() - _cik_map["ts"] > 7 * 86400:
+        try:
+            d = _sec_json(screener.SEC_TICKERS_URL)
+            fields = [f.lower() for f in d.get("fields", [])]
+            ti, ci = fields.index("ticker"), fields.index("cik")
+            _cik_map.update(
+                data={row[ti].upper(): int(row[ci]) for row in d.get("data", [])},
+                ts=time.time())
+        except Exception:
+            _cik_map.update(data=_cik_map["data"] or {}, ts=time.time())
+    return (_cik_map["data"] or {}).get(ticker.upper())
+
+
+@app.route("/credit", methods=["POST"])
+def credit_report():
+    """How far a company is from not being able to pay its debts.
+
+    The paid version of this report maps the model onto an empirical
+    default frequency using a proprietary default database. That step is
+    absent here and no probability is emitted in its place — see
+    credit.py. What is returned is the distance itself, its drivers, and
+    where it sits among the other names on today's board, which is the
+    number a reader acts on and the one that needs no calibration.
+    """
+    body = request.get_json(silent=True) or {}
+    ticker = str(body.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"ok": False, "error": "no ticker given"}), 400
+
+    key = f"credit:{ticker}"
+    hit, cached = cache_store.fetch(key, CREDIT_TTL)
+    if hit and isinstance(cached, dict):
+        cached["cached"] = True
+        return jsonify(cached)
+
+    cik = _cik_for(ticker)
+    if cik is None:
+        return jsonify({"ok": True, "ticker": ticker, "dd": None,
+                        "verdict": "Not a US filer — SEC XBRL covers US listings "
+                                   "only, so this company's filings are not "
+                                   "available here.",
+                        "missing": ["SEC filings"]})
+    try:
+        bs = credit.fetch_balance_sheet(cik, _sec_json)
+    except Exception as e:
+        return jsonify({"ok": True, "ticker": ticker, "dd": None,
+                        "verdict": f"Could not read the filings ({type(e).__name__}).",
+                        "missing": ["SEC filings"]})
+
+    row = next((r for r in (_state.get("results") or [])
+                if (r.get("ticker") or "").upper() == ticker), None)
+    book = _price_book()
+    closes = (row or {}).get("spark") or book.get(ticker)
+    mktcap = (row or {}).get("mktcap_b")
+    equity = float(mktcap) * 1e9 if mktcap else None
+    shares = {}
+    if equity is None and closes:
+        # shares x last close, both free — without this the report only
+        # covers whatever is on today's board, which is not a product.
+        # A refused share count leaves equity None and the report says so;
+        # it does not fall back to a stale register.
+        try:
+            shares = credit.shares_outstanding(cik, _sec_json)
+            if shares.get("shares"):
+                equity = shares["shares"] * float(closes[-1])
+        except Exception:
+            shares = {}
+
+    rep = credit.report(ticker, equity, closes, bs["current_liabilities"],
+                        bs["total_liabilities"], as_of=bs.get("as_of"))
+    rep["ok"] = True
+    rep["source"] = bs.get("source")
+    rep["endpoint"] = bs.get("source_endpoint")
+    rep["shares_as_of"] = shares.get("as_of")
+    rep["shares_tag"] = shares.get("tag")
+    if shares.get("stale_as_of") and equity is None:
+        rep["verdict"] = (
+            "This company last reported a share count on "
+            f"{shares['stale_as_of']}, which is too old to price it today, "
+            "so its market value cannot be established from filings alone.")
+
+    # peers: every other name on today's board with a computable distance
+    if rep.get("dd") is not None:
+        peers = []
+        for other in (_state.get("results") or []):
+            t2 = (other.get("ticker") or "").upper()
+            if t2 == ticker:
+                continue
+            h2, c2 = cache_store.fetch(f"credit:{t2}", CREDIT_TTL)
+            if h2 and isinstance(c2, dict) and c2.get("dd") is not None:
+                peers.append(c2["dd"])
+        rep["peers_n"] = len(peers)
+        rep["percentile"] = credit.percentile(rep["dd"], peers)
+    if rep.get("dd") is not None:
+        cache_store.put(key, rep)
+    return jsonify(rep)
 
 
 @app.route("/limits")

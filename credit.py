@@ -35,6 +35,7 @@ nothing.
 from __future__ import annotations
 
 import math
+from datetime import date
 from statistics import NormalDist
 
 _N = NormalDist().cdf
@@ -250,4 +251,178 @@ def balance_sheet(facts: dict) -> dict:
             out["total_liabilities"] = total
             out["as_of"] = lse["end"]
             out["source"] = "assets minus equity"
+    return out
+
+
+# --------------------- fetching, with the IO injected ---------------------
+# The whole-filer endpoint (companyfacts) is 3.7MB for Apple. The
+# per-concept endpoint is 19KB, so four small calls beat one large one by
+# a factor of fifty, and the four are the only tags this model needs.
+#
+# The fetcher is injected rather than imported so the assembly logic can
+# be tested without a network: every failure mode below — a missing tag, a
+# refusing endpoint, mismatched period ends — is reachable offline.
+# Shares outstanding lives in the `dei` taxonomy, not `us-gaap`. With it,
+# market capitalisation is shares x the last close and the report works for
+# any US filer — without it the model only covers whatever happens to be on
+# today's board, which is not a product.
+#
+# Two tags, in this order, because neither is reliable alone:
+#
+#   dei:EntityCommonStockSharesOutstanding is the 10-K/10-Q cover page
+#   count — the closest thing to "shares outstanding today". Coca-Cola
+#   reports it currently (4.30bn, 2026-04-28). Ford STOPPED reporting it
+#   in 2011 and the endpoint still cheerfully returns that number.
+#
+#   us-gaap:WeightedAverageNumberOfSharesOutstandingBasic is a period
+#   average rather than a point-in-time count, so it lags a buyback by a
+#   quarter, but Ford tags it currently (3.99bn, 2026-03-31) and it is
+#   within 1% of the cover-page count wherever both exist.
+#
+# CommonStockSharesIssued is deliberately NOT here: it counts treasury
+# shares. Coca-Cola issued 7.04bn against 4.30bn outstanding, so using it
+# would overstate market capitalisation by 64% and quietly move every
+# company that tags it into a safer band than it belongs in.
+SHARES_TAGS = (("dei", "EntityCommonStockSharesOutstanding"),
+               ("us-gaap", "WeightedAverageNumberOfSharesOutstandingBasic"))
+
+# A share count is an input to today's market capitalisation, so an old
+# one is not a weaker answer — it is a wrong one. Ford's stale tag would
+# have priced the company off its 2011 share register. Annual filers
+# report once a year and file up to ~90 days after year end, so anything
+# inside ~14 months is a live number and anything beyond it is refused.
+SHARES_MAX_AGE_DAYS = 430
+
+BALANCE_TAGS = ("LiabilitiesCurrent", "Liabilities",
+                "LiabilitiesAndStockholdersEquity", "StockholdersEquity",
+                "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest")
+
+
+def fetch_balance_sheet(cik: int, get_json) -> dict:
+    """Assemble the minimum balance sheet from SEC XBRL.
+
+    get_json(url) -> dict, or raises.
+
+    Two endpoints, cheap one first. companyconcept is 19KB per tag against
+    3.7MB for the whole filer, so four small calls normally beat one large
+    one by a factor of fifty. But they are not equivalent: for Ford,
+    companyconcept returns ZERO rows for `Liabilities` while companyfacts
+    returns 139 of them, most recent 2026-03-31. The cheap endpoint is
+    silently incomplete for some filers, and trusting it alone meant those
+    companies reported "cannot assess" while the data sat in the other
+    endpoint.
+
+    So the cheap path is an optimisation, not the source of truth: if it
+    fails to produce a usable balance sheet, the authoritative endpoint is
+    fetched before giving up. A tag that neither route can supply is
+    absent, and balance_sheet() refuses rather than guessing.
+    """
+    facts: dict = {"facts": {"us-gaap": {}}}
+    fetched, failed = [], []
+    for tag in BALANCE_TAGS:
+        url = (f"https://data.sec.gov/api/xbrl/companyconcept/"
+               f"CIK{int(cik):010d}/us-gaap/{tag}.json")
+        try:
+            d = get_json(url)
+        except Exception:
+            failed.append(tag)
+            continue
+        units = (d or {}).get("units") or {}
+        if any(rows for rows in units.values()):
+            facts["facts"]["us-gaap"][tag] = {"units": units}
+            fetched.append(tag)
+        else:
+            failed.append(tag)          # present but empty — see above
+    out = balance_sheet(facts)
+    out["tags_fetched"] = fetched
+    out["tags_failed"] = failed
+    out["source_endpoint"] = "companyconcept"
+    if out["total_liabilities"] is not None and out["current_liabilities"] is not None:
+        return out
+
+    try:
+        cf = get_json(f"https://data.sec.gov/api/xbrl/companyfacts/"
+                      f"CIK{int(cik):010d}.json")
+    except Exception:
+        return out
+    full = balance_sheet(cf if isinstance(cf, dict) else {})
+    full["tags_fetched"] = fetched
+    full["tags_failed"] = failed
+    full["source_endpoint"] = "companyfacts"
+    return full
+
+
+def _newest(rows) -> dict | None:
+    best = None
+    for r in rows or []:
+        if r.get("val") and r.get("end"):
+            if best is None or r["end"] > best["end"]:
+                best = r
+    return best
+
+
+def _days_old(end: str, today: str) -> int | None:
+    """Age in days of an XBRL period end, both as YYYY-MM-DD."""
+    try:
+        a = date(*(int(p) for p in end.split("-")))
+        b = date(*(int(p) for p in today.split("-")))
+    except Exception:
+        return None
+    return (b - a).days
+
+
+def shares_outstanding(cik: int, get_json, today: str | None = None) -> dict:
+    """Current share count, or an explicit refusal.
+
+    Returns {"shares", "as_of", "tag", "stale_as_of"}. `shares` is None
+    unless a count was found AND it is recent enough to describe the
+    company as it trades now; when a count was found but is too old,
+    `stale_as_of` carries its date so the caller can say why it refused
+    rather than reporting a bare absence.
+
+    Both tags are tried on the cheap per-concept endpoint first and the
+    whole-filer endpoint second, for the same reason the balance sheet
+    does it: companyconcept returns ZERO rows for Coca-Cola's cover-page
+    share count while companyfacts returns the current one.
+    """
+    today = today or date.today().isoformat()
+    out = {"shares": None, "as_of": None, "tag": None, "stale_as_of": None}
+    facts = None
+
+    for tax, tag in SHARES_TAGS:
+        best = None
+        try:
+            d = get_json(f"https://data.sec.gov/api/xbrl/companyconcept/"
+                         f"CIK{int(cik):010d}/{tax}/{tag}.json")
+            for rows in ((d or {}).get("units") or {}).values():
+                cand = _newest(rows)
+                if cand and (best is None or cand["end"] > best["end"]):
+                    best = cand
+        except Exception:
+            pass
+
+        if best is None:
+            if facts is None:
+                try:
+                    facts = get_json(f"https://data.sec.gov/api/xbrl/companyfacts/"
+                                     f"CIK{int(cik):010d}.json") or {}
+                except Exception:
+                    facts = {}
+            node = ((facts.get("facts") or {}).get(tax) or {}).get(tag) or {}
+            for rows in (node.get("units") or {}).values():
+                cand = _newest(rows)
+                if cand and (best is None or cand["end"] > best["end"]):
+                    best = cand
+
+        if best is None:
+            continue
+        age = _days_old(best["end"], today)
+        if age is not None and age > SHARES_MAX_AGE_DAYS:
+            # remember the first stale hit so the refusal can name a date,
+            # but keep looking: Ford's cover-page tag froze in 2011 while
+            # its weighted-average tag is current.
+            out["stale_as_of"] = out["stale_as_of"] or best["end"]
+            continue
+        return {"shares": float(best["val"]), "as_of": best["end"],
+                "tag": f"{tax}:{tag}", "stale_as_of": None}
     return out
