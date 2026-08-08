@@ -153,6 +153,44 @@ print(f"a pick whose correlation cannot be measured is treated as "
       f"{cc.SAME_TRADE:g} correlated — the conservative reading, so it cannot "
       f"jump the queue by being unknown")
 
+# ---- a MEASURED losing record must never head the board ----
+# A live scan ranked a name first with a score of 77 whose own replay
+# under those exact rules was -0.15R over fifteen occurrences. The score
+# rates the shape of a setup; it cannot see what happened last time.
+def edge_mixed(t):
+    if t == "SEMI1":
+        return (-0.15, 15, "this stock")     # top score, losing record
+    if t == "LONE2":
+        return None                           # never measured
+    return (0.30, 40, "rule set")
+
+
+mixed = cc.marginal([{"ticker": t, "score": 90 - i} for i, t in enumerate(order)],
+                    corr, edge_mixed)
+ordered = sorted(mixed, key=cc.order_key)
+assert ordered[0]["ticker"] != "SEMI1", \
+    "a stock with a measured losing record must not be the top pick"
+assert ordered[-1]["ticker"] == "SEMI1", ordered[-1]["ticker"]
+assert mixed[0]["edge_negative"] is True and mixed[0]["ticker"] == "SEMI1"
+print(f"a measured loser scoring {mixed[0]['score']} moves from #1 to last, "
+      f"and is flagged edge_negative")
+
+# absence of evidence must not be punished like evidence of loss
+pos = [r["ticker"] for r in ordered]
+assert pos.index("LONE2") < pos.index("SEMI1"), \
+    "an unmeasured setup must rank ABOVE a measured losing one"
+assert ordered[0]["mpc_r"] is not None and ordered[0]["mpc_r"] > 0
+print(f"unmeasured LONE2 sits at #{pos.index('LONE2') + 1}, above the measured "
+      f"loser at #{pos.index('SEMI1') + 1} — no evidence is not evidence of loss")
+
+# a positive record is never displaced by an unmeasured one
+assert pos.index("SEMI2") < pos.index("LONE2") or ordered[0]["mpc_r"] > 0
+s_mixed = cc.summarise(mixed, corr, groups)
+assert s_mixed["losing_edge"] == 1, s_mixed
+assert s_mixed["unverified_edge"] == 1, s_mixed
+print(f"summary counts them separately: {s_mixed['losing_edge']} losing, "
+      f"{s_mixed['unverified_edge']} unmeasured")
+
 # ---- the summary a reader actually sees ----
 enriched = cc.marginal(rows, corr, edge_flat)
 s = cc.summarise(enriched, corr, groups)

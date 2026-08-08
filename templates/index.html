@@ -979,6 +979,10 @@ function renderTopPicks(picks, near) {
         <div><span data-tip="Average analyst 12-month price target vs today's price.">their target</span> ${p.analyst_target_up_pct == null ? "—" : esc((p.analyst_target_up_pct > 0 ? "+" : "") + p.analyst_target_up_pct) + "%"}</div>
       </div>
       ${sparkSVG(p, 260, 64)}
+      ${p.edge_negative ? `<div class="warn" style="color:var(--red);font-weight:620">` +
+        `⛔ Your own rules lost money on this setup: ${esc(p.edge_r)}R average over ` +
+        `${esc(p.edge_n)} past occurrences on this stock. The score rates the shape ` +
+        `of the setup and cannot see that.</div>` : ""}
       ${p.why_not ? `<div class="warn">Fell short: ${esc(p.why_not)}</div>` : ""}
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
       ${flagText(p.flags, "warn") ? `<div class="warn">⚠ ${esc(flagText(p.flags, "warn"))}</div>` : ""}
@@ -1274,10 +1278,17 @@ function renderConcentration(c, rows) {
   parts.push(`Measured on ${esc(c.corr_days)} sessions of daily moves across ` +
     `${esc(c.n_measured)} of the ${esc(n)} picks. Two names count as the same ` +
     `trade at correlation ${esc(c.same_trade_threshold)} or above.`);
+  if (c.losing_edge)
+    parts.push(`<span style="color:var(--red);font-weight:600">${esc(c.losing_edge)} of these ` +
+      `picks have a LOSING record under your own rules</span> — the last time this setup ` +
+      `appeared on that stock with these settings, the replay lost money. They are shown ` +
+      `with a negative "Adds (R)" and sorted to the bottom, never to the top. The Score ` +
+      `rates the shape of a setup; it cannot see what happened last time.`);
   if (c.unverified_edge)
     parts.push(`<span style="color:var(--amber)">${esc(c.unverified_edge)} pick(s) ` +
       `have no measured track record under these rules, so they carry no "Adds (R)" ` +
-      `figure and are not ranked by it — an unmeasured edge is not an average one.</span>`);
+      `figure and are not ranked by it — an unmeasured edge is not an average one. ` +
+      `They sit above the losing ones: no evidence is not the same as evidence of loss.</span>`);
   document.getElementById("concBody").innerHTML = parts.join(" ");
 
   // the re-ranking: what the Score says vs what the contribution says
@@ -1756,6 +1767,10 @@ async function refresh() {
         let cls = k === "RR" ? "rr" : k === "score" ? "score" : k === "flags" ? "notes" : "";
         let style = k === "score" ? ` style="color:${scoreColor(row.score)}"` :
                     k === "fits_risk_budget" && row[k] === false ? ` style="color:var(--red)"` : "";
+        // a measured losing record is the single most important thing on
+        // the row, and it must not be readable as just another small number
+        if (k === "mpc_r" && row.mpc_r != null)
+          style = ` style="color:${row.mpc_r < 0 ? "var(--red)" : "var(--green)"};font-weight:640"`;
         if (k === "hist" && row[k]) {
           const pct = parseFloat(row[k]);
           style = ` style="color:${pct >= 50 ? "var(--green)" : pct >= 30 ? "var(--amber)" : "var(--red)"}"`;
