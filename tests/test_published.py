@@ -216,4 +216,26 @@ assert again == 0, f"re-adopting the same published file added {again} duplicate
 assert journal.snapshot()["n_total"] == before
 print("re-adopting the same published file adds nothing — restore is idempotent")
 
+# ---- a small page scan must never permanently replace the big one ----
+# Scans started from the page are capped so they finish on a 512MB
+# instance. That makes them NEWER than the 1,500-stock scheduled scan,
+# which meant they blocked their own replacement: pressing Run once left
+# the site showing the smaller result with no route back to the larger
+# one until the next scheduled run. Automatic polling still respects the
+# timestamp; an explicit request must not.
+requests.get = fake_get
+app_mod._published.update(ts=0, index=None)
+app_mod._state["results"] = []
+app_mod._state["results_ts"] = time.time() + 86400   # a "newer" quick scan
+app_mod._state["capped_universe"] = 1500
+
+assert app_mod._load_published(force=True) is False, \
+    "the background poll must still not overwrite fresher local results"
+app_mod._published.update(ts=0, index=None)
+assert app_mod._load_published(force=True, override_newer=True) is True, \
+    "an explicit request for the published scan must be honoured whatever its age"
+assert len(app_mod._state["results"]) > 0, "the full scan must actually come back"
+print(f"a capped page scan is recoverable: forced refresh restored "
+      f"{len(app_mod._state['results'])} picks over a newer local result")
+
 print("\nALL PUBLISHED-RESULTS TESTS PASSED")

@@ -451,6 +451,14 @@
   <section>
     <h2>All results <span id="resultCount"></span></h2>
     <div id="verdict" style="display:none;font-size:1.05rem;font-weight:600;margin:0 0 .6rem"></div>
+    <div id="cappedBox" style="display:none;margin:0 0 .8rem;background:rgba(232,182,76,.08);border:1px solid var(--amber);border-radius:var(--r);padding:.8rem 1rem">
+      <div id="cappedText" style="font-weight:620;color:var(--amber)"></div>
+      <div class="hint" style="margin:.3rem 0 .5rem">Scans started from this page are
+        limited so they finish on this server — the full universe is scanned on a
+        schedule. This did not delete anything.</div>
+      <button type="button" class="ghost" id="restorePublished"
+        style="font-size:.82rem;padding:.35rem .9rem">↩ Show the full scheduled scan again</button>
+    </div>
     <div id="concBox" style="display:none;margin:0 0 .8rem;background:rgba(42,120,214,.07);border:1px solid var(--accent);border-radius:var(--r);padding:.8rem 1rem">
       <div id="concHead" style="font-weight:640"></div>
       <div id="concBody" class="hint" style="margin:.3rem 0 0"></div>
@@ -788,6 +796,18 @@ function collectParams() {
   p.holdings = parseHoldings(document.getElementById("holdingsText").value);
   return p;
 }
+
+document.getElementById("restorePublished").addEventListener("click", async (ev) => {
+  const b = ev.target;
+  b.disabled = true; b.textContent = "Loading the full scan…";
+  try {
+    const r = await (await fetch("/published/refresh", {method: "POST"})).json();
+    if (!r.adopted) b.textContent = "No published scan available right now";
+    else { b.textContent = "↩ Show the full scheduled scan again"; await refresh(); }
+  } catch (e) {
+    b.textContent = "Could not reach the published scan";
+  } finally { b.disabled = false; }
+});
 
 document.getElementById("csvFile").addEventListener("change", async (ev) => {
   const file = ev.target.files[0];
@@ -1629,6 +1649,18 @@ async function refresh() {
   // profit factor 1.62 taking every signal alone, 0.62 through a five-slot
   // book, with no change to any individual trade. The difference was
   // entirely that signals arrive in clusters.
+  // A page scan is trimmed to finish on this server, so it can return
+  // fewer rows than the scheduled full scan it replaced. Say so, and keep
+  // the way back one click away — without this, pressing Run once left the
+  // site on the smaller result with no route to the bigger one.
+  const capBox = document.getElementById("cappedBox");
+  if (s.capped_universe && s.status === "done") {
+    capBox.style.display = "block";
+    document.getElementById("cappedText").textContent =
+      `⚠ Showing a quick scan of the top ${esc(s.universe_size || 0)} stocks ` +
+      `(you asked for ${esc(s.capped_universe)}) — ${(s.results || []).length} result(s).`;
+  } else capBox.style.display = "none";
+
   renderConcentration(s.concentration, s.results || []);
 
   const verdict = document.getElementById("verdict");
