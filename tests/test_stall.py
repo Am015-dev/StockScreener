@@ -20,9 +20,9 @@ for k, f in (("MARKET_DB", "m.db"), ("JOURNAL_DB", "j.db"),
              ("SCREENER_CACHE_DB", "c.db"), ("RESULTS_CSV", "r.csv")):
     os.environ[k] = os.path.join(TMP, f)
 os.environ["STALL_AFTER_S"] = "2"
-# The suite is hermetic. Warmers reach Nasdaq, GitHub and the SEC at
-# import time, which is latency and a hang risk in CI, not a result
-# any assertion here depends on.
+# Hermetic: the app's warmers reach Nasdaq, the SEC and GitHub, and
+# its startup adoption fetches the real published index and caches
+# it — which a stub installed later can no longer displace.
 os.environ["SKIP_WARM"] = "1"
 sys.path.insert(0, str(ROOT))
 

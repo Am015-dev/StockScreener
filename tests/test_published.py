@@ -18,6 +18,10 @@ TMP = tempfile.mkdtemp(prefix="published_")
 for k, f in (("MARKET_DB", "market.db"), ("JOURNAL_DB", "journal.db"),
              ("SCREENER_CACHE_DB", "cache.db"), ("RESULTS_CSV", "results.csv")):
     os.environ[k] = os.path.join(TMP, f)
+# Hermetic: the app's warmers reach Nasdaq, the SEC and GitHub, and
+# its startup adoption fetches the real published index and caches
+# it — which a stub installed later can no longer displace.
+os.environ["SKIP_WARM"] = "1"
 sys.path.insert(0, str(ROOT))
 
 import journal
@@ -92,6 +96,12 @@ import requests
 requests.get = fake_get
 importlib.reload(app_mod)
 requests.get = fake_get
+# The module skips its own startup adoption under SKIP_WARM (see app.py):
+# without that, importing it before this stub existed fetched the real
+# published index and cached it, and the fixture below never won. Driving
+# it here exercises exactly the same code path, against known data.
+fetches.clear()
+assert app_mod._load_published(), "startup adoption found nothing to adopt"
 
 # ---- startup adopts the freshest published preset, with no scan ----
 st = app_mod._state
@@ -174,10 +184,6 @@ with open(os.path.join(pubdir, "balanced.json"), "w") as f:
     json.dump(local, f)
 
 os.environ["PUBLISHED_DIR"] = pubdir
-# The suite is hermetic. Warmers reach Nasdaq, GitHub and the SEC at
-# import time, which is latency and a hang risk in CI, not a result
-# any assertion here depends on.
-os.environ["SKIP_WARM"] = "1"
 
 
 def must_not_call(*a, **k):
@@ -186,6 +192,9 @@ def must_not_call(*a, **k):
 
 requests.get = must_not_call
 importlib.reload(app_mod)
+# same reason as above: startup adoption is driven explicitly under
+# SKIP_WARM, and this is the path a restart takes
+assert app_mod._load_published(force=True, override_newer=True)
 st3 = app_mod._state
 assert st3["status"] == "done", st3["status"]
 assert len(st3["results"]) == 6, len(st3["results"])
@@ -196,6 +205,7 @@ print("results shipped with the build load on startup, with zero network calls")
 shutil.rmtree(pubdir)
 requests.get = fake_get
 importlib.reload(app_mod)
+assert app_mod._load_published(force=True, override_newer=True)
 assert app_mod._state["published_preset"] == "relaxed", \
     "with nothing shipped locally, the network feed must still be used"
 print("no local copy — falls back to the network feed as before")
