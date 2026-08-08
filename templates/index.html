@@ -238,6 +238,9 @@
   tr.blockedrow > td { opacity: .72; }
   tr.blockedrow > td:first-child::after { content: " ⛔"; }
   td.blockedcell { color: var(--amber); font-weight: 620; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--accent); }
+  th.sorted { color: var(--accent); }
   .empty { color: var(--ink-3); font-style: italic; }
   .tablewrap { overflow-x: auto; }
   .hint { font-size: .8125rem; color: var(--ink-2); margin-top: var(--sp-2); }
@@ -745,6 +748,10 @@ function restoreLocal() {
 }
 let DEFAULTS = null, SECTORS = [];
 let poller = null;
+// Table sort. Null means the scan's own order, which is the ranking the
+// tool stands behind — a sort is the reader overriding it, so it is not
+// persisted across reloads and the header says which column is active.
+let sortKey = null, sortDesc = true;
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({
@@ -1665,6 +1672,23 @@ async function refresh() {
   } else { ps.style.display = "none"; }
 
   const res = document.getElementById("results");
+  // one delegated listener, attached once — the table is rewritten on every
+  // poll, so per-header listeners would leak on a live scan
+  if (!res.dataset.sortWired) {
+    res.dataset.sortWired = "1";
+    res.addEventListener("click", ev => {
+      const th = ev.target.closest("th[data-sort]");
+      if (!th) return;
+      const k = th.dataset.sort;
+      if (sortKey === k && sortDesc) sortDesc = false;
+      else if (sortKey === k) { sortKey = null; sortDesc = true; }  // 3rd click restores
+      else { sortKey = k; sortDesc = true; }
+      // re-render through the normal path rather than duplicating the
+      // table builder: /status is a small in-memory read and this keeps
+      // one code path for the table, sorted or not
+      refresh();
+    });
+  }
   const count = document.getElementById("resultCount");
   const csv = document.getElementById("csvLink");
   if (s.results && s.results.length) {
@@ -1689,13 +1713,32 @@ async function refresh() {
     // blocked setups are shown in the same table, at the top, marked and
     // unscored — never omitted, never scored as if they had passed
     const blocked = (s.pending || []).map(r => Object.assign({}, r, {__blocked: true}));
-    const allRows = blocked.concat(s.results);
+    // Sorting reorders the PICKS only. Blocked rows stay pinned to the top
+    // whatever the sort — they are not ranked, and letting a sort bury them
+    // would undo the reason they were moved into this table.
+    let picks = s.results.slice();
+    if (sortKey) {
+      const dir = sortDesc ? -1 : 1;
+      picks.sort((a, b) => {
+        const x = a[sortKey], y = b[sortKey];
+        const xn = x == null || x === "", yn = y == null || y === "";
+        if (xn && yn) return 0;
+        if (xn) return 1;              // blanks always last, either direction
+        if (yn) return -1;
+        return (typeof x === "number" && typeof y === "number"
+          ? x - y : String(x).localeCompare(String(y), undefined, {numeric: true})) * dir;
+      });
+    }
+    const allRows = blocked.concat(picks);
     count.textContent = blocked.length
       ? `(${s.results.length} + ${blocked.length} blocked)` : `(${s.results.length})`;
     csv.style.display = "";
     res.classList.remove("empty");
     res.innerHTML = "<table class=\"rsp\"><thead><tr>" +
-      cols.map(([k, label, tip]) => `<th data-tip="${esc(tip)}">${esc(label)}</th>`).join("") +
+      cols.map(([k, label, tip]) =>
+        `<th data-tip="${esc(tip)}" data-sort="${esc(k)}" class="sortable` +
+        `${sortKey === k ? " sorted" : ""}">${esc(label)}` +
+        `${sortKey === k ? (sortDesc ? " ▼" : " ▲") : ""}</th>`).join("") +
       "</tr></thead><tbody>" +
       allRows.map(row => `<tr${row.__blocked ? ' class="blockedrow"' : ""}>` +
         cols.map(([k, label, tip, fmt]) => {
