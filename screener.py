@@ -2050,6 +2050,11 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
             return None    # unmeasured stays unranked, never averaged in
 
         enriched = concentration.marginal(rows, corr, edge_of, held)
+        # Re-order so a stock with a MEASURED losing record under these
+        # exact rules can never head the board on technical score alone.
+        # A live scan had a name scoring 77 — top of the list — whose own
+        # replay under this rule set was -0.15R over fifteen occurrences.
+        enriched.sort(key=concentration.order_key)
         rows[:] = enriched
         df = pd.DataFrame(rows)
         conc = concentration.summarise(rows, corr, groups)

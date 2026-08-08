@@ -219,6 +219,11 @@ def marginal(rows: list[dict], corr: pd.DataFrame, edge_of,
             row["edge_source"] = source
             row["indep"] = round(indep, 2)
             row["mpc_r"] = round(float(er) * indep, 3)
+            # A measured LOSING record is not a weak buy, it is evidence
+            # against the trade. The technical score cannot see it: score
+            # rates the shape of the setup, this rates what happened last
+            # time the shape appeared on this stock under these rules.
+            row["edge_negative"] = float(er) < 0
         out.append(row)
         if t:
             committed.append(t)
@@ -239,6 +244,33 @@ def marginal(rows: list[dict], corr: pd.DataFrame, edge_of,
     return out
 
 
+def order_key(row: dict) -> tuple:
+    """Sort key that stops a measured loser being presented as the best pick.
+
+    The technical score rates the shape of a setup. It cannot see that the
+    last fifteen times that shape appeared on this stock, under these
+    exact rules, the trade lost money. Ranking by score alone put a name
+    with a measured -0.15R record at the top of the board with a score of
+    77 — the same fail-open this project keeps finding in new clothes.
+
+    Three tiers, and the middle one matters:
+      1. measured positive contribution, best first
+      2. no measurement yet, by technical score
+      3. measured negative record, least bad first
+
+    An unmeasured setup is NOT demoted below a losing one. Absence of
+    evidence and evidence of loss are different things, and collapsing
+    them would punish every new name for being new.
+    """
+    mpc = row.get("mpc_r")
+    score = row.get("score") or 0
+    if mpc is None:
+        return (1, 0.0, -score)
+    if mpc >= 0:
+        return (0, -mpc, -score)
+    return (2, -mpc, -score)
+
+
 def summarise(rows: list[dict], corr: pd.DataFrame,
               groups: list[dict]) -> dict:
     """The headline: how many bets are really here."""
@@ -247,6 +279,7 @@ def summarise(rows: list[dict], corr: pd.DataFrame,
     measured = 0 if corr is None or corr.empty else int(corr.shape[0])
     biggest = max(groups, key=lambda g: g["n"]) if groups else None
     unverified = len([r for r in rows if r.get("edge_source") == "unverified"])
+    losing = len([r for r in rows if r.get("edge_negative")])
     return {
         "n_picks": n,
         "n_measured": measured,
@@ -256,6 +289,7 @@ def summarise(rows: list[dict], corr: pd.DataFrame,
             "seed": biggest["seed"], "n": biggest["n"],
             "tickers": biggest["tickers"], "mean_corr": biggest["mean_corr"]},
         "unverified_edge": unverified,
+        "losing_edge": losing,
         "corr_days": CORR_DAYS,
         "same_trade_threshold": SAME_TRADE,
     }
