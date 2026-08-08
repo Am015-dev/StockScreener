@@ -197,6 +197,10 @@ PUBLISHED_BASE = os.environ.get(
     "https://raw.githubusercontent.com/Am015-dev/StockScreener/screener-data")
 PUBLISHED_TTL = float(os.environ.get("PUBLISHED_TTL", "900"))   # re-check every 15 min
 _published = {"ts": 0.0, "index": None}
+# Where the last published read actually came from. Without this, a site
+# serving a frozen build-time copy is indistinguishable from one serving
+# the live data branch.
+_published_src = {"source": None, "why": None}
 
 
 def _published_get(path: str):
@@ -212,7 +216,9 @@ def _published_get(path: str):
     is refusing, and that is all it should be."""
     local = os.path.join(PUBLISHED_DIR, path)
 
-    def _local():
+    def _local(reason):
+        _published_src["source"] = "shipped copy"
+        _published_src["why"] = reason
         try:
             if os.path.exists(local):
                 with open(local) as f:
@@ -229,10 +235,16 @@ def _published_get(path: str):
     try:
         r = rq.get(f"{PUBLISHED_BASE}/{path}", headers=headers, timeout=20)
         if r.status_code == 200:
+            _published_src.update(source="data branch", why=None)
             return r.json()
-    except Exception:
-        pass
-    return _local()
+        why = f"HTTP {r.status_code}"
+    except Exception as e:
+        why = type(e).__name__
+    # Falling back is not a detail. A shipped copy is frozen at build time,
+    # so a site quietly serving one looks identical to a site serving live
+    # results — which is how "the network path works" was believed for long
+    # enough to delete the shipped files and empty the page.
+    return _local(why)
 
 
 def _published_index(force: bool = False):
@@ -1564,7 +1576,13 @@ def published_route():
     """What the scheduled scan has published, and how old it is."""
     idx = _published_index()
     return jsonify({"base": PUBLISHED_BASE, "index": idx,
-                    "using": _state.get("published_preset")})
+                    "using": _state.get("published_preset"),
+                    "source": _published_src.get("source"),
+                    "source_note": (
+                        f"the data branch is unreachable ({_published_src['why']}), "
+                        f"so this is the copy shipped with the build and will not "
+                        f"change until the next deploy"
+                        if _published_src.get("source") == "shipped copy" else None)})
 
 
 @app.route("/published/refresh", methods=["POST"])
