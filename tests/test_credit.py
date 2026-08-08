@@ -129,6 +129,28 @@ assert thick["vol_obs"] == 400 and thick["vol_thin"] is False, thick
 print(f"a distance built on {thin['vol_obs']} closes is flagged thin; "
       f"{thick['vol_obs']} is not")
 
+# A volatility measured over years can be supplied instead, and must be
+# the one actually used — not averaged with, or overridden by, the short
+# window that is only there to price the shares.
+supplied = credit.report("X", 1e11, rising[:60], 4e10, 9e10,
+                         vol=0.55, vol_obs=1200)
+assert supplied["equity_vol"] == 0.55, supplied["equity_vol"]
+assert supplied["vol_obs"] == 1200 and supplied["vol_thin"] is False
+assert supplied["vol_source"] == "published"
+assert thin["vol_source"] == "price window"
+# and it must move the answer: more volatility is less distance
+assert supplied["dd"] < thin["dd"], (supplied["dd"], thin["dd"])
+print(f"a supplied volatility is used, not the 60-day window: "
+      f"{thin['dd']} at {thin['equity_vol']:.0%} becomes {supplied['dd']} at 55%")
+
+# a supplied volatility that is absent or nonsense falls back rather than
+# poisoning the solve with a zero or a negative
+for bad in (None, 0.0, -0.3):
+    fb = credit.report("X", 1e11, rising, 4e10, 9e10, vol=bad, vol_obs=999)
+    assert fb["dd"] is not None and fb["vol_source"] == "price window", (bad, fb)
+    assert fb["vol_obs"] != 999, "a rejected volatility must not keep its sample size"
+print("a missing, zero or negative published volatility falls back to the window")
+
 # ---- reading a filed balance sheet, however it was tagged ----
 direct = {"facts": {"us-gaap": {
     "LiabilitiesCurrent": {"units": {"USD": [

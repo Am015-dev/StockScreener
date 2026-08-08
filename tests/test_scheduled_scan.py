@@ -232,3 +232,65 @@ assert scheduled_scan.price_book(days=60) == {}, "10 closes cannot fill a 60-day
 print("a ticker with less than the full window is omitted, not padded")
 
 print("\nPRICE-BOOK ORDERING PINNED")
+
+
+# ---- the volatility book: one float per ticker, all the history ----
+# The price book carries 60 closes because 1,500 x 60 is already 600KB.
+# The credit model needs an annualised volatility, and 60 returns
+# estimates one badly. A volatility is a single number, so it can be
+# computed over everything the scan holds and published at full length.
+_days = 500
+_vidx = _pd.bdate_range(end=_pd.Timestamp.today(), periods=_days)
+
+
+def _wiggle(vol_annual, seed):
+    """A price path with a KNOWN annualised volatility."""
+    rng = _np.random.default_rng(seed)
+    step = vol_annual / _np.sqrt(252.0)
+    return 100.0 * _np.exp(_np.cumsum(rng.normal(0, step, _days)))
+
+
+_paths = {"CALM": _wiggle(0.12, 1), "MID": _wiggle(0.30, 2),
+          "WILD": _wiggle(0.75, 3)}
+_vframe = _pd.concat({t: _pd.DataFrame(
+    {"Open": p, "High": p, "Low": p, "Close": p,
+     "Volume": _np.full(_days, 1e6)}, index=_vidx)
+    for t, p in _paths.items()}, axis=1)
+screener._cache.update(ohlc=_vframe, universe=list(_paths))
+
+_vols = scheduled_scan.volatility_book()
+assert set(_vols) == set(_paths), _vols
+for _t, _target in (("CALM", 0.12), ("MID", 0.30), ("WILD", 0.75)):
+    _got = _vols[_t]["vol"]
+    assert abs(_got - _target) < _target * 0.12, \
+        f"{_t}: measured {_got:.3f} against a built-in {_target:.2f}"
+assert _vols["CALM"]["vol"] < _vols["MID"]["vol"] < _vols["WILD"]["vol"]
+_shown = ", ".join("%s %.2f" % (t, v["vol"]) for t, v in _vols.items())
+print("volatility book recovers the volatility it was given: " + _shown)
+
+# it must rest on far more history than the 60-close price book
+assert all(v["obs"] >= 400 for v in _vols.values()), _vols
+assert all(v["as_of"] for v in _vols.values()), "each figure carries its date"
+print(f"each figure rests on {_vols['MID']['obs']} returns, not 60")
+
+# a flat series is not a zero-risk stock, and a short one is not measurable
+_flat = _pd.concat({"FLAT": _pd.DataFrame(
+    {"Open": [5.0] * _days, "High": [5.0] * _days, "Low": [5.0] * _days,
+     "Close": [5.0] * _days, "Volume": [1e6] * _days}, index=_vidx)}, axis=1)
+screener._cache.update(ohlc=_flat, universe=["FLAT"])
+assert scheduled_scan.volatility_book() == {}, \
+    "a series that never moves must be omitted, not published as zero risk"
+
+screener._cache.update(ohlc=_short, universe=["TINY"])
+assert scheduled_scan.volatility_book() == {}, \
+    "10 closes cannot support an annualised volatility"
+print("a flat series and a short series are both omitted rather than published")
+
+# and the whole book must stay small enough to fetch on a 512MB instance
+import json as _json
+screener._cache.update(ohlc=_vframe, universe=list(_paths))
+_per = len(_json.dumps(scheduled_scan.volatility_book())) / 3
+assert _per < 120, f"{_per:.0f} bytes per ticker would be 180KB at 1,500 names"
+print(f"{_per:.0f} bytes per ticker — about {_per * 1500 / 1024:.0f}KB for a full scan")
+
+print("\nVOLATILITY BOOK PINNED")

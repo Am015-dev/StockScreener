@@ -144,13 +144,24 @@ def band(dd: float | None) -> str | None:
 
 def report(ticker: str, equity: float | None, closes,
            current_liabilities: float | None, total_liabilities: float | None,
-           rf: float = 0.0375, as_of: str | None = None) -> dict:
-    """A full assessment, or an explicit refusal naming what was missing."""
+           rf: float = 0.0375, as_of: str | None = None,
+           vol: float | None = None, vol_obs: int | None = None) -> dict:
+    """A full assessment, or an explicit refusal naming what was missing.
+
+    `vol` lets the caller supply a volatility measured over more history
+    than `closes` contains. The scan publishes one per ticker computed
+    from years of returns; `closes` is a 60-day window kept small enough
+    to download. When a measured volatility is passed it is used and
+    `closes` only has to be long enough to price the shares.
+    """
     out: dict = {"ticker": (ticker or "").upper(), "as_of": as_of,
                  "missing": [], "dd": None, "band": None}
     if not equity or equity <= 0:
         out["missing"].append("market capitalisation")
-    vol = equity_volatility(closes)
+    supplied = vol is not None and vol > 0
+    if not supplied:
+        vol = equity_volatility(closes)
+        vol_obs = None
     if vol is None:
         out["missing"].append(f"share-price history ({MIN_OBS}+ days)")
     dp = default_point(current_liabilities, total_liabilities)
@@ -169,7 +180,9 @@ def report(ticker: str, equity: float | None, closes,
     # volatility with roughly a +/-9% standard error at 22% vol. That
     # propagates straight into the distance, so the report states the
     # sample it used rather than presenting every figure as equally solid.
-    out["vol_obs"] = len([1 for x in (closes or []) if x and float(x) > 0])
+    out["vol_obs"] = (vol_obs if supplied and vol_obs
+                      else len([1 for x in (closes or []) if x and float(x) > 0]))
+    out["vol_source"] = "published" if supplied else "price window"
     out["vol_thin"] = out["vol_obs"] < 200
     out["default_point"] = dp
     out["current_liabilities"] = current_liabilities

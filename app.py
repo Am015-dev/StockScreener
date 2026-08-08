@@ -776,13 +776,38 @@ def _price_book(fetch: bool = False) -> dict:
     return data
 
 
+_vols = {"ts": 0.0, "data": None}
+
+
+def _vol_book(fetch: bool = False) -> dict:
+    """Published per-ticker volatility, measured over the scan's full history.
+
+    The price book is 60 closes, which is enough to correlate two stocks
+    and not enough to estimate an annualised volatility the credit model
+    can lean on. This file is one float per ticker computed from years of
+    returns, so it is small enough to carry at full length.
+    """
+    if _vols["data"] is not None and time.time() - _vols["ts"] < BOOK_TTL:
+        return _vols["data"]
+    if not fetch:
+        return _vols["data"] or {}
+    data = _published_get("vol.json") or {}
+    _vols.update(data=data, ts=time.time())
+    print(f"[warm] volatility book: {len(data)} tickers", flush=True)
+    return data
+
+
 def _book_refresher():
-    """Keep the book warm without ever making a request wait for it."""
+    """Keep the books warm without ever making a request wait for them."""
     while True:
         try:
             _price_book(fetch=True)
         except Exception as e:
             print(f"[warm] price book refresh failed: {e}", flush=True)
+        try:
+            _vol_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] volatility book refresh failed: {e}", flush=True)
         time.sleep(max(300.0, BOOK_TTL * 0.9))
 
 
@@ -974,8 +999,12 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
         except Exception:
             shares = {}          # including Expired: the report says what it lacks
 
+    # a volatility measured over years beats one measured over the 60-day
+    # window the price book can afford to carry; fall back to the window
+    v = (_vol_book() or {}).get(ticker) or {}
     rep = credit.report(ticker, equity, closes, bs["current_liabilities"],
-                        bs["total_liabilities"], as_of=bs.get("as_of"))
+                        bs["total_liabilities"], as_of=bs.get("as_of"),
+                        vol=v.get("vol"), vol_obs=v.get("obs"))
     rep["ok"] = True
     rep["source"] = bs.get("source")
     rep["endpoint"] = bs.get("source_endpoint")
@@ -1207,6 +1236,12 @@ def _warm_check_data():
         print(f"[warm] price book: {len(book)} tickers", flush=True)
     except Exception as e:
         print(f"[warm] price book failed: {e}", flush=True)
+    try:
+        # before the credit warmer, so the board is measured on the real
+        # volatility rather than on 60 closes and then cached for a day
+        _vol_book(fetch=True)
+    except Exception as e:
+        print(f"[warm] volatility book failed: {e}", flush=True)
     _warm_credit()
 
 
