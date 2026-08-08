@@ -695,6 +695,57 @@ def snapshot_load():
                     "message": "These filters have not been scanned yet."})
 
 
+@app.route("/limits")
+def limits():
+    """The known-issues page, served from the file that ships with the build.
+
+    A screener that publishes only what works is not evidence of anything.
+    Serving this from the repository rather than a hand-maintained HTML
+    block means it cannot silently drift away from what the code does —
+    it is reviewed in the same diff as the behaviour it describes.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "KNOWN_ISSUES.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return Response("Known-issues file is missing from this build.\n",
+                        status=500, mimetype="text/plain")
+    return Response(text, mimetype="text/markdown; charset=utf-8")
+
+
+@app.route("/changelog")
+def changelog():
+    """What changed and when, read from the deployed git history.
+
+    Not a hand-written list: a hand-written changelog is a claim, and this
+    one is the record. If git is unavailable in the running image the
+    route says so rather than inventing entries.
+    """
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    try:
+        out = subprocess.run(
+            ["git", "log", "-40", "--no-merges", "--date=short",
+             "--pretty=format:%ad\t%s"],
+            cwd=root, capture_output=True, text=True, timeout=10)
+        if out.returncode != 0 or not out.stdout.strip():
+            raise RuntimeError(out.stderr.strip() or "no history")
+    except Exception as e:
+        return Response(f"Change history unavailable in this build ({e}).\n"
+                        f"The repository holds the full record.\n",
+                        status=503, mimetype="text/plain")
+    lines = ["# Changelog", "",
+             "Generated from the deployed commit history — this is the record,",
+             "not a summary of it.", ""]
+    for row in out.stdout.splitlines():
+        date, _, subject = row.partition("\t")
+        lines.append(f"- **{date}** — {subject}")
+    return Response("\n".join(lines) + "\n",
+                    mimetype="text/markdown; charset=utf-8")
+
+
 @app.route("/configs")
 def configs_route():
     """Every simulated rule set with its metrics, and whether it clears the
