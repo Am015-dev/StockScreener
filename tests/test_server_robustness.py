@@ -298,4 +298,25 @@ print("the credit report turns a slow SEC into a refusal that names the reason")
 # no shutdown(): the handler is still mid-drip and shutdown() waits for it.
 # The server thread is a daemon, so the process exits regardless.
 
+
+# ---- abandoned fetches must not permanently consume the slots ----
+# The concurrency cap counts fetches a caller is waiting on. This checks
+# that a run of abandoned ones leaves the pool full afterwards, so a burst
+# of slow filers cannot wedge every later reader on "too many SEC fetches
+# already in flight". It does NOT prove the caller-side release matters:
+# the orphaned thread's read timeout equals the caller's budget, so the
+# slot came back either way — the release only shortens the window.
+_slots = A._sec_slots._value
+assert _slots >= 2, _slots
+for _ in range(_slots + 2):
+    try:
+        A._sec_json(f"http://127.0.0.1:{_port}/slow.json", timeout=2)
+        raise AssertionError("the drip server must never answer")
+    except TimeoutError as e:
+        assert "in flight" not in str(e), \
+            "a previous abandoned fetch is still holding its slot"
+assert A._sec_slots._value == _slots, \
+    f"{_slots - A._sec_slots._value} slot(s) never came back"
+print(f"after {_slots + 2} abandoned fetches all {_slots} slots are free again")
+
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")

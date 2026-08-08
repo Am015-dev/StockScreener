@@ -962,18 +962,34 @@ def _sec_fetch(url: str, timeout: float, out: dict):
         out["error"] = e
     finally:
         out["done"].set()
+        _release(out)
+
+
+def _release(out: dict) -> None:
+    """Give the slot back exactly once, whoever gets there first.
+
+    The slot counts fetches a CALLER is waiting on, so the caller returns
+    it the moment it stops waiting rather than leaving it to the orphaned
+    thread. That thread's own read timeout equals the caller's budget, so
+    the slot was never held indefinitely — this shortens the window, it
+    does not close a leak, and it is not the explanation for a burst of
+    "the SEC did not answer in time" after a restart. That one is still
+    open: the credit warmer and live requests compete for one worker and
+    for the SEC's rate limit, and I have not proved which.
+    """
+    if not out.get("released"):
+        out["released"] = True
         _sec_slots.release()
 
 
 def _sec_json(url: str, timeout: float = 15):
     if not _sec_slots.acquire(timeout=min(2.0, timeout)):
         raise TimeoutError("too many SEC fetches already in flight")
-    out = {"done": threading.Event()}
+    out = {"done": threading.Event(), "released": False}
     threading.Thread(target=_sec_fetch, args=(url, timeout, out),
                      daemon=True).start()
     if not out["done"].wait(timeout):
-        # the thread is left to finish and be discarded; Python cannot
-        # interrupt a socket read, and waiting for it is the bug
+        _release(out)
         raise TimeoutError(f"SEC did not answer within {timeout:.0f}s")
     if out.get("error"):
         raise out["error"]
