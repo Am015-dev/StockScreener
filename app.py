@@ -24,6 +24,7 @@ import backtest as backtest_mod
 import db as market_db
 import cache_store
 import journal
+import market_clock
 import portfolio_import
 import screener
 
@@ -48,6 +49,16 @@ RESULTS_CSV = os.environ.get("RESULTS_CSV", "/tmp/screener_results.csv")
 ALERT_PROFILE = os.environ.get("ALERT_PROFILE", "/tmp/alert_profile.json")
 TOP_N = 3
 
+# How many stocks a scan started from the web page may touch.
+#
+# The full 1,500-stock scan takes ~7 minutes and several hundred MB. On the
+# 512MB free instance that is not a slow scan, it is a dead one: the process
+# is reaped and the page shows "This scan has stopped responding" — which is
+# exactly what a visitor reported. The full universe is the scheduled job's
+# work; the button's job is to answer a custom filter question quickly and
+# actually finish. Clamping and SAYING SO beats failing and guessing why.
+WEB_SCAN_MAX = int(os.environ.get("WEB_SCAN_MAX", "250"))
+
 _lock = threading.Lock()
 _state = {
     "status": "idle",          # idle | running | done | error
@@ -71,6 +82,7 @@ _state = {
     "bt_rules": None,          # the rule set the shown simulation was run under
     "pending": [],             # qualified technically, awaiting verification
     "breadth": None,           # {"pct": .., "risk_factor": ..} market health
+    "concentration": None,     # how many independent bets the list really holds
     "results_ts": None,        # when the shown results were produced
     "health": None,            # {"blocked_unverified": n} from the last scan
     "error": None,
@@ -292,7 +304,8 @@ def _drop_offmethod(payload: dict) -> tuple[dict, int]:
 
 SNAPSHOT_KEYS = ("results", "top_picks", "rejection_summary", "near_misses",
                  "params_used", "portfolio", "near_board", "relax_hints",
-                 "pending", "breadth", "health", "universe_size", "scanned",
+                 "pending", "breadth", "concentration", "health",
+                 "universe_size", "scanned",
                  "elapsed_s", "results_ts", "backtest", "bt_status",
                  "bt_rules")
 SNAPSHOT_MAX_AGE_H = 24   # entry/stop levels go stale; never serve them as fresh
@@ -446,6 +459,7 @@ def _run_scan(params):
         _state["health"] = result.get("health")
         _state["pending"] = result.get("pending") or []
         _state["breadth"] = result.get("breadth")
+        _state["concentration"] = result.get("concentration")
         _state["results_ts"] = time.time()
         if len(df):
             df.to_csv(RESULTS_CSV, index=False)
@@ -543,6 +557,11 @@ def defaults():
 def run():
     overrides = request.get_json(silent=True) or {}
     params = screener.clean_params(overrides)
+    # bound the work so the request can never outlive the instance
+    capped = None
+    if params.get("universe_max", 0) > WEB_SCAN_MAX:
+        capped = params["universe_max"]
+        params["universe_max"] = WEB_SCAN_MAX
     with _lock:
         if _state["status"] == "running":
             return jsonify({"ok": False, "message": "A scan is already running."}), 409
@@ -558,8 +577,16 @@ def run():
                 json.dump(params, f)
         except Exception:
             pass
+        if capped:
+            _state["log"].append(
+                f"Live scan limited to the {WEB_SCAN_MAX} largest stocks (you "
+                f"asked for {capped}) so it finishes on this server. The full "
+                f"{capped}-stock scan runs on schedule — that is the one shown "
+                f"by default.")
+        _state["capped_universe"] = capped
         threading.Thread(target=_run_scan, args=(params,), daemon=True).start()
-    return jsonify({"ok": True, "params": params})
+    return jsonify({"ok": True, "params": params, "capped_from": capped,
+                    "universe_max": params["universe_max"]})
 
 
 @app.route("/parse_portfolio", methods=["POST"])
@@ -802,6 +829,15 @@ def status():
         quiet_for = time.time() - float(quiet_since or time.time())
         if quiet_for > STALL_AFTER_S:
             st["stalled_s"] = round(quiet_for)
+    # Prices are only as fresh as the last session, and a weekend adds
+    # hours but no sessions. Reporting both lets the page stop calling
+    # Friday's close "10 hours old" on a Saturday.
+    try:
+        st["market"] = market_clock.state()
+        if st.get("results_ts"):
+            st["freshness"] = market_clock.staleness(float(st["results_ts"]))
+    except Exception:
+        pass
     return jsonify(st)
 
 
@@ -972,7 +1008,17 @@ def results_csv():
     if not _state["results"]:
         return Response("no results yet\n", status=404, mimetype="text/plain")
     buf = io.StringIO()
-    df = pd.DataFrame(_state["results"])
+    # The export must carry the blocked picks too. The page shows them as
+    # BLOCKED rows; a CSV that quietly contains only the 25 that passed
+    # would let someone act on a filtered list while believing they had
+    # the whole scan — the same fail-open the quarantine exists to stop.
+    rows = [dict(r, row_type="pick") for r in _state["results"]]
+    rows += [dict(r, row_type="BLOCKED", score=None, shares=None,
+                  risk_EUR=None, cum_risk_EUR=None)
+             for r in (_state.get("pending") or [])]
+    df = pd.DataFrame(rows)
+    if "row_type" in df.columns:      # lead with it; it changes how to read the row
+        df.insert(0, "row_type", df.pop("row_type"))
     if _state.get("results_ts"):   # every exported row carries its scan time
         stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(_state["results_ts"]))
         df.insert(0, "scan_time", stamp)
