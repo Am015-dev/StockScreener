@@ -24,6 +24,10 @@ ROOT = Path(__file__).resolve().parents[1]
 TMP = tempfile.mkdtemp(prefix="method_")
 os.environ["MARKET_DB"] = os.path.join(TMP, "market.db")
 os.environ["SCREENER_CACHE_DB"] = os.path.join(TMP, "cache.db")
+# Hermetic: the app's warmers reach Nasdaq, the SEC and GitHub, and
+# its startup adoption fetches the real published index and caches
+# it — which a stub installed later can no longer displace.
+os.environ["SKIP_WARM"] = "1"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -143,10 +147,6 @@ print("the publisher refuses a fail-open or off-methodology preset")
 # both were supposedly banned.
 os.environ.setdefault("JOURNAL_DB", os.path.join(TMP, "j.db"))
 os.environ.setdefault("RESULTS_CSV", os.path.join(TMP, "r.csv"))
-# The suite is hermetic. Warmers reach Nasdaq, GitHub and the SEC at
-# import time, which is latency and a hang risk in CI, not a result
-# any assertion here depends on.
-os.environ["SKIP_WARM"] = "1"
 import app as app_mod
 
 good = {"ticker": "OK", "RSI": 44.0, "RR": 3.0, "price": 100.0, "support": 96.0}
