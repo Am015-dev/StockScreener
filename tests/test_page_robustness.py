@@ -10,6 +10,11 @@ T = tempfile.mkdtemp()
 os.environ.update(MARKET_DB=T+"/m.db", JOURNAL_DB=T+"/j.db",
                   SCREENER_CACHE_DB=T+"/c.db", RESULTS_CSV=T+"/r.csv", SKIP_WARM="1")
 from pathlib import Path
+# The deploy branch SHIPS published/*.json, so a CI checkout has real scan
+# results on disk that the app adopts at import — overriding whatever this
+# test set up. Point the lookup somewhere empty.
+os.environ["PUBLISHED_DIR"] = os.path.join(T, "no_published")
+os.makedirs(os.environ["PUBLISHED_DIR"], exist_ok=True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app as A
 
