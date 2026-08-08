@@ -1120,11 +1120,20 @@ NASDAQ_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
 
-def _earnings_calendar(days_ahead: int = EARN_CAL_DAYS,
-                       progress=None) -> tuple[dict[str, int], bool]:
+def _earnings_calendar(days_ahead: int = EARN_CAL_DAYS, progress=None,
+                       build: bool = True) -> tuple[dict[str, int], bool]:
     """Map US symbol -> trading days until its next report, plus whether
     the window is complete. Never raises; an incomplete window is reported,
-    not hidden."""
+    not hidden.
+
+    build=False returns immediately on a cache miss instead of walking the
+    window. Building it means ~32 sequential requests, one per trading day,
+    each with a 15-second timeout — fine inside a scheduled scan, fatal
+    inside a web request. A live /check call hit exactly that and ran past
+    180 seconds before the client gave up. Anything serving a user asks
+    with build=False and treats "not ready" as a reason to refuse, not as
+    a reason to wait.
+    """
     key = f"earncal:{days_ahead}"
     hit, stored = cache_store.fetch(key, EARN_CAL_TTL)
     if hit and isinstance(stored, dict) and "map" in stored:
@@ -1133,6 +1142,8 @@ def _earnings_calendar(days_ahead: int = EARN_CAL_DAYS,
                      - pd.Timestamp(stored["as_of"])).days)
         cal = {s: d - shift for s, d in stored["map"].items() if d - shift >= 0}
         return cal, bool(stored.get("complete"))
+    if not build:
+        return {}, False
 
     today = pd.Timestamp.now().normalize()
     cal: dict[str, int] = {}

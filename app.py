@@ -780,9 +780,18 @@ def check_trade():
     book = _price_book()
     # Earnings come from the same published scan, so the answer here is the
     # one the board used — not a second opinion that could disagree with it.
-    earn, complete = {}, False
+    # Never build inside the request — see _earnings_calendar(build=...).
+    # "Not built yet" and "built and came back broken" both block the pick,
+    # but only one is worth waiting out, so they are distinguished by
+    # whether the cache key exists rather than by whether the result is
+    # empty — an empty result looks identical in both cases.
+    earn, complete, warming = {}, False, False
     try:
-        earn, complete = screener._earnings_calendar()
+        earn, complete = screener._earnings_calendar(build=False)
+        if not earn:
+            hit, _ = cache_store.fetch(f"earncal:{screener.EARN_CAL_DAYS}",
+                                       screener.EARN_CAL_TTL)
+            warming = not hit
     except Exception:
         pass
 
@@ -790,6 +799,7 @@ def check_trade():
                 if (r.get("ticker") or "").upper() == ticker), None)
     res = pretrade.check(
         ticker, holdings, book, earn, complete,
+        warming=warming or not book,
         risk_eur=(row or {}).get("risk_EUR"),
         reward_eur=((row["risk_EUR"] * row["RR"]) if row and row.get("risk_EUR")
                     and row.get("RR") else None),
@@ -969,6 +979,30 @@ def _crumb_hunter():
         time.sleep(150 + random.random() * 120)
 
 
+def _warm_check_data():
+    """Build the earnings calendar and pull the price book off the request
+    path entirely.
+
+    Both are cheap to serve and expensive to create: the calendar is ~32
+    sequential Nasdaq requests, the price book a ~600KB fetch. Doing either
+    lazily inside /check meant the first person to press the button waited
+    minutes with a spinner and no explanation, and every one after them
+    waited 176ms. Warming here makes the first click the same as the
+    hundredth."""
+    try:
+        cal, ok = screener._earnings_calendar()
+        print(f"[warm] earnings calendar: {len(cal)} companies, "
+              f"{'complete' if ok else 'INCOMPLETE'}", flush=True)
+    except Exception as e:
+        print(f"[warm] earnings calendar failed: {e}", flush=True)
+    try:
+        book = _price_book()
+        print(f"[warm] price book: {len(book)} tickers", flush=True)
+    except Exception as e:
+        print(f"[warm] price book failed: {e}", flush=True)
+
+
+threading.Thread(target=_warm_check_data, daemon=True).start()
 threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 

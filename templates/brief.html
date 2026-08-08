@@ -306,16 +306,39 @@ const COLOR = {ok: "var(--green)", note: "var(--ink-2)", warn: "var(--amber)",
 document.getElementById("ckGo").addEventListener("click", async () => {
   const t = document.getElementById("ckTicker").value.trim();
   const out = document.getElementById("ckOut");
+  const btn = document.getElementById("ckGo");
   if (!t) { out.innerHTML = '<p class="tiny">Type a ticker first.</p>'; return; }
-  out.innerHTML = '<p class="tiny">Checking…</p>';
+  // A spinner that says only "Checking…" is indistinguishable from a hang,
+  // and this endpoint could take three minutes on a cold cache. Count up,
+  // disable the button so it cannot be pressed again, and give up loudly
+  // rather than silently.
+  btn.disabled = true; btn.style.opacity = ".6"; btn.textContent = "Checking…";
+  const t0 = Date.now();
+  out.innerHTML = '<p class="tiny" id="ckWait">Checking ' + esc(t.toUpperCase()) +
+    ' against your holdings… <b id="ckSecs">0s</b></p>';
+  const tick = setInterval(() => {
+    const el = document.getElementById("ckSecs");
+    if (!el) return;
+    const s = Math.round((Date.now() - t0) / 1000);
+    el.textContent = s + "s";
+    if (s === 4) document.getElementById("ckWait").insertAdjacentHTML("beforeend",
+      '<br><span style="color:var(--ink-3)">First check after a restart builds the ' +
+      'earnings calendar — this one is slower than the rest.</span>');
+  }, 250);
+  const ctl = new AbortController();
+  const bail = setTimeout(() => ctl.abort(), 25000);
+  const done = () => { clearInterval(tick); clearTimeout(bail);
+    btn.disabled = false; btn.style.opacity = ""; btn.textContent = "Check it"; };
   try {
     const held = loadHoldings() || [];
     const r = await fetch("/check", {method: "POST",
       headers: {"Content-Type": "application/json"},
+      signal: ctl.signal,
       body: JSON.stringify({ticker: t,
         holdings: held.length ? held
                               : document.getElementById("ckHold").value})});
     const d = await r.json();
+    done();
     if (!d.ok) { out.innerHTML = `<p class="tiny">${esc(d.error || "could not check")}</p>`;
                  return; }
     let html = (d.findings || []).map(f =>
@@ -326,7 +349,11 @@ document.getElementById("ckGo").addEventListener("click", async () => {
       'could not be measured. It arrives with the next scheduled scan.</p>';
     out.innerHTML = html || '<p class="tiny">Nothing to report.</p>';
   } catch (e) {
-    out.innerHTML = '<p class="tiny">Could not reach the checker.</p>';
+    done();
+    out.innerHTML = e && e.name === "AbortError"
+      ? '<p class="tiny">Gave up after 25 seconds. The server is still preparing its ' +
+        'data after a restart — try again in a minute.</p>'
+      : '<p class="tiny">Could not reach the checker.</p>';
   }
 });
 

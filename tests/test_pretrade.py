@@ -148,3 +148,42 @@ assert not (imported & {"yfinance", "requests", "backtest", "urllib"}), imported
 print(f"pretrade.py imports only {sorted(imported)} — it measures, it does not predict")
 
 print("\nALL PRE-TRADE CHECK TESTS PASSED")
+
+# ---- "still loading" is not "broken", and neither may hang ----
+# The live endpoint took over 180 seconds on its first call and 176ms on
+# every one after: it was building a 45-day earnings calendar — ~32
+# sequential requests — inside the web request. A user pressed the button
+# and watched a spinner with no explanation until they gave up.
+warm = pretrade.check("XOM", HELD, BOOK, {}, False, warming=True)
+assert warm["verdict"] == "block", "an unready calendar must still block the pick"
+h = headline(warm, "block")
+assert "still loading" in h.lower(), h
+assert "not an error" in " ".join(f["detail"] for f in warm["findings"]).lower()
+
+broke = pretrade.check("XOM", HELD, BOOK, {}, False, warming=False)
+assert broke["verdict"] == "block"
+assert "could not be verified" in headline(broke, "block")
+assert headline(warm, "block") != headline(broke, "block"), \
+    "loading and broken must not read identically — only one is worth waiting out"
+print("cold cache says 'still loading'; a real failure says 'could not be verified'; "
+      "both block")
+
+# a missing price book while warming says so rather than blaming the data
+nb = pretrade.check("XOM", HELD, {}, {"XOM": 30}, True, warming=True)
+assert any("still loading" in f["headline"].lower() for f in nb["findings"]), \
+    [f["headline"] for f in nb["findings"]]
+print("an empty price book during warm-up is reported as loading, not as unmeasurable")
+
+# and the build guard itself: asking without building must never walk the window
+import inspect
+import screener as _sc
+
+sig = inspect.signature(_sc._earnings_calendar)
+assert "build" in sig.parameters and sig.parameters["build"].default is True, sig
+src = inspect.getsource(_sc._earnings_calendar)
+assert "if not build:" in src, "build=False must return before the request loop"
+assert src.index("if not build:") < src.index("for i in range("), \
+    "the guard must come BEFORE the loop it is guarding"
+print("_earnings_calendar(build=False) returns before the 32-request loop")
+
+print("\nCOLD-START BEHAVIOUR PINNED")
