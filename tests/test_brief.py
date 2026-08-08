@@ -165,8 +165,8 @@ for banned in ("One action today: buy", "we recommend", "you should buy",
                "our recommendation", "buy this", "top pick of the day"):
     assert banned.lower() not in src.lower(), \
         f"recommendation language on the card: {banned!r}"
-assert "not a\n      signal" in src or "filter, not a" in src, \
-    "the disclaimer must say this is a filter rather than a signal"
+assert "no better than random entry" in src or "filter, not a" in src, \
+    "the card must say the pattern tested no better than random"
 print(f"watchlist of {len(b['watchlist'])} rows, permanent research-only banner, "
       f"no recommendation language")
 

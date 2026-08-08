@@ -66,168 +66,128 @@
 </style>
 
 <div class="wrap">
-  <div id="ownBar" style="display:none;font-size:.86rem;color:var(--ink-2);
-       margin:0 0 .9rem;padding:.45rem .7rem;border:1px solid var(--line);
-       border-radius:8px;background:var(--card)">
-    <span id="ownSummary"></span>
-    <button id="ownEdit" style="background:none;border:none;color:var(--accent);
-      text-decoration:underline;cursor:pointer;padding:0;font-size:inherit">Update
-      holdings</button>
-  </div>
-  <h1>Today's brief</h1>
-  <p class="sub">
-    {% if b.date %}{{ b.date }}{% endif %}
-    {% if b.market_label %}· {{ b.market_label }}{% endif %}
-    {% if b.stale %}<br><span class="warn">A session has traded since this scan — re-check the levels.</span>{% endif %}
-  </p>
-
-  <div class="card" id="ownGate" style="display:none;border-color:var(--accent);border-width:2px">
+  <!-- FIRST VISIT: the holdings question, and nothing else. Every other
+       section is withheld until it is answered or skipped, because a page
+       that asks a question and simultaneously shows nine answers is not
+       asking. -->
+  <div class="card act" id="ownGate" style="display:none">
     <p class="lead" style="margin-bottom:.6rem">First: what do you own?</p>
-    <p class="muted" style="margin-bottom:1rem">Everything below reads from this. Without
-      it the list is just names; with it, each one can be checked against what you already
-      hold — which is the only part no free screener can do.</p>
-    <label class="tiny" for="ownText">Paste your positions — one per line,
-      <code>TICKER, shares, cost per share</code></label>
+    <p class="muted" style="margin-bottom:1rem">Everything here reads from this. It is
+      what lets the tool say something a free screener cannot — whether a trade you are
+      considering is one you already hold.</p>
+    <label class="tiny" for="ownText">One per line — <code>TICKER, shares, cost</code></label>
     <textarea id="ownText" rows="4" spellcheck="false"
-      placeholder="NVDA, 4, 118.20&#10;KO, 30, 61.05&#10;MAR, 2, 288.40"
+      placeholder="NVDA, 4, 118.20&#10;KO, 30, 61.05"
       style="width:100%;padding:.6rem .7rem;margin:.25rem 0 .7rem;border:1px solid var(--line);
-             border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;
-             font-size:.95rem"></textarea>
-    <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center">
+             border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;font-size:.95rem"></textarea>
+    <div style="display:flex;gap:.7rem;flex-wrap:wrap;align-items:center">
       <button id="ownSave" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
-        background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer">Save holdings</button>
-      <label class="tiny" style="cursor:pointer;text-decoration:underline">
-        or drop a broker CSV
+        background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer">Save</button>
+      <label class="tiny" style="cursor:pointer;text-decoration:underline">or drop a broker CSV
         <input type="file" id="ownCsv" accept=".csv,text/csv" style="display:none"></label>
       <button id="ownSkip" class="tiny" style="background:none;border:none;color:var(--ink-2);
-        text-decoration:underline;cursor:pointer;padding:0">skip for now</button>
+        text-decoration:underline;cursor:pointer;padding:0">skip</button>
     </div>
     <p class="tiny" id="ownNote" style="margin:.6rem 0 0"></p>
-    <p class="tiny" style="margin:.7rem 0 0;color:var(--ink-3)">Stored in this browser only
-      — it is never sent to the server or saved against an account. Clearing your browser
-      data removes it.</p>
+    <p class="tiny" style="margin:.7rem 0 0;color:var(--ink-3)">Kept in this browser only.
+      Never sent to the server.</p>
   </div>
 
-  <div class="card act">
-    {% if b.n_qualified %}
-    <p class="lead">{{ b.n_qualified }} name{{ '' if b.n_qualified == 1 else 's' }}
-       dipped to support today.</p>
-    <p class="warn" style="font-weight:600;margin:0 0 .9rem">This is a filter, not a
-      signal. Tested against random entry over 526 trades, the pattern performed
-      <em>worse</em> than a coin flip managed the same way — so treat this as a list of
-      liquid stocks near a defended price with verified earnings dates, and nothing more.
-      <a href="/limits" style="color:inherit">The test</a>.</p>
-    <div class="wrap">
-      <table class="wl" id="results-wl">
-        <thead><tr>
-          <th>Stock</th><th class="r">Price</th><th class="r">Support</th>
-          <th class="r">Stop</th><th class="r">Target</th><th class="r">RSI</th>
-          <th>Earnings</th>
-        </tr></thead>
-        <tbody>
-        {% for w in b.watchlist %}
-          <tr data-ticker="{{ w.ticker }}">
-            <td><b>{{ w.ticker }}</b><span class="nm2">{{ w.name }}</span></td>
-            <td class="r">{{ '%.2f'|format(w.price) }}</td>
-            <td class="r">{% if w.support_dist is not none %}+{{ w.support_dist }}%{% else %}—{% endif %}</td>
-            <td class="r">{{ '%.2f'|format(w.stop) }}</td>
-            <td class="r">{{ '%.2f'|format(w.target) }}</td>
-            <td class="r">{{ '%.0f'|format(w.rsi) }}</td>
-            <td>{{ w.earnings or '—' }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+  <!-- EVERY OTHER VISIT: one card. Six lines. Then a way out. -->
+  <div id="main" style="display:none">
+    <p class="tiny" id="ownBar" style="margin:0 0 .8rem">
+      <span id="ownSummary"></span><button id="ownEdit"
+      style="background:none;border:none;color:var(--accent);text-decoration:underline;
+             cursor:pointer;padding:0;font:inherit">edit</button></p>
+
+    <div class="card act">
+      <p class="tiny" style="margin:0 0 .5rem">{{ b.date }}{% if b.market_label %} ·
+        {{ b.market_label }}{% endif %}</p>
+      {% if b.action %}
+      <p class="lead" style="margin-bottom:.7rem">Closest to the setup today:
+        <span class="tk">{{ b.action.ticker }}</span> at
+        ${{ '%.2f'|format(b.action.price) }}.</p>
+      <p>Stop <b>${{ '%.2f'|format(b.action.stop) }}</b> — risks
+        <span class="loss">€{{ '%.2f'|format(b.action.risk_eur) }}</span> on
+        {{ b.action.shares }} shares.
+        Target <b>${{ '%.2f'|format(b.action.target) }}</b> — pays
+        <span class="gain">€{{ '%.2f'|format(b.action.reward_eur) }}</span>.</p>
+      <p>{% if b.action.earnings_clear %}<span class="ok">No earnings due for 45 days.</span>
+        {% else %}<span class="warn">Earnings in {{ b.action.earnings }}.</span>{% endif %}
+        {{ b.action.why|capitalize }}.</p>
+      {% else %}
+      <p class="lead" style="margin-bottom:.7rem">Nothing to do today.</p>
+      <p>No stock among the {{ b.scanned or 0 }} scanned met every check.</p>
+      {% endif %}
+      <p class="warn" style="margin:.8rem 0 0;font-size:.9rem">Research only — this pattern
+        tested no better than random entry. <a href="/limits" style="color:inherit">Why</a>.</p>
     </div>
-    <p class="tiny" style="margin-top:.7rem">"Support" is how far above a price level
-      buyers previously defended each one is trading. Every row's earnings date was
-      checked against the published market calendar — anything that could not be
-      verified is in the blocked list below, not here.</p>
-    {% else %}
-    <p class="lead">Nothing dipped to support today.</p>
-    <p>None of the {{ b.scanned or 0 }} stocks scanned met every rule. Most days do not
-       offer one.</p>
-    <p class="muted">Close the tab. You have missed nothing.</p>
-    {% endif %}
-  </div>
 
-  {% if b.blocked %}
-  <div class="card">
-    <h2>Blocked today — {{ b.n_blocked }} setup{{ '' if b.n_blocked == 1 else 's' }}</h2>
-    <ul>
-      {% for g in b.blocked %}
-      <li><span class="num">{{ g.n }}</span> — {{ g.reason }}
-        <span class="tiny">({{ g.tickers|join(', ') }})</span></li>
-      {% endfor %}
-    </ul>
-    <p class="tiny" style="margin-top:.7rem">These passed every technical test and were
-      still withheld. A check that cannot be completed blocks the pick; it is never
-      shown as if it had passed.</p>
-  </div>
-  {% endif %}
+    <div class="card">
+      <p style="margin:0 0 .6rem"><b>Thinking of buying something?</b> This is the part
+        that is worth having — it checks your idea against what you already own.</p>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <input id="ckTicker" placeholder="Ticker" autocomplete="off"
+          style="flex:1 1 8rem;padding:.55rem .7rem;border:1px solid var(--line);
+                 border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem">
+        <button id="ckGo" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
+          background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer">Check it</button>
+      </div>
+      <input id="ckHold" type="hidden">
+      <div id="ckOut" style="margin-top:.9rem"></div>
+    </div>
 
-  <div class="card">
-    <h2>Track record</h2>
-    {% if b.record and b.record.n %}
-      <p>{{ b.record.win_rate }}% of {{ b.record.n }} resolved picks hit their target
-         first, averaging {{ '%+.2f'|format(b.record.avg_r) }}R
-         ({{ '%+.1f'|format(b.record.total_r) }}R in total).</p>
-    {% elif b.record and b.record.logged %}
-      <p>{{ b.record.logged }} pick{{ '' if b.record.logged == 1 else 's' }} logged so
-         far; none has reached its target or stop yet. Every pick is recorded when it is
-         published and graded automatically, so this number cannot be curated after the
-         fact.</p>
-    {% else %}
-      <p>No picks logged yet.</p>
-    {% endif %}
-    {% if b.bar.profit_factor is not none and not b.bar.passes %}
-    <p class="bar" style="margin-top:.9rem">A permutation test found this pattern
-      indistinguishable from random entry (p = 0.50).
-      <a href="/limits">The test, and everything else that is wrong with it</a>.</p>
-    {% elif b.bar.passes %}
-    <p class="bar pass" style="margin-top:.9rem"><b class="ok">These rules clear the
-      tradeable bar</b> in the five-year replay. <a href="/limits">See the working</a>.</p>
-    {% endif %}
-  </div>
+    <details class="card" style="padding:.9rem 1.2rem">
+      <summary class="tiny" style="cursor:pointer">Show the working —
+        {{ b.n_qualified }} names, {{ b.n_blocked }} blocked, the track record</summary>
+      <div style="margin-top:1rem">
+        {% if b.watchlist %}
+        <div class="wrap"><table class="wl" id="results-wl">
+          <thead><tr><th>Stock</th><th class="r">Price</th><th class="r">Support</th>
+            <th class="r">Stop</th><th class="r">Target</th><th class="r">RSI</th>
+            <th>Earnings</th></tr></thead>
+          <tbody>
+          {% for w in b.watchlist %}
+            <tr data-ticker="{{ w.ticker }}">
+              <td><b>{{ w.ticker }}</b><span class="nm2">{{ w.name }}</span></td>
+              <td class="r">{{ '%.2f'|format(w.price) }}</td>
+              <td class="r">{% if w.support_dist is not none %}+{{ w.support_dist }}%{% else %}—{% endif %}</td>
+              <td class="r">{{ '%.2f'|format(w.stop) }}</td>
+              <td class="r">{{ '%.2f'|format(w.target) }}</td>
+              <td class="r">{{ '%.0f'|format(w.rsi) }}</td>
+              <td>{{ w.earnings or '—' }}</td>
+            </tr>
+          {% endfor %}
+          </tbody></table></div>
+        {% endif %}
+        {% if b.one_trade %}
+        <p class="tiny" style="margin-top:.9rem"><b>Do not buy all of these.</b>
+          {{ b.one_trade.tickers|join(', ') }} move together — that is one position in
+          {{ b.one_trade.n }} pieces.</p>
+        {% endif %}
+        {% if b.blocked %}
+        <p class="tiny" style="margin-top:.9rem"><b>Blocked ({{ b.n_blocked }}):</b>
+          {% for g in b.blocked %}{{ g.n }} — {{ g.reason }}
+          ({{ g.tickers|join(', ') }}){% if not loop.last %}; {% endif %}{% endfor %}.
+          A check that cannot be completed blocks the pick rather than passing it.</p>
+        {% endif %}
+        <p class="tiny" style="margin-top:.9rem"><b>Track record:</b>
+          {% if b.record and b.record.n %}{{ b.record.win_rate }}% of {{ b.record.n }}
+          resolved picks hit target first, averaging
+          {{ '%+.2f'|format(b.record.avg_r) }}R.{% elif b.record and b.record.logged %}
+          {{ b.record.logged }} logged, none resolved yet.{% else %}nothing logged yet.{% endif %}
+          A permutation test found the pattern performed <em>worse</em> than a coin flip
+          managed the same way — it is a filter, not a signal.
+          <a href="/limits">The test</a>.</p>
+      </div>
+    </details>
 
-  {% if b.one_trade %}
-  <div class="card">
-    <h2>Do not buy all of these</h2>
-    <p>{{ b.one_trade.tickers|join(', ') }} move together. Buying
-      {{ b.one_trade.n }} of them is one position in {{ b.one_trade.n }} pieces, and one
-      bad morning takes out every piece.</p>
+    <footer class="tiny">
+      <a href="/limits">Limits</a> · <a href="/changelog">Changelog</a> ·
+      <a href="/full">Full board</a> · <a href="/results.csv">CSV</a><br>
+      Not advice. Verify the earnings date yourself.
+    </footer>
   </div>
-  {% endif %}
-
-  <div class="card">
-    <h2>Check a trade of your own</h2>
-    <p class="tiny" style="margin-bottom:.7rem">Type what you are about to buy and what
-      you already hold. This tells you what a free screener cannot: how much of the trade
-      you already own, whether an earnings report is about to land on it, and whether your
-      book gets wider or just heavier. It makes no prediction — every answer is a
-      measurement.</p>
-    <label class="tiny" for="ckTicker">Buying</label>
-    <input id="ckTicker" placeholder="AVGO" autocomplete="off"
-      style="width:100%;padding:.55rem .7rem;margin:.2rem 0 .7rem;border:1px solid var(--line);
-             border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem">
-    <label class="tiny" for="ckHold">Already holding (tickers, separated by spaces)</label>
-    <input id="ckHold" placeholder="NVDA AMD KO" autocomplete="off"
-      style="width:100%;padding:.55rem .7rem;margin:.2rem 0 .8rem;border:1px solid var(--line);
-             border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem">
-    <button id="ckGo" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
-      background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer">Check it</button>
-    <div id="ckOut" style="margin-top:1rem"></div>
-  </div>
-
-  <footer class="tiny">
-    Scanned {{ b.scanned or 0 }} stocks{% if b.asof %} at {{ b.asof }}{% endif %}.
-    Scans run on a schedule — this page never starts one, so it always loads.<br>
-    <a href="/limits">Known issues &amp; limits</a> ·
-    <a href="/changelog">Changelog</a> ·
-    <a href="/full">Full board</a> ·
-    <a href="/results.csv">Download the scan</a><br>
-    A pick is a hypothesis, not advice. Verify the earnings date yourself before buying.
-  </footer>
 </div>
 
 <script>
@@ -272,9 +232,13 @@ function markOverlaps(h) {
 function paintHoldings() {
   const h = loadHoldings();
   const gate = document.getElementById("ownGate");
+  const main = document.getElementById("main");
   const bar = document.getElementById("ownBar");
+  const answered = (h && h.length) || sessionStorage.getItem("dipfinder_skipped");
+  // the question and its answers are never on screen together
+  gate.style.display = answered ? "none" : "block";
+  main.style.display = answered ? "block" : "none";
   if (h && h.length) {
-    gate.style.display = "none";
     bar.style.display = "block";
     document.getElementById("ownSummary").textContent =
       `Your holdings: ${h.length} position${h.length === 1 ? "" : "s"} — ` +
@@ -283,10 +247,8 @@ function paintHoldings() {
     const f = document.getElementById("ckHold");
     if (f) f.value = h.map(x => x.ticker).join(" ");
     markOverlaps(h);
-  } else if (sessionStorage.getItem("dipfinder_skipped")) {
-    gate.style.display = "none"; bar.style.display = "none";
   } else {
-    gate.style.display = "block"; bar.style.display = "none";
+    bar.style.display = "none";
   }
 }
 function saveHoldings(list, note) {
