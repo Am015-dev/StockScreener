@@ -20,6 +20,7 @@ for k, f in (("MARKET_DB", "market.db"), ("JOURNAL_DB", "journal.db"),
     os.environ[k] = os.path.join(TMP, f)
 sys.path.insert(0, str(ROOT))
 
+import journal
 import screener
 
 BALANCED = screener.clean_params({})
@@ -40,6 +41,14 @@ def payload(preset, params, n, age_s=60):
             "health": {"blocked_unverified": 0}, "params_used": params,
             "universe_size": 1500, "scanned": 1500, "elapsed_s": 240,
             "results_ts": time.time() - age_s, "rejection_summary": [],
+            # the track record travels with the results — see below
+            "journal_rows": [{"ticker": "JRN1", "scan_date": "2026-07-01",
+                              "entry": 100.0, "stop": 95.0, "target": 115.0,
+                              "score": 71, "status": "hit_target",
+                              "outcome_r": 3.0, "resolved_date": "2026-07-20"},
+                             {"ticker": "JRN2", "scan_date": "2026-07-02",
+                              "entry": 50.0, "stop": 47.0, "target": 60.0,
+                              "score": 64, "status": "open"}],
             "log": ["scan complete"], "scan_hash": "x"}
 
 
@@ -186,5 +195,25 @@ importlib.reload(app_mod)
 assert app_mod._state["published_preset"] == "relaxed", \
     "with nothing shipped locally, the network feed must still be used"
 print("no local copy — falls back to the network feed as before")
+
+# ---- the track record must survive the disk being wiped ----
+# Render wipes the instance disk on every deploy, so a journal that lives
+# only on the web instance reads "0 picks recorded" within hours of being
+# written — while the runner that produced the picks holds the full
+# history. The log therefore travels with the results.
+snap = journal.snapshot()
+assert snap["n_total"] >= 2, \
+    f"published picks were not restored into the local journal: {snap}"
+tickers = {r["ticker"] for r in journal.export_all()}
+assert {"JRN1", "JRN2"} <= tickers, tickers
+print(f"track record restored from the published scan: {snap['n_total']} pick(s) "
+      f"on an instance whose disk was empty")
+
+# restoring again must not duplicate — every poll re-adopts the same file
+before = journal.snapshot()["n_total"]
+again = journal.restore([r for r in FILES["relaxed.json"]["journal_rows"]])
+assert again == 0, f"re-adopting the same published file added {again} duplicate(s)"
+assert journal.snapshot()["n_total"] == before
+print("re-adopting the same published file adds nothing — restore is idempotent")
 
 print("\nALL PUBLISHED-RESULTS TESTS PASSED")
