@@ -204,6 +204,9 @@ assert retry["dd"] is not None, \
 print("a timed-out report says so, and does not poison the cache for 24 hours")
 
 # ---- refusals stay refusals -----------------------------------------
+# The map has to be READABLE for absence from it to mean anything; an
+# empty one means the lookup failed, which is a different answer.
+A._cik_map.update(data={"AAPL": 320193}, ts=time.time())
 A._cik_for = lambda t, timeout=8.0: None
 foreign = client.post("/credit", json={"ticker": "NESN.SW"}).get_json()
 assert foreign["dd"] is None and "US" in foreign["verdict"]
@@ -240,5 +243,23 @@ assert A._cik_for("AAPL") is None, "the first attempt genuinely fails"
 assert A._cik_for("AAPL") == 320193, \
     "a failed fetch must be retried, not cached as 'not a US filer' for a week"
 print("one SEC hiccup does not turn every company into a non-US filer")
+
+
+# ---- a lookup that failed is not evidence about the company ----
+# With the SEC refusing this address, Coca-Cola was reported as "Not a US
+# filer — SEC XBRL covers US listings only". The ticker list simply could
+# not be read. Those are different facts and only one is about the company.
+A._cik_map.update(data={}, ts=time.time())
+A._cik_for = lambda t, timeout=8.0: None
+_unknown = A._credit_for("KO")
+assert _unknown["dd"] is None
+assert "could not be read" in _unknown["verdict"], _unknown["verdict"]
+assert "not a US filer" not in _unknown["verdict"].lower(), _unknown["verdict"]
+
+A._cik_map.update(data={"AAPL": 320193}, ts=time.time())
+_foreign = A._credit_for("NESN.SW")
+assert "Not a US filer" in _foreign["verdict"], _foreign["verdict"]
+print("an unreadable ticker list says so; a ticker genuinely absent from a "
+      "readable one is reported as not a US filer")
 
 print("\nALL CREDIT-ENDPOINT TESTS PASSED")

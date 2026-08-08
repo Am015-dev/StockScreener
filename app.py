@@ -1102,6 +1102,16 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
 
     cik = _cik_for(ticker, timeout=min(8.0, budget_s / 2))
     if cik is None:
+        # "the list does not contain this ticker" and "the list could not
+        # be read" are different facts, and only one of them is about the
+        # company. Coca-Cola was being reported as not a US filer because
+        # the SEC was refusing this address that minute.
+        if not (_cik_map["data"] or {}):
+            return {"ok": True, "ticker": ticker, "dd": None,
+                    "verdict": "The SEC's company list could not be read just "
+                               "now, so this could not be looked up at all. "
+                               "Nothing here is a statement about the company.",
+                    "missing": ["the SEC company list"]}
         return {"ok": True, "ticker": ticker, "dd": None,
                 "verdict": "Not a US filer — SEC XBRL covers US listings "
                            "only, so this company's filings are not "
