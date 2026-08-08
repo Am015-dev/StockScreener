@@ -66,12 +66,47 @@
 </style>
 
 <div class="wrap">
+  <div id="ownBar" style="display:none;font-size:.86rem;color:var(--ink-2);
+       margin:0 0 .9rem;padding:.45rem .7rem;border:1px solid var(--line);
+       border-radius:8px;background:var(--card)">
+    <span id="ownSummary"></span>
+    <button id="ownEdit" style="background:none;border:none;color:var(--accent);
+      text-decoration:underline;cursor:pointer;padding:0;font-size:inherit">Update
+      holdings</button>
+  </div>
   <h1>Today's brief</h1>
   <p class="sub">
     {% if b.date %}{{ b.date }}{% endif %}
     {% if b.market_label %}· {{ b.market_label }}{% endif %}
     {% if b.stale %}<br><span class="warn">A session has traded since this scan — re-check the levels.</span>{% endif %}
   </p>
+
+  <div class="card" id="ownGate" style="display:none;border-color:var(--accent);border-width:2px">
+    <p class="lead" style="margin-bottom:.6rem">First: what do you own?</p>
+    <p class="muted" style="margin-bottom:1rem">Everything below reads from this. Without
+      it the list is just names; with it, each one can be checked against what you already
+      hold — which is the only part no free screener can do.</p>
+    <label class="tiny" for="ownText">Paste your positions — one per line,
+      <code>TICKER, shares, cost per share</code></label>
+    <textarea id="ownText" rows="4" spellcheck="false"
+      placeholder="NVDA, 4, 118.20&#10;KO, 30, 61.05&#10;MAR, 2, 288.40"
+      style="width:100%;padding:.6rem .7rem;margin:.25rem 0 .7rem;border:1px solid var(--line);
+             border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;
+             font-size:.95rem"></textarea>
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center">
+      <button id="ownSave" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
+        background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer">Save holdings</button>
+      <label class="tiny" style="cursor:pointer;text-decoration:underline">
+        or drop a broker CSV
+        <input type="file" id="ownCsv" accept=".csv,text/csv" style="display:none"></label>
+      <button id="ownSkip" class="tiny" style="background:none;border:none;color:var(--ink-2);
+        text-decoration:underline;cursor:pointer;padding:0">skip for now</button>
+    </div>
+    <p class="tiny" id="ownNote" style="margin:.6rem 0 0"></p>
+    <p class="tiny" style="margin:.7rem 0 0;color:var(--ink-3)">Stored in this browser only
+      — it is never sent to the server or saved against an account. Clearing your browser
+      data removes it.</p>
+  </div>
 
   <div class="card act">
     {% if b.n_qualified %}
@@ -83,7 +118,7 @@
       liquid stocks near a defended price with verified earnings dates, and nothing more.
       <a href="/limits" style="color:inherit">The test</a>.</p>
     <div class="wrap">
-      <table class="wl">
+      <table class="wl" id="results-wl">
         <thead><tr>
           <th>Stock</th><th class="r">Price</th><th class="r">Support</th>
           <th class="r">Stop</th><th class="r">Target</th><th class="r">RSI</th>
@@ -91,7 +126,7 @@
         </tr></thead>
         <tbody>
         {% for w in b.watchlist %}
-          <tr>
+          <tr data-ticker="{{ w.ticker }}">
             <td><b>{{ w.ticker }}</b><span class="nm2">{{ w.name }}</span></td>
             <td class="r">{{ '%.2f'|format(w.price) }}</td>
             <td class="r">{% if w.support_dist is not none %}+{{ w.support_dist }}%{% else %}—{% endif %}</td>
@@ -194,3 +229,144 @@
     A pick is a hypothesis, not advice. Verify the earnings date yourself before buying.
   </footer>
 </div>
+
+<script>
+// ---- holdings: the input everything else reads from ----
+// This was the seventh thing down the old page, inside a collapsed panel,
+// under twenty technical knobs, labelled "optional". It is the only input
+// that lets this tool say something a free screener cannot, so it now
+// gates the page until it is answered or explicitly skipped.
+const HKEY = "dipfinder_holdings_v1";
+const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function loadHoldings() {
+  try { return JSON.parse(localStorage.getItem(HKEY) || "null"); }
+  catch (e) { return null; }
+}
+function parseHoldings(text) {
+  return String(text || "").split(/[\n;]+/).map(l => l.trim()).filter(Boolean)
+    .map(line => {
+      const [t, sh, cost] = line.split(",").map(x => (x || "").trim());
+      if (!t) return null;
+      const o = {ticker: t.toUpperCase()};
+      if (sh && isFinite(parseFloat(sh))) o.shares = parseFloat(sh);
+      if (cost && isFinite(parseFloat(cost))) o.cost = parseFloat(cost);
+      return o;
+    }).filter(Boolean);
+}
+function markOverlaps(h) {
+  const own = new Set(h.map(x => x.ticker));
+  document.querySelectorAll("#results-wl tbody tr").forEach(tr => {
+    const t = (tr.dataset.ticker || "").toUpperCase();
+    const cell = tr.querySelector("td");
+    if (!cell) return;
+    const old = cell.querySelector(".ownflag");
+    if (old) old.remove();
+    tr.style.opacity = own.has(t) ? ".6" : "";
+    if (own.has(t))
+      cell.insertAdjacentHTML("beforeend",
+        '<span class="ownflag nm2" style="color:var(--amber)">you already hold this</span>');
+  });
+}
+function paintHoldings() {
+  const h = loadHoldings();
+  const gate = document.getElementById("ownGate");
+  const bar = document.getElementById("ownBar");
+  if (h && h.length) {
+    gate.style.display = "none";
+    bar.style.display = "block";
+    document.getElementById("ownSummary").textContent =
+      `Your holdings: ${h.length} position${h.length === 1 ? "" : "s"} — ` +
+      h.slice(0, 8).map(x => x.ticker).join(", ") +
+      (h.length > 8 ? `, +${h.length - 8} more · ` : " · ");
+    const f = document.getElementById("ckHold");
+    if (f) f.value = h.map(x => x.ticker).join(" ");
+    markOverlaps(h);
+  } else if (sessionStorage.getItem("dipfinder_skipped")) {
+    gate.style.display = "none"; bar.style.display = "none";
+  } else {
+    gate.style.display = "block"; bar.style.display = "none";
+  }
+}
+function saveHoldings(list, note) {
+  try { localStorage.setItem(HKEY, JSON.stringify(list)); } catch (e) {}
+  const n = document.getElementById("ownNote");
+  if (n) { n.textContent = note || ""; n.style.color = "var(--green)"; }
+  paintHoldings();
+}
+
+document.getElementById("ownSave").addEventListener("click", () => {
+  const list = parseHoldings(document.getElementById("ownText").value);
+  const n = document.getElementById("ownNote");
+  if (!list.length) {
+    n.textContent = "Nothing recognised. One per line: TICKER, shares, cost.";
+    n.style.color = "var(--amber)"; return;
+  }
+  saveHoldings(list, `Saved ${list.length} position(s).`);
+});
+document.getElementById("ownSkip").addEventListener("click", () => {
+  sessionStorage.setItem("dipfinder_skipped", "1"); paintHoldings();
+});
+document.getElementById("ownEdit").addEventListener("click", () => {
+  const h = loadHoldings() || [];
+  document.getElementById("ownText").value =
+    h.map(x => [x.ticker, x.shares, x.cost].filter(v => v != null).join(", ")).join("\n");
+  sessionStorage.removeItem("dipfinder_skipped");
+  document.getElementById("ownGate").style.display = "block";
+  document.getElementById("ownBar").style.display = "none";
+  document.getElementById("ownText").focus();
+});
+document.getElementById("ownCsv").addEventListener("change", async ev => {
+  const file = ev.target.files[0];
+  const n = document.getElementById("ownNote");
+  if (!file) return;
+  n.style.color = "var(--ink-2)"; n.textContent = "Reading " + file.name + "…";
+  try {
+    const r = await fetch("/parse_portfolio", {method: "POST", body: await file.text()});
+    const d = await r.json();
+    if (!d.ok) { n.textContent = d.error || "could not read that file";
+                 n.style.color = "var(--amber)"; return; }
+    const list = (d.holdings || []).map(x => ({ticker: String(x.ticker).toUpperCase(),
+                                               shares: x.shares, cost: x.cost}));
+    if (!list.length) { n.textContent = "No positions found in that file.";
+                        n.style.color = "var(--amber)"; return; }
+    document.getElementById("ownText").value =
+      list.map(x => [x.ticker, x.shares, x.cost].filter(v => v != null).join(", ")).join("\n");
+    saveHoldings(list, `Read ${list.length} position(s) from ${file.name}.`);
+  } catch (e) { n.textContent = "Could not read that file."; n.style.color = "var(--amber)"; }
+});
+
+// ---- the check ----
+const ICON = {ok: "✓", note: "·", warn: "⚠", block: "⛔"};
+const COLOR = {ok: "var(--green)", note: "var(--ink-2)", warn: "var(--amber)",
+               block: "var(--red)"};
+document.getElementById("ckGo").addEventListener("click", async () => {
+  const t = document.getElementById("ckTicker").value.trim();
+  const out = document.getElementById("ckOut");
+  if (!t) { out.innerHTML = '<p class="tiny">Type a ticker first.</p>'; return; }
+  out.innerHTML = '<p class="tiny">Checking…</p>';
+  try {
+    const held = loadHoldings() || [];
+    const r = await fetch("/check", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ticker: t,
+        holdings: held.length ? held
+                              : document.getElementById("ckHold").value})});
+    const d = await r.json();
+    if (!d.ok) { out.innerHTML = `<p class="tiny">${esc(d.error || "could not check")}</p>`;
+                 return; }
+    let html = (d.findings || []).map(f =>
+      `<p style="margin:0 0 .6rem"><b style="color:${COLOR[f.level]}">` +
+      `${ICON[f.level]} ${esc(f.headline)}</b><br>` +
+      `<span class="tiny">${esc(f.detail)}</span></p>`).join("");
+    if (!d.book_size) html += '<p class="tiny">No price book published yet, so overlap ' +
+      'could not be measured. It arrives with the next scheduled scan.</p>';
+    out.innerHTML = html || '<p class="tiny">Nothing to report.</p>';
+  } catch (e) {
+    out.innerHTML = '<p class="tiny">Could not reach the checker.</p>';
+  }
+});
+
+paintHoldings();
+</script>
