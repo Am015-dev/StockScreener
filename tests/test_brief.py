@@ -143,6 +143,29 @@ assert empty["scanned"] == 1500, "an empty day must still say how much was looke
 assert empty["bar"]["profit_factor"] == 0.62, "the bar is stated even with no pick"
 print("no qualifying setup: action is None, scan size and bar still reported")
 
+# ---- the card is a watchlist, not a recommendation ----
+# Taking money changes the obligations: presenting an unprofitable pattern
+# as something to do is dishonest before the first euro and a different
+# regulatory category after it.
+assert len(b["watchlist"]) >= 1
+w = b["watchlist"][0]
+for k in ("ticker", "price", "stop", "target", "rsi", "earnings"):
+    assert k in w, (k, w)
+assert w["support_dist"] is not None
+src = (ROOT / "templates" / "brief.html").read_text()
+assert "Research only \u2014 not" in src or "Research only" in src, \
+    "the research-only banner must be permanent, not conditional on a flag"
+# Affirmative language only — the disclaimer itself contains the word
+# "recommendations", and a bare substring check flags its own denial.
+for banned in ("One action today: buy", "we recommend", "you should buy",
+               "our recommendation", "buy this", "top pick of the day"):
+    assert banned.lower() not in src.lower(), \
+        f"recommendation language on the card: {banned!r}"
+assert "not\n      recommendations" in src or "not recommendations" in src \
+    or "Research only" in src, "the research-only disclaimer must be present"
+print(f"watchlist of {len(b['watchlist'])} rows, permanent research-only banner, "
+      f"no recommendation language")
+
 # ---- it must never raise on missing pieces ----
 for broken in ({}, {"results": [{}]}, {"results": [{"ticker": "X"}], "pending": [{}]},
                {"results": None, "pending": None, "journal": None}):

@@ -53,6 +53,16 @@
   .bar { border-left:3px solid var(--red); padding-left:.9rem; }
   .bar.pass { border-left-color:var(--green); }
   footer { margin-top:2rem; text-align:center; }
+  .wrap { overflow-x:auto; }
+  table.wl { width:100%; border-collapse:collapse; font-size:.9rem;
+             font-variant-numeric:tabular-nums; }
+  table.wl th, table.wl td { padding:.42rem .5rem; border-bottom:1px solid var(--line);
+                             text-align:left; white-space:nowrap; }
+  table.wl th { font-size:.7rem; text-transform:uppercase; letter-spacing:.07em;
+                color:var(--ink-3); font-weight:640; }
+  table.wl td.r, table.wl th.r { text-align:right; }
+  .nm2 { display:block; font-size:.76rem; color:var(--ink-3); white-space:normal;
+         max-width:11rem; }
 </style>
 
 <div class="wrap">
@@ -63,92 +73,46 @@
     {% if b.stale %}<br><span class="warn">A session has traded since this scan — re-check the levels.</span>{% endif %}
   </p>
 
-  {% if b.action %}
   <div class="card act">
-    {% if b.tradeable %}
-    <p class="lead">One action today: buy <span class="tk">{{ b.action.ticker }}</span>.</p>
-    <p>Buy <span class="num">{{ b.action.shares }}</span> shares of
-       {{ b.action.name }} at <span class="num">${{ '%.2f'|format(b.action.price) }}</span>
-       — <span class="num">{{ b.action.cost }}</span> in total.</p>
+    {% if b.n_qualified %}
+    <p class="lead">{{ b.n_qualified }} name{{ '' if b.n_qualified == 1 else 's' }}
+       dipped to support today.</p>
+    <p class="warn" style="font-weight:600;margin:0 0 .9rem">Research only — not
+      recommendations. This pattern has not been profitable in the five-year replay.
+      <a href="/limits" style="color:inherit">See the numbers</a>.</p>
+    <div class="wrap">
+      <table class="wl">
+        <thead><tr>
+          <th>Stock</th><th class="r">Price</th><th class="r">Support</th>
+          <th class="r">Stop</th><th class="r">Target</th><th class="r">RSI</th>
+          <th>Earnings</th>
+        </tr></thead>
+        <tbody>
+        {% for w in b.watchlist %}
+          <tr>
+            <td><b>{{ w.ticker }}</b><span class="nm2">{{ w.name }}</span></td>
+            <td class="r">{{ '%.2f'|format(w.price) }}</td>
+            <td class="r">{% if w.support_dist is not none %}+{{ w.support_dist }}%{% else %}—{% endif %}</td>
+            <td class="r">{{ '%.2f'|format(w.stop) }}</td>
+            <td class="r">{{ '%.2f'|format(w.target) }}</td>
+            <td class="r">{{ '%.0f'|format(w.rsi) }}</td>
+            <td>{{ w.earnings or '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="tiny" style="margin-top:.7rem">"Support" is how far above a price level
+      buyers previously defended each one is trading. Every row's earnings date was
+      checked against the published market calendar — anything that could not be
+      verified is in the blocked list below, not here.</p>
     {% else %}
-    <p class="lead">Today's paper trade: <span class="tk">{{ b.action.ticker }}</span>.</p>
-    <p class="warn" style="font-weight:600;margin-bottom:.8rem">Not for real money.
-       These rules have not yet earned it — see the record below. This is the trade
-       the tool is putting on the board today so you can watch how it turns out.</p>
-    <p>If you were trading it: buy <span class="num">{{ b.action.shares }}</span> shares
-       of {{ b.action.name }} at
-       <span class="num">${{ '%.2f'|format(b.action.price) }}</span> —
-       <span class="num">{{ b.action.cost }}</span> in total.</p>
-    {% endif %}
-    <p>Sell if it falls to <span class="num">${{ '%.2f'|format(b.action.stop) }}</span> —
-       that costs <span class="loss">€{{ '%.2f'|format(b.action.risk_eur) }}</span>.</p>
-    <p>Target <span class="num">${{ '%.2f'|format(b.action.target) }}</span> —
-       that pays <span class="gain">€{{ '%.2f'|format(b.action.reward_eur) }}</span>.</p>
-    <p>
-      {% if b.action.earnings_clear %}
-        <span class="ok">✓ No earnings report due</span> in the next 45 days, so nothing
-        scheduled can gap the price through your stop.
-      {% else %}
-        <span class="warn">Earnings in {{ b.action.earnings }}</span> — a report can gap
-        the price straight past your stop.
-      {% endif %}
-    </p>
-    <p class="muted">Why this one: {{ b.action.why }}.</p>
-    {% if b.action.edge_eur is not none %}
-    <p class="muted">Last {{ b.action.edge_n }} times this setup appeared on
-      {{ b.action.ticker }} under these rules it averaged
-      <b>{{ '%+.2f'|format(b.action.edge_eur) }} euro</b> at this position size. Counting
-      only the part of the bet you would not already own,
-      <b>{{ '%+.2f'|format(b.action.adds_eur) }} euro</b>.
-      {% if b.action.friction_eur %}Fees and spread take about
-      €{{ '%.2f'|format(b.action.friction_eur) }} of the €{{ '%.2f'|format(b.action.reward_eur) }}
-      if it works.{% endif %}</p>
-    {% endif %}
-  </div>
-
-<script>
-// The check runs against a price book published by the scheduled scan, so
-// this is one small POST — no crawl, no per-ticker lookup, nothing that can
-// time out.
-const ICON = {ok: "\u2713", note: "\u00b7", warn: "\u26a0", block: "\u26d4"};
-const COLOR = {ok: "var(--green)", note: "var(--ink-2)", warn: "var(--amber)",
-               block: "var(--red)"};
-const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g,
-  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-
-document.getElementById("ckGo").addEventListener("click", async () => {
-  const t = document.getElementById("ckTicker").value.trim();
-  const out = document.getElementById("ckOut");
-  if (!t) { out.innerHTML = '<p class="tiny">Type a ticker first.</p>'; return; }
-  out.innerHTML = '<p class="tiny">Checking\u2026</p>';
-  try {
-    const r = await fetch("/check", {method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ticker: t,
-        holdings: document.getElementById("ckHold").value})});
-    const d = await r.json();
-    if (!d.ok) { out.innerHTML = `<p class="tiny">${esc(d.error || "could not check")}</p>`; return; }
-    let html = d.findings.map(f =>
-      `<p style="margin:0 0 .6rem"><b style="color:${COLOR[f.level]}">` +
-      `${ICON[f.level]} ${esc(f.headline)}</b><br>` +
-      `<span class="tiny">${esc(f.detail)}</span></p>`).join("");
-    if (!d.book_size) html += '<p class="tiny">No price book published yet, so overlap ' +
-      'could not be measured. It arrives with the next scheduled scan.</p>';
-    out.innerHTML = html;
-  } catch (e) {
-    out.innerHTML = '<p class="tiny">Could not reach the checker.</p>';
-  }
-});
-</script>
-  {% else %}
-  <div class="card act">
-    <p class="lead">No action today.</p>
-    <p>Nothing among the {{ b.scanned or 0 }} stocks scanned met every rule.
-       That is the tool working, not failing — most days do not offer a trade
-       worth taking.</p>
+    <p class="lead">Nothing dipped to support today.</p>
+    <p>None of the {{ b.scanned or 0 }} stocks scanned met every rule. Most days do not
+       offer one.</p>
     <p class="muted">Close the tab. You have missed nothing.</p>
+    {% endif %}
   </div>
-  {% endif %}
 
   {% if b.blocked %}
   <div class="card">
@@ -179,38 +143,22 @@ document.getElementById("ckGo").addEventListener("click", async () => {
     {% else %}
       <p>No picks logged yet.</p>
     {% endif %}
-    {% if b.bar.profit_factor is not none %}
-    <p class="bar {{ 'pass' if b.bar.passes else '' }}" style="margin-top:.9rem">
-      {% if b.bar.passes %}
-        <b class="ok">These rules clear the tradeable bar</b> in the five-year replay.
-      {% else %}
-        <b style="color:var(--red)">These rules do not clear the tradeable bar.</b>
-        The five-year replay through a realistic five-position account returns a profit
-        factor of {{ b.bar.profit_factor }}, against the 1.5 required.
-        <b>Do not put real money behind this yet.</b>
-      {% endif %}
-    </p>
+    {% if b.bar.profit_factor is not none and not b.bar.passes %}
+    <p class="bar" style="margin-top:.9rem">The five-year replay of these rules does not
+      clear the bar this project set for itself.
+      <a href="/limits">The numbers, and everything else that is wrong with it</a>.</p>
+    {% elif b.bar.passes %}
+    <p class="bar pass" style="margin-top:.9rem"><b class="ok">These rules clear the
+      tradeable bar</b> in the five-year replay. <a href="/limits">See the working</a>.</p>
     {% endif %}
   </div>
 
-  {% if b.also %}
+  {% if b.one_trade %}
   <div class="card">
-    <h2>Also qualified — not today's action</h2>
-    <p class="tiny" style="margin-bottom:.6rem">Ordered by what each would add on top of
-      the one above it — not by how good the chart looks on its own.</p>
-    <ul>
-      {% for a in b.also %}
-      <li>{{ a.ticker }} — {{ a.name }}
-        {% if a.adds_eur is not none %}<span class="tiny">adds
-        {{ '%+.2f'|format(a.adds_eur) }} euro</span>{% endif %}</li>
-      {% endfor %}
-    </ul>
-    {% if b.one_trade %}
-    <p class="tiny" style="margin-top:.7rem"><b>Do not buy all of these.</b>
-      {{ b.one_trade.tickers|join(', ') }} move together — buying
+    <h2>Do not buy all of these</h2>
+    <p>{{ b.one_trade.tickers|join(', ') }} move together. Buying
       {{ b.one_trade.n }} of them is one position in {{ b.one_trade.n }} pieces, and one
       bad morning takes out every piece.</p>
-    {% endif %}
   </div>
   {% endif %}
 
