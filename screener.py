@@ -2030,6 +2030,29 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
     # same morning. This project's own five-year replay is the evidence —
     # profit factor 1.62 taking every signal alone, 0.62 through a
     # five-slot book, with no change to any individual trade.
+    # ---- one company, one row ----
+    # De-duplication was by ticker string, which is not the same thing.
+    # BT Group reaches the universe as BT-A.L and BTL.XC, Logitech as LOGI
+    # and LOGN.SW, Shell as SHEL and SHEL.L. Different strings, so both
+    # survived and the board showed the same setup twice with near
+    # identical numbers. A reader working down the list buys one position
+    # believing they bought two — worse than the correlation problem,
+    # because it is not correlation, it is identity.
+    dup_dropped = []
+    try:
+        rows[:], dup_dropped = concentration.dedupe_listings(rows)
+        for d in dup_dropped:
+            reject(d["ticker"], d["why_not"])
+            if p["show_near"]:
+                near_rows.append(d)
+        if dup_dropped:
+            df = pd.DataFrame(rows)
+            progress(f"Removed {len(dup_dropped)} duplicate listing(s) of "
+                     f"companies already on the board: "
+                     f"{', '.join(d['ticker'] for d in dup_dropped)}.")
+    except Exception as e:
+        progress(f"Cross-listing de-duplication skipped: {type(e).__name__}: {e}")
+
     conc, groups = {}, []
     try:
         held = [h.get("ticker") for h in (p.get("holdings") or [])
@@ -2070,6 +2093,17 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
     pending = sorted((row for row, m in near
                       if any(g == "unverified" for g, _r in m)),
                      key=lambda r: r.get("score", 0), reverse=True)[:30]
+    # the blocked list needs the same treatment, and must not repeat a
+    # company already published above it
+    try:
+        published = {concentration.company_key(r.get("name"), r.get("ticker", ""))
+                     for r in rows}
+        pending = [r for r in pending
+                   if concentration.company_key(r.get("name"), r.get("ticker", ""))
+                   not in published]
+        pending, _dup = concentration.dedupe_listings(pending)
+    except Exception:
+        pass
     return {"df": df, "rejections": rejections, "universe_size": len(universe),
             "elapsed_s": elapsed, "params": p, "portfolio": port_summary,
             "near": near_rows, "relax_hints": relax_hints, "pending": pending,

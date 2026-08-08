@@ -1,0 +1,174 @@
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Today's brief — Dip Finder</title>
+<style>
+  :root {
+    --bg:#faf9f7; --card:#fff; --line:#e3e1dc; --ink:#1a1917; --ink-2:#5c5a55;
+    --ink-3:#87857f; --accent:#2a78d6; --green:#157f5b; --amber:#97650a;
+    --red:#c8442c;
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+      --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+      --amber:#d9a02c; --red:#e5705a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+    --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+    --amber:#d9a02c; --red:#e5705a;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:17px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:40rem; margin:0 auto; padding:2rem 1.15rem 4rem; }
+  h1 { font-size:1.35rem; line-height:1.3; margin:0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:var(--ink-2); font-size:.9rem; margin:0 0 1.4rem; }
+  .card {
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:1.5rem 1.4rem; margin:0 0 1.1rem;
+  }
+  .card.act { border-color:var(--accent); border-width:2px; }
+  .lead { font-size:1.5rem; line-height:1.35; font-weight:640; margin:0 0 1rem;
+          letter-spacing:-.015em; }
+  .lead .tk { color:var(--accent); }
+  p { margin:0 0 .75rem; }
+  p:last-child { margin-bottom:0; }
+  .num { font-variant-numeric:tabular-nums; font-weight:640; }
+  .loss { color:var(--red); font-variant-numeric:tabular-nums; font-weight:640; }
+  .gain { color:var(--green); font-variant-numeric:tabular-nums; font-weight:640; }
+  .ok { color:var(--green); }
+  .warn { color:var(--amber); }
+  .muted { color:var(--ink-2); font-size:.9rem; }
+  .tiny { color:var(--ink-3); font-size:.82rem; line-height:1.55; }
+  h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.09em;
+       color:var(--ink-3); margin:0 0 .7rem; font-weight:640; }
+  ul { margin:0; padding-left:1.15rem; }
+  li { margin:.2rem 0; }
+  a { color:var(--accent); }
+  .bar { border-left:3px solid var(--red); padding-left:.9rem; }
+  .bar.pass { border-left-color:var(--green); }
+  footer { margin-top:2rem; text-align:center; }
+</style>
+
+<div class="wrap">
+  <h1>Today's brief</h1>
+  <p class="sub">
+    {% if b.date %}{{ b.date }}{% endif %}
+    {% if b.market_label %}· {{ b.market_label }}{% endif %}
+    {% if b.stale %}<br><span class="warn">A session has traded since this scan — re-check the levels.</span>{% endif %}
+  </p>
+
+  {% if b.action %}
+  <div class="card act">
+    <p class="lead">One action today: buy <span class="tk">{{ b.action.ticker }}</span>.</p>
+    <p>Buy <span class="num">{{ b.action.shares }}</span> shares of
+       {{ b.action.name }} at <span class="num">${{ '%.2f'|format(b.action.price) }}</span>
+       — <span class="num">{{ b.action.cost }}</span> in total.</p>
+    <p>Sell if it falls to <span class="num">${{ '%.2f'|format(b.action.stop) }}</span> —
+       you lose <span class="loss">€{{ '%.2f'|format(b.action.risk_eur) }}</span>.</p>
+    <p>Target <span class="num">${{ '%.2f'|format(b.action.target) }}</span> —
+       you make <span class="gain">€{{ '%.2f'|format(b.action.reward_eur) }}</span>.</p>
+    <p>
+      {% if b.action.earnings_clear %}
+        <span class="ok">✓ Earnings confirmed clear of your trade</span> — the published
+        calendar shows no report in the next 45 days.
+      {% else %}
+        <span class="warn">Earnings in {{ b.action.earnings }}</span> — confirmed against
+        the published calendar.
+      {% endif %}
+    </p>
+    <p class="muted">Why: {{ b.action.why }}.</p>
+    {% if b.action.edge_r is not none %}
+    <p class="tiny">Under these exact rules this setup has been replayed
+      {{ b.action.edge_n }} times on {{ b.action.ticker }} and averaged
+      {{ '%+.2f'|format(b.action.edge_r) }}R. After removing the part of the bet
+      you would already own, it adds {{ '%+.3f'|format(b.action.adds_r) }}R.
+      Costs eat {{ b.action.friction_pct }}% of the target profit.</p>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="card act">
+    <p class="lead">No action today.</p>
+    <p>Nothing among the {{ b.scanned or 0 }} stocks scanned met every rule.
+       That is the tool working, not failing — most days do not offer a trade
+       worth taking.</p>
+    <p class="muted">Close the tab. You have missed nothing.</p>
+  </div>
+  {% endif %}
+
+  {% if b.blocked %}
+  <div class="card">
+    <h2>Blocked today — {{ b.n_blocked }} setup{{ '' if b.n_blocked == 1 else 's' }}</h2>
+    <ul>
+      {% for g in b.blocked %}
+      <li><span class="num">{{ g.n }}</span> — {{ g.reason }}
+        <span class="tiny">({{ g.tickers|join(', ') }})</span></li>
+      {% endfor %}
+    </ul>
+    <p class="tiny" style="margin-top:.7rem">These passed every technical test and were
+      still withheld. A check that cannot be completed blocks the pick; it is never
+      shown as if it had passed.</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Track record</h2>
+    {% if b.record and b.record.n %}
+      <p>{{ b.record.win_rate }}% of {{ b.record.n }} resolved picks hit their target
+         first, averaging {{ '%+.2f'|format(b.record.avg_r) }}R
+         ({{ '%+.1f'|format(b.record.total_r) }}R in total).</p>
+    {% elif b.record and b.record.logged %}
+      <p>{{ b.record.logged }} pick{{ '' if b.record.logged == 1 else 's' }} logged so
+         far; none has reached its target or stop yet. Every pick is recorded when it is
+         published and graded automatically, so this number cannot be curated after the
+         fact.</p>
+    {% else %}
+      <p>No picks logged yet.</p>
+    {% endif %}
+    {% if b.bar.profit_factor is not none %}
+    <p class="bar {{ 'pass' if b.bar.passes else '' }}" style="margin-top:.9rem">
+      {% if b.bar.passes %}
+        <b class="ok">These rules clear the tradeable bar</b> in the five-year replay.
+      {% else %}
+        <b style="color:var(--red)">These rules do not clear the tradeable bar.</b>
+        The five-year replay through a realistic five-position account returns a profit
+        factor of {{ b.bar.profit_factor }}, against the 1.5 required.
+        <b>Do not put real money behind this yet.</b>
+      {% endif %}
+    </p>
+    {% endif %}
+  </div>
+
+  {% if b.also %}
+  <div class="card">
+    <h2>Also qualified — not today's action</h2>
+    <p class="tiny" style="margin-bottom:.6rem">Ranked by what each adds to a book that
+      already holds the pick above it, not by how good the chart looks on its own.
+      {% if b.concentration.effective_bets %}
+      All {{ b.concentration.n_picks }} qualifying names amount to about
+      {{ b.concentration.effective_bets }} genuinely separate bets.{% endif %}</p>
+    <ul>
+      {% for a in b.also %}
+      <li>{{ a.ticker }} — {{ a.name }}
+        {% if a.adds_r is not none %}<span class="tiny">adds
+        {{ '%+.3f'|format(a.adds_r) }}R</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <footer class="tiny">
+    Scanned {{ b.scanned or 0 }} stocks{% if b.asof %} at {{ b.asof }}{% endif %}.
+    Scans run on a schedule — this page never starts one, so it always loads.<br>
+    <a href="/limits">Known issues &amp; limits</a> ·
+    <a href="/changelog">Changelog</a> ·
+    <a href="/full">Full board</a> ·
+    <a href="/results.csv">Download the scan</a><br>
+    A pick is a hypothesis, not advice. Verify the earnings date yourself before buying.
+  </footer>
+</div>

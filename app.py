@@ -21,6 +21,7 @@ import yfinance as yf
 from flask import Flask, Response, jsonify, render_template, request
 
 import backtest as backtest_mod
+import brief
 import db as market_db
 import cache_store
 import journal
@@ -579,6 +580,20 @@ def _auto_reverify(params, attempts=12, wait=30):
 
 @app.route("/")
 def index():
+    """One card, one decision — rendered on the server, so the page is
+    complete when it arrives and never starts a scan to fill itself in."""
+    try:
+        m = market_clock.state()
+        f = (market_clock.staleness(float(_state["results_ts"]))
+             if _state.get("results_ts") else None)
+    except Exception:
+        m, f = None, None
+    return render_template("brief.html", b=brief.build(_state, m, f))
+
+
+@app.route("/full")
+def full_board():
+    """The whole table, for anyone who wants to see the working."""
     return render_template("index.html")
 
 
