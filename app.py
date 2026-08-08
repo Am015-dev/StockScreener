@@ -953,11 +953,16 @@ def _sec_within(budget_s: float):
     return get_json
 
 
-def _cik_for(ticker: str) -> int | None:
-    """Ticker -> CIK, from the same SEC file the universe already uses."""
+def _cik_for(ticker: str, timeout: float = 8.0) -> int | None:
+    """Ticker -> CIK, from the same SEC file the universe already uses.
+
+    The timeout is an argument because this sits INSIDE a credit report's
+    time budget: at a fixed 15 seconds it could spend longer than the
+    whole report was allowed before the report's own clock started.
+    """
     if _cik_map["data"] is None or time.time() - _cik_map["ts"] > 7 * 86400:
         try:
-            d = _sec_json(screener.SEC_TICKERS_URL)
+            d = _sec_json(screener.SEC_TICKERS_URL, timeout=timeout)
             fields = [f.lower() for f in d.get("fields", [])]
             ti, ci = fields.index("ticker"), fields.index("cik")
             _cik_map.update(
@@ -1013,7 +1018,7 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
         cached["cached"] = True
         return _with_peers(cached)
 
-    cik = _cik_for(ticker)
+    cik = _cik_for(ticker, timeout=min(8.0, budget_s / 2))
     if cik is None:
         return {"ok": True, "ticker": ticker, "dd": None,
                 "verdict": "Not a US filer — SEC XBRL covers US listings "
