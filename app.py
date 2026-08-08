@@ -1170,7 +1170,16 @@ def credit_report():
     ticker = str(body.get("ticker") or "").strip().upper()
     if not ticker:
         return jsonify({"ok": False, "error": "no ticker given"}), 400
-    return jsonify(_credit_for(ticker))
+    try:
+        return jsonify(_credit_for(ticker))
+    except Exception as e:                      # noqa: BLE001
+        # a 500 here is a blank space on the card where a credit standing
+        # should be, which reads as "nothing to worry about"
+        print(f"[credit] {ticker}: {type(e).__name__}: {e}", flush=True)
+        return jsonify({"ok": True, "ticker": ticker, "dd": None,
+                        "missing": ["the credit model"],
+                        "verdict": "This company's credit standing could not "
+                                   "be worked out just now."})
 
 
 @app.route("/limits")

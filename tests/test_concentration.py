@@ -341,7 +341,7 @@ assert "weights" not in _inspect.signature(cc.effective_bets).parameters, \
     "if this grows a weights argument, the caller's sentence must change too"
 import pretrade as _pt
 _src = _inspect.getsource(_pt.check)
-assert "not how much of each" in _src, \
+assert "rather than how much of each" in _src, \
     "the reader must be told the figure counts holdings, not euros"
 print("the caller states that it counts holdings rather than position sizes")
 
