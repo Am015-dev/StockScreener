@@ -167,3 +167,58 @@ for k, mutate in probes.items():
 print("config identity OK: every realism knob changes the hash")
 
 print("\nALL REALISM TESTS PASSED")
+
+# ---- the null test must share the exit path, not fork it ----
+# A falsification test running through its own copy of the exit logic
+# proves nothing about the strategy — only that two implementations
+# differ. So null mode lives inside _simulate_block and changes exactly
+# one thing: which bars are entered on.
+import inspect
+
+src = inspect.getsource(backtest._simulate_block)
+assert "_null_rate" in src, "null mode must live inside the real simulate block"
+for shared in ("stop_atr_mult", "cost_pct", "hold_cap", "busy_until"):
+    assert shared in src, f"{shared} must still be in the shared path"
+
+# it must actually enter trades, and only on the coin flip
+walkers = {t: _synth_walk(seed=i) for i, t in enumerate(("N1", "N2", "N3"))} \
+    if "_synth_walk" in dir() else None
+if walkers is None:
+    import numpy as _np
+    import pandas as _pd
+
+    def _synth_walk(seed=0, n=1300):
+        rg = _np.random.default_rng(seed)
+        c = 100 * _np.cumprod(1 + rg.normal(0.0003, 0.016, n))
+        idx = _pd.bdate_range(end=_pd.Timestamp.today(), periods=n)
+        return _pd.DataFrame(
+            {"Open": c, "High": c * 1.008, "Low": c * 0.992, "Close": c,
+             "Volume": rg.uniform(3e6, 9e6, n)}, index=idx)
+
+    walkers = {t: _synth_walk(seed=i) for i, t in enumerate(("N1", "N2", "N3"))}
+
+import pandas as _pd2
+
+_frame = _pd2.concat(walkers, axis=1)
+_p = screener.clean_params({"min_dollar_vol_m": 0, "min_price": 0,
+                            "min_share_vol": 0, "require_market_uptrend": False,
+                            "min_rs_3m": -100})
+_hi, _lo = [], []
+backtest._simulate_block(dict(_p, _null_rate=0.05, _null_seed=1), _frame,
+                         list(walkers), _hi, None)
+backtest._simulate_block(dict(_p, _null_rate=0.001, _null_seed=1), _frame,
+                         list(walkers), _lo, None)
+assert len(_hi) > len(_lo), (len(_hi), len(_lo))
+assert _lo == [] or len(_lo) < len(_hi)
+print(f"null mode enters on the coin flip only: rate 0.05 -> {len(_hi)} trades, "
+      f"rate 0.001 -> {len(_lo)}")
+
+# and every null trade is managed exactly like a real one
+for t in _hi[:20]:
+    assert "outcome_r" in t and "status" in t, t
+    # the simulator's own vocabulary — "hit_stop"/"hit_target" belong to
+    # the journal, which grades live picks, and the two must not be mixed
+    assert t["status"] in ("stop", "target", "expired"), t["status"]
+print("null trades resolve through the same target/stop/expiry conventions")
+
+print("\nNULL-MODE INVARIANTS HELD")

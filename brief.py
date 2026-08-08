@@ -73,8 +73,11 @@ def build(state: dict, market: dict | None = None,
     ts = state.get("results_ts")
     when = _dt.datetime.fromtimestamp(ts, _dt.timezone.utc) if ts else None
 
-    # The pick is the top of the board, which is already ordered by what it
-    # adds rather than by score — and a measured loser can never be there.
+    # The top of the board, already ordered by what it adds rather than by
+    # score. Deliberately NOT called a recommendation anywhere: the pattern
+    # has not been profitable in the replay, so presenting it as something
+    # to do is both dishonest and — once money changes hands — a different
+    # regulatory category. It is a watchlist entry with its working shown.
     pick = results[0] if results else None
     action = None
     if pick:
@@ -175,6 +178,15 @@ def build(state: dict, market: dict | None = None,
         "stale": bool((fresh or {}).get("stale")),
         "action": action,
         "n_qualified": len(results),
+        "watchlist": [
+            {"ticker": r.get("ticker"), "name": r.get("name"),
+             "price": r.get("price"), "stop": r.get("stop"),
+             "target": r.get("resistance"), "rsi": r.get("RSI"),
+             "support_dist": (round((r["price"] / r["support"] - 1) * 100, 1)
+                              if r.get("support") else None),
+             "earnings": r.get("earnings_in"),
+             "analyst": r.get("analyst")}
+            for r in results[:8]],
         "also": also,
         "blocked": blocked,
         "n_blocked": len(pending),
