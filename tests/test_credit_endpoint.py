@@ -33,6 +33,8 @@ sys.path.insert(0, str(ROOT))
 
 import app as A
 
+REAL_CIK_FOR = A._cik_for   # earlier sections stub this out
+
 
 # ---- a fake SEC and a fake price book -------------------------------
 # Twelve companies with the same price path and the same balance sheet
@@ -77,7 +79,7 @@ def fake_sec(url, timeout=15):
 
 
 A._sec_json = fake_sec
-A._cik_for = lambda t: CIK.get((t or "").upper())
+A._cik_for = lambda t, timeout=8.0: CIK.get((t or "").upper())
 A._price_book = lambda fetch=False: {t: PRICES for t in LEVERAGE}
 A._state["results"] = [{"ticker": t} for t in LEVERAGE]
 
@@ -158,7 +160,7 @@ A._vol_book = lambda fetch=False: {}
 # on each is a two-minute timeout on the report, which is what production
 # did: Carnival held a worker thread for 120 seconds and returned nothing.
 A._state["results"] = [{"ticker": t} for t in LEVERAGE]
-A._cik_for = lambda t: CIK.get((t or "").upper())
+A._cik_for = lambda t, timeout=8.0: CIK.get((t or "").upper())
 
 slow_calls = []
 
@@ -191,11 +193,41 @@ assert retry["dd"] is not None, \
 print("a timed-out report says so, and does not poison the cache for 24 hours")
 
 # ---- refusals stay refusals -----------------------------------------
-A._cik_for = lambda t: None
+A._cik_for = lambda t, timeout=8.0: None
 foreign = client.post("/credit", json={"ticker": "NESN.SW"}).get_json()
 assert foreign["dd"] is None and "US" in foreign["verdict"]
 blank = client.post("/credit", json={"ticker": "  "})
 assert blank.status_code == 400
 print("a non-US filer and an empty ticker are refused, not guessed at")
+
+
+# ---- a transient SEC failure must not become a permanent verdict ----
+# The ticker->CIK map is refreshed weekly. On failure the old code stored
+# an EMPTY map and stamped the timestamp as a success, so the refresh
+# check would not retry for seven days and every report answered "Not a
+# US filer — SEC XBRL covers US listings only". For Apple. And the
+# startup warmer hits this path first, so one hiccup at boot poisoned
+# every report the instance would ever serve.
+A._cik_for = REAL_CIK_FOR
+A._cik_map.update(data=None, ts=0.0)
+_tries = {"n": 0}
+
+TICKERS_JSON = {"fields": ["cik", "name", "ticker", "exchange"],
+                "data": [[320193, "Apple Inc.", "AAPL", "Nasdaq"]]}
+
+
+def flaky_tickers(url, timeout=15):
+    _tries["n"] += 1
+    if _tries["n"] == 1:
+        raise RuntimeError("SEC unavailable")
+    return TICKERS_JSON
+
+
+A._sec_json = flaky_tickers
+
+assert A._cik_for("AAPL") is None, "the first attempt genuinely fails"
+assert A._cik_for("AAPL") == 320193, \
+    "a failed fetch must be retried, not cached as 'not a US filer' for a week"
+print("one SEC hiccup does not turn every company into a non-US filer")
 
 print("\nALL CREDIT-ENDPOINT TESTS PASSED")
