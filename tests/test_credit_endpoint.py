@@ -17,6 +17,7 @@ No network: the SEC fetch and the price book are both injected.
 """
 import os
 import sys
+import time
 import tempfile
 import math
 from pathlib import Path
@@ -58,7 +59,7 @@ BY_CIK = {v: k for k, v in CIK.items()}
 sec_calls = []
 
 
-def fake_sec(url):
+def fake_sec(url, timeout=15):
     sec_calls.append(url)
     cik = int(url.split("CIK")[1][:10])
     t = BY_CIK[cik]
@@ -123,6 +124,43 @@ A._state["results"] = []
 solo = client.post("/credit", json={"ticker": "AAA"}).get_json()
 assert solo["dd"] is not None and solo["percentile"] is None
 print("a company that is not on today's board is measured but not ranked")
+
+# ---- the report is bounded in total, not per SEC call ---------------
+# One report makes up to eight sequential SEC calls. A 15-second timeout
+# on each is a two-minute timeout on the report, which is what production
+# did: Carnival held a worker thread for 120 seconds and returned nothing.
+A._state["results"] = [{"ticker": t} for t in LEVERAGE]
+A._cik_for = lambda t: CIK.get((t or "").upper())
+
+slow_calls = []
+
+
+def slow_sec(url, timeout=15):
+    slow_calls.append((url, timeout))
+    time.sleep(min(timeout, 1.5))            # every call crawls
+    raise RuntimeError("SEC timed out")
+
+
+A._sec_json = slow_sec
+A.cache_store.put("credit:CCC", None)        # make sure it is not served warm
+t0 = time.time()
+slow = A._credit_for("CCC", budget_s=4.0)
+elapsed = time.time() - t0
+assert elapsed < 10, f"a 4s budget must bound the report, took {elapsed:.1f}s"
+assert slow["dd"] is None
+assert max(t for _, t in slow_calls) <= 8.0, \
+    "no single call may be given more time than the whole report has"
+print(f"a 4-second budget returns in {elapsed:.1f}s instead of running eight "
+      f"timeouts back to back")
+
+# and a timeout must not be worded, or cached, as a company that files nothing
+assert "did not answer in time" in slow["verdict"], slow["verdict"]
+hit, _ = A.cache_store.fetch("credit:CCC", A.CREDIT_TTL)
+A._sec_json = fake_sec
+retry = A._credit_for("CCC")
+assert retry["dd"] is not None, \
+    "a timed-out report must not be cached — the retry has to be able to work"
+print("a timed-out report says so, and does not poison the cache for 24 hours")
 
 # ---- refusals stay refusals -----------------------------------------
 A._cik_for = lambda t: None
