@@ -118,6 +118,17 @@ assert credit.band(0.5) == "in distress on this measure"
 assert credit.band(None) is None
 print("bands are round numbers, described as such, not fitted thresholds")
 
+# ---- the report states how much history its volatility rests on ----
+# KMV uses a year of daily returns. The published price book carries 60
+# closes. A distance computed off a quarter of a year is not as firm as
+# one computed off four, and the report must not present them alike.
+thin = credit.report("X", 1e11, rising[:60], 4e10, 9e10)
+thick = credit.report("X", 1e11, (rising * 6)[:400], 4e10, 9e10)
+assert thin["vol_obs"] == 60 and thin["vol_thin"] is True, thin
+assert thick["vol_obs"] == 400 and thick["vol_thin"] is False, thick
+print(f"a distance built on {thin['vol_obs']} closes is flagged thin; "
+      f"{thick['vol_obs']} is not")
+
 # ---- reading a filed balance sheet, however it was tagged ----
 direct = {"facts": {"us-gaap": {
     "LiabilitiesCurrent": {"units": {"USD": [

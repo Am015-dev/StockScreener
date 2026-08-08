@@ -163,6 +163,14 @@ def report(ticker: str, equity: float | None, closes,
 
     out["equity"] = equity
     out["equity_vol"] = round(vol, 4)
+    # How much price history the volatility rests on. KMV uses a year of
+    # daily returns; the published price book carries 60 closes, which is
+    # about a quarter, and a quarter of returns estimates an annualised
+    # volatility with roughly a +/-9% standard error at 22% vol. That
+    # propagates straight into the distance, so the report states the
+    # sample it used rather than presenting every figure as equally solid.
+    out["vol_obs"] = len([1 for x in (closes or []) if x and float(x) > 0])
+    out["vol_thin"] = out["vol_obs"] < 200
     out["default_point"] = dp
     out["current_liabilities"] = current_liabilities
     out["total_liabilities"] = total_liabilities
