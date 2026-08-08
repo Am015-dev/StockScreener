@@ -1,0 +1,78 @@
+# The falsification test the project should have run before any tuning.
+#
+# Every published number about the strategy answers the wrong question.
+# "Profit factor 0.62" says the rules lose money. It does not say whether
+# the RULES are the reason — a coin flip managed with the same stop, the
+# same target and the same holding period also produces a number, and if
+# that number is the same, the pullback logic is decoration.
+#
+# This runs the real signal and a few dozen coin flips over the same
+# stocks and the same days, through byte-for-byte identical exit code,
+# and reports where the real expectancy falls in the random distribution.
+#
+# It runs here rather than on the web instance for the same reason the
+# scan does: Yahoo throttles per IP, a runner gets a fresh one, and the
+# 512MB instance cannot hold five years of prices for hundreds of names.
+name: Null test
+
+on:
+  workflow_dispatch:
+    inputs:
+      universe_max:
+        description: "How many stocks to test over"
+        default: "400"
+      seeds:
+        description: "How many coin-flip runs"
+        default: "25"
+
+jobs:
+  null-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run the permutation test
+        env:
+          SEC_CONTACT: ${{ secrets.SEC_CONTACT || 'stockscreener@example.com' }}
+        run: |
+          python scripts/null_test.py \
+            --universe-max "${{ github.event.inputs.universe_max || '400' }}" \
+            --seeds "${{ github.event.inputs.seeds || '25' }}" \
+            --out null_test.json
+      - name: Publish the result
+        if: always()
+        run: |
+          test -f null_test.json || { echo "no result produced"; exit 0; }
+          cat null_test.json
+          mkdir -p pub && cp null_test.json pub/
+          cd pub
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Null test $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push -q --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            HEAD:null-test-result
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f null_test.json ]; then
+            python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("null_test.json"))
+          r, n = d["real"], d["null"]
+          print("## Null test\n")
+          print(f"**{d['verdict']}**\n")
+          print("| | trades | avg R | win rate | profit factor |")
+          print("|---|---|---|---|---|")
+          print(f"| Real signal | {r['n']} | {r['avg_r']:+.4f} | {r['win_rate_pct']}% | {r['profit_factor']} |")
+          print(f"| Random entry | ~{n['mean_trades']} | {n['mean_avg_r']:+.4f} | {n['mean_win_rate']}% | {n['mean_pf']} |")
+          print(f"\nz = {d['z']:+.2f}, p = {d['p_value']:.3f} over {n['runs']} coin-flip runs.")
+          EOF
+          fi

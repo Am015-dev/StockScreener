@@ -246,21 +246,41 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list,
         # only contains trades that resolved fast, i.e. mostly stop-outs
         hold_cap = int(p.get("max_hold_bars") or EXPIRE_BARS)
         cost_pct = float(p.get("cost_pct") or 0.0)
+        # NULL MODE: the falsification test. Trade MANAGEMENT stays byte for
+        # byte identical — same stop, same target, same hold cap, same costs,
+        # same one-trade-per-ticker rule. Only the SELECTION is replaced, by
+        # a coin flip. If the pullback rules carry no information, the two
+        # produce the same expectancy and the signal is decoration.
+        # Deliberately kept inside this function rather than forked into a
+        # copy: a null test running through different exit code proves
+        # nothing about the strategy, only about the two implementations.
+        null_rate = p.get("_null_rate")
+        rng = np.random.default_rng(p.get("_null_seed", 0)) if null_rate else None
+
         for ti in range(210, len(hist) - hold_cap):
             if ti <= busy_until:
                 continue                       # one open trade per ticker
             price = float(c_v[ti])
-            if not price > float(sma200.iloc[ti]):
-                continue
-            r = float(rsi_s.iloc[ti])
-            if not (p["rsi_low"] <= r <= p["rsi_high"]):
-                continue
-            if regime_ok is not None and not regime_ok[ti]:
-                continue                       # benchmark below its 200-day
-            if rs_v is not None:
-                rsv = rs_v[ti]
-                if not np.isfinite(rsv) or rsv < p["min_rs_3m"]:
-                    continue                   # lagging its own market
+            if rng is not None:
+                # Everything below that survives is a TRADABILITY constraint
+                # (is there a stop, a target, enough liquidity) rather than a
+                # claim about edge. The edge claims — uptrend, dip zone,
+                # reward:risk floor, relative strength, stop-in-noise — are
+                # exactly what is being tested, so they are skipped here.
+                if rng.random() >= null_rate:
+                    continue
+            else:
+                if not price > float(sma200.iloc[ti]):
+                    continue
+                r = float(rsi_s.iloc[ti])
+                if not (p["rsi_low"] <= r <= p["rsi_high"]):
+                    continue
+                if regime_ok is not None and not regime_ok[ti]:
+                    continue                   # benchmark below its 200-day
+                if rs_v is not None:
+                    rsv = rs_v[ti]
+                    if not np.isfinite(rsv) or rsv < p["min_rs_3m"]:
+                        continue               # lagging its own market
             if float(dv30.iloc[ti]) < p["min_dollar_vol_m"] * 1e6:
                 continue
             # illiquid traps: a sub-$5 price or a thin share count means the
@@ -291,10 +311,13 @@ def _simulate_block(p: dict, data, tickers: list[str], trades: list,
                 continue
             risk_ps = price - stop
             rr = (resistance - price) / risk_ps if risk_ps > 0 else float("nan")
-            if not np.isfinite(rr) or rr < p["min_rr"]:
+            if not np.isfinite(rr):
                 continue
-            if a and p["min_stop_atr"] and risk_ps / a < p["min_stop_atr"]:
-                continue
+            if rng is None:
+                if rr < p["min_rr"]:
+                    continue
+                if a and p["min_stop_atr"] and risk_ps / a < p["min_stop_atr"]:
+                    continue
 
             # replay forward — identical conventions to the live journal.
             # MFE/MAE (max favorable/adverse excursion, in R) ride along:
