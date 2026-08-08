@@ -37,7 +37,8 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
           earnings: dict | None = None, cal_complete: bool = False,
           risk_eur: float | None = None, reward_eur: float | None = None,
           friction_pct: float | None = None,
-          earn_window_days: int = 45, gate_days: int = 10) -> dict:
+          earn_window_days: int = 45, gate_days: int = 10,
+          warming: bool = False) -> dict:
     """Everything the reader cannot work out from a free screener.
 
     price_book: {ticker: [daily closes]} — published by the scheduled scan,
@@ -71,6 +72,14 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
         add("ok", f"No earnings due for at least {earn_window_days} days",
             "Checked against the published market calendar for every trading day "
             "in that window — this company appears on none of them.")
+    elif warming:
+        # Distinct from a failure. "Still loading" and "could not be read"
+        # both block the pick, but only one of them is worth waiting out,
+        # and telling a reader their data is broken when it is merely late
+        # spends trust for nothing.
+        add("block", "Earnings calendar is still loading",
+            "The first check after the server restarts builds a 45-day calendar. "
+            "Give it a minute and try again — this is not an error.")
     else:
         add("block", "Earnings date could not be verified",
             "The calendar could not be read in full, so absence proves nothing. "
@@ -84,7 +93,11 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
     else:
         series = _corr_series(price_book, held + [ticker])
         corr = concentration.correlation(series)
-        if corr.empty or ticker not in corr.columns:
+        if (corr.empty or ticker not in corr.columns) and warming and not price_book:
+            add("warn", "Price history is still loading",
+                "Overlap against your holdings needs the published price book, which "
+                "arrives shortly after a restart. Try again in a minute.")
+        elif corr.empty or ticker not in corr.columns:
             add("warn", "Overlap could not be measured",
                 "Not enough shared price history. Treat this as if it overlaps "
                 "with what you hold, not as if it were new.")
