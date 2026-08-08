@@ -300,7 +300,12 @@
   <div id="snapNote" class="hint" style="display:none;margin:.2rem 0 .6rem"></div>
 
   <div class="bar">
-    <button id="runBtn" onclick="runScan()">▶ Run scan</button>
+    <!-- The Run button is gone deliberately. It started a crawl inside the
+         web process, which is where every timeout, every failure banner and
+         every stale download came from — and once pressed it replaced the
+         full scheduled scan with whatever the trimmed run found. Scans now
+         happen only on a schedule; this page reads what they produced. -->
+    <a class="dl" href="/">← Today's brief</a>
     <button class="ghost" onclick="resetFilters()">Reset filters</button>
     <span id="statusPill" class="pill">ready</span>
     <span id="timing" class="pill" style="display:none"></span>
@@ -481,8 +486,8 @@
     </div>
     <div id="relaxHints" class="chips" style="display:none"></div>
     <div class="tablewrap"><div id="results" class="empty">No scan yet — press
-      <b>▶ Run scan</b> above. The first scan takes a few minutes; you can watch it work
-      in the progress log below.</div></div>
+      the scheduled scan to publish. Scans run on a schedule and this page shows
+      what they found — it never starts one itself.</div></div>
   </section>
 
   <section id="nearSection" style="display:none">
@@ -586,7 +591,7 @@
         <div>
           <h3>How to use it</h3>
           <ul>
-            <li>Press <b>Run scan</b>. The first scan downloads a year of prices and takes a few
+            <li>Scans run on a schedule; the page shows the last one. The scan downloads a year of prices and takes a few
               minutes — the progress log shows what it's doing. Re-runs with tweaked filters
               take seconds.</li>
             <li>Start with the <b>Top picks</b> cards, then open the full table. Hover any column
@@ -1532,7 +1537,6 @@ async function refresh() {
   const pill = document.getElementById("statusPill");
   pill.textContent = STATUS_TEXT[s.status] || s.status;
   pill.className = "pill " + s.status;
-  document.getElementById("runBtn").disabled = (s.status === "running");
 
   const log = document.getElementById("log");
   log.textContent = (s.log && s.log.length) ? s.log.join("\n") : "—";
@@ -1546,7 +1550,7 @@ async function refresh() {
     const rateLimited = /rate.?limit|too many requests|429/i.test(s.error);
     document.getElementById("errorHint").textContent = rateLimited
       ? "Yahoo Finance is temporarily blocking requests (free data source, it happens). " +
-        "Wait 5–10 minutes and press Run scan again — cached data is reused where possible. " +
+        "The next scheduled scan will retry automatically — cached data is reused where possible. " +
         "If it keeps happening right after a deploy, open Filters and lower " +
         "'Max stocks to scan' to ~200 for the first scan; fewer stocks = fewer requests."
       : "Check the progress log below for details, then try running again.";

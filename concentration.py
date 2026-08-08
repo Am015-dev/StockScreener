@@ -38,6 +38,7 @@ independence is precisely the error this module exists to correct.
 from __future__ import annotations
 
 import math
+import re
 
 import numpy as np
 import pandas as pd
@@ -293,3 +294,84 @@ def summarise(rows: list[dict], corr: pd.DataFrame,
         "corr_days": CORR_DAYS,
         "same_trade_threshold": SAME_TRADE,
     }
+
+
+# --------------------- cross-listing de-duplication ---------------------
+# Ticker-level de-duplication is not company-level de-duplication, and the
+# gap is expensive. BT Group reaches the universe as both BT-A.L and
+# BTL.XC; Logitech as LOGI and LOGN.SW; Shell as SHEL and SHEL.L. They are
+# different strings, so a `seen` set keeps all of them, and the board then
+# shows the same setup twice with near-identical numbers. A reader working
+# down the list buys one position and believes they bought two — the exact
+# opposite of the concentration work above, and worse, because it is not
+# correlation but identity.
+# Legal-form and share-class tokens, matched as WHOLE WORDS. Substring
+# replacement was tried first and quietly destroyed real names: " se"
+# inside "Republic Services" produced "republicrvices", " co" inside
+# "Waste Connections" produced "wastennections". Two different companies
+# mangled into two different nonsense strings still compare unequal, so
+# the bug is invisible until the day two of them collide.
+_NAME_NOISE = frozenset("""
+    plc public limited company incorporated inc corporation corp co
+    limited ltd holdings holding group holdingsgroup international intl
+    sa sab ag nv spa se oyj ab asa as adr ads sponsored registered
+    ordinary shares shs sh class cl series npv the and of
+""".split())
+
+
+def company_key(name: str | None, ticker: str = "") -> str:
+    """A stable identity for a company across its listings.
+
+    Falls back to the ticker root only when the name yields nothing, so a
+    row without a usable name is never silently merged into another
+    company.
+    """
+    n = (name or "").lower().strip()
+    # everything after a share-denomination marker is listing detail, not
+    # identity: "SHELL PLC ORD EUR0.07", "UNILEVER PLC ORD 3 1/9P"
+    n = re.sub(r"\b(ord|npv|ordinary)\b.*$", " ", n)
+    tokens = [t for t in re.split(r"[^a-z0-9]+", n) if t]
+    # Single-character tokens are punctuation-split legal forms, never
+    # identity: "S.A." -> s,a and "p.l.c." -> p,l,c. Keeping them made
+    # "Logitech International S.A." and "Logitech International SA"
+    # different companies, which is exactly the pair being deduplicated.
+    kept = [t for t in tokens
+            if len(t) > 1 and t not in _NAME_NOISE and not t.isdigit()]
+    key = "".join(kept)
+    if not key:
+        return "t:" + (ticker or "").split(".")[0].split("-")[0].upper()
+    return key
+
+
+def dedupe_listings(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Keep one listing per company; return (kept, dropped).
+
+    The survivor is the most liquid listing — that is the one a reader can
+    actually fill, and it carries the tighter spread. Dollar volume decides
+    it; where that is unknown, the row the caller ranked higher wins, so
+    the choice is never arbitrary.
+    """
+    best: dict[str, dict] = {}
+    order: list[str] = []
+    dropped: list[dict] = []
+    for r in rows:
+        k = company_key(r.get("name"), r.get("ticker", ""))
+        cur = best.get(k)
+        if cur is None:
+            best[k] = r
+            order.append(k)
+            continue
+        a = r.get("dollar_vol_m")
+        b = cur.get("dollar_vol_m")
+        takes = (a is not None and b is not None and a > b)
+        loser, winner = (cur, r) if takes else (r, cur)
+        if takes:
+            best[k] = r
+        loser = dict(loser)
+        loser["duplicate_of"] = winner.get("ticker")
+        loser["why_not"] = (
+            f"same company as {winner.get('ticker')} — cross-listing of "
+            f"{winner.get('name') or winner.get('ticker')}, kept the more "
+            f"liquid line")
+        dropped.append(loser)
+    return [best[k] for k in order], dropped

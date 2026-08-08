@@ -208,3 +208,72 @@ assert empty["effective_bets"] is None and empty["n_picks"] == 0
 print("with no data the summary reports None rather than a comfortable number")
 
 print("\nALL CONCENTRATION TESTS PASSED")
+
+# ---- one company, one row ----
+# De-duplication was by ticker string, which is not company identity. BT
+# Group reaches the universe as BT-A.L and BTL.XC, Logitech as LOGI and
+# LOGN.SW, Shell as SHEL and SHEL.L. Different strings, so both survived
+# and the board showed the same setup twice with near-identical numbers.
+# A reader working down the list buys one position believing they bought
+# two. That is worse than the correlation problem above, because it is
+# not correlation — it is identity.
+PAIRS = [
+    (("BT Group PLC", "BT-A.L"), ("BT GROUP PLC ORD 5P", "BTL.XC")),
+    (("Logitech International S.A.", "LOGI"), ("Logitech International SA", "LOGN.SW")),
+    (("SHELL PLC", "SHEL"), ("SHELL PLC ORD EUR0.07", "SHEL.L")),
+    (("Unilever PLC", "UL"), ("Unilever PLC ORD 3 1/9P", "ULVR.L")),
+    (("Nestle S.A.", "NESN.SW"), ("Nestle SA ADR", "NSRGY")),
+]
+for (n1, t1), (n2, t2) in PAIRS:
+    assert cc.company_key(n1, t1) == cc.company_key(n2, t2), \
+        f"{t1} and {t2} are the same company: " \
+        f"{cc.company_key(n1, t1)!r} vs {cc.company_key(n2, t2)!r}"
+print(f"{len(PAIRS)} cross-listing pairs resolve to one company each")
+
+# and genuinely different companies must NOT be merged — the normaliser
+# is the risk here: substring stripping once turned "Republic Services"
+# into "republicrvices" by eating the " se", which is silent until two
+# mangled names happen to collide
+DISTINCT = [("MGM Resorts International", "MGM"), ("Marriott International, Inc.", "MAR"),
+            ("Republic Services, Inc.", "RSG"), ("Waste Connections, Inc.", "WCN"),
+            ("Waste Management, Inc.", "WM"), ("CSX Corporation", "CSX"),
+            ("Norfolk Southern Corporation", "NSC"),
+            ("Philip Morris International Inc.", "PM"),
+            ("British American Tobacco p.l.c.", "BTI")]
+keys = [cc.company_key(n, t) for n, t in DISTINCT]
+assert len(set(keys)) == len(keys), f"false merge among distinct companies: {keys}"
+# the exact strings that were being mangled, pinned literally — a length
+# heuristic would pass "csx", which is legitimately three characters
+assert cc.company_key("Republic Services, Inc.", "RSG") == "republicservices"
+assert cc.company_key("Waste Connections, Inc.", "WCN") == "wasteconnections"
+assert cc.company_key("Waste Management, Inc.", "WM") == "wastemanagement"
+assert cc.company_key("British American Tobacco p.l.c.", "BTI") == "britishamericantobacco"
+assert cc.company_key("CSX Corporation", "CSX") == "csx"
+print(f"{len(DISTINCT)} distinct companies stay distinct, names intact")
+
+# a row with no usable name falls back to its ticker, never merging blind
+assert cc.company_key("", "ORPHAN.X") == "t:ORPHAN"
+assert cc.company_key(None, "A.B") != cc.company_key(None, "C.D")
+print("a nameless row falls back to its ticker rather than merging blind")
+
+# the survivor is the line a reader can actually fill
+rows = [{"ticker": "BTL.XC", "name": "BT GROUP PLC ORD 5P", "dollar_vol_m": 4.0},
+        {"ticker": "BT-A.L", "name": "BT Group PLC", "dollar_vol_m": 30.0},
+        {"ticker": "LOGN.SW", "name": "Logitech International SA", "dollar_vol_m": 20.0},
+        {"ticker": "LOGI", "name": "Logitech International S.A.", "dollar_vol_m": 180.0},
+        {"ticker": "MGM", "name": "MGM Resorts International", "dollar_vol_m": 200.0}]
+kept, dropped = cc.dedupe_listings(rows)
+assert [r["ticker"] for r in kept] == ["BT-A.L", "LOGI", "MGM"], \
+    [r["ticker"] for r in kept]
+assert len(dropped) == 2
+for d in dropped:
+    assert d["duplicate_of"] in ("BT-A.L", "LOGI"), d
+    assert "same company as" in d["why_not"], d["why_not"]
+print(f"the more liquid line survives each pair; the other is dropped WITH a "
+      f"reason: {dropped[0]['why_not'][:60]}...")
+
+# nothing is lost silently: every input row is either kept or reported
+assert len(kept) + len(dropped) == len(rows)
+print("every row is either kept or reported dropped — none vanish")
+
+print("\nALL DE-DUPLICATION TESTS PASSED")

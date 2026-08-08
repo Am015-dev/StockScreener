@@ -51,8 +51,10 @@ jobs:
         run: python tests/test_methodology.py
       - name: Earnings gate (bulk calendar, complete vs holed window)
         run: python tests/test_earnings_gate.py
-      - name: Concentration (effective bets, clusters, marginal ranking)
+      - name: Concentration (effective bets, clusters, marginal ranking, de-dup)
         run: python tests/test_concentration.py
+      - name: Today's brief (one card, "no action" as a valid answer)
+        run: python tests/test_brief.py
       - name: Market clock (sessions vs wall-clock, holidays, DST)
         run: python tests/test_market_clock.py
       - name: Simulation realism (costs, ATR stops, hold cap, liquidity)
