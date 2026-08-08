@@ -919,12 +919,65 @@ CREDIT_TTL = float(os.environ.get("CREDIT_TTL", "86400"))   # filings are quarte
 _cik_map = {"ts": 0.0, "data": None}
 
 
-def _sec_json(url: str, timeout: float = 15):
+# The whole-filer document is 3.7MB for Apple and larger for some filers.
+# Bounding that download turned out to be harder than it looks:
+#
+#   requests' `timeout` is a gap between bytes, not a total, so a response
+#   that drips steadily never trips it — Boeing held a request thread past
+#   90 seconds while a 16-second budget was supposedly in force.
+#
+#   Reading with iter_content does not fix it either. A fixed chunk size
+#   blocks until the buffer FILLS, and chunk_size=None reads to EOF; both
+#   sail past any deadline check placed in the loop. Verified against a
+#   server that dripped a byte every 20ms: neither form returned.
+#
+# So the fetch runs in a worker and the CALLER stops waiting. The worker
+# is abandoned rather than killed — Python cannot interrupt a socket read
+# — but the pool is small and capped, so a run of slow filers degrades
+# into fast refusals instead of a queue of stuck request threads.
+SEC_MAX_BYTES = 24 * 1024 * 1024
+# Daemon threads rather than a ThreadPoolExecutor: the pool registers an
+# atexit hook that JOINS its workers, so one abandoned fetch kept the
+# whole process from exiting until the socket finally gave up. A
+# semaphore caps how many can be in flight, so a run of slow filers
+# becomes fast refusals instead of unbounded threads.
+_sec_slots = threading.Semaphore(4)
+
+
+def _sec_fetch(url: str, timeout: float, out: dict):
     import requests as rq
-    r = rq.get(url, headers={"User-Agent": screener.SEC_UA}, timeout=timeout)
-    if r.status_code != 200:
-        raise RuntimeError(f"SEC {r.status_code}")
-    return r.json()
+    try:
+        with rq.get(url, headers={"User-Agent": screener.SEC_UA},
+                    timeout=(min(5.0, timeout), timeout), stream=True) as r:
+            if r.status_code != 200:
+                raise RuntimeError(f"SEC {r.status_code}")
+            buf, size = [], 0
+            for chunk in r.iter_content(256 * 1024):
+                size += len(chunk)
+                if size > SEC_MAX_BYTES:
+                    raise RuntimeError("SEC response too large")
+                buf.append(chunk)
+        out["value"] = json.loads(b"".join(buf).decode("utf-8", "replace"))
+    except Exception as e:                      # noqa: BLE001 — reported below
+        out["error"] = e
+    finally:
+        out["done"].set()
+        _sec_slots.release()
+
+
+def _sec_json(url: str, timeout: float = 15):
+    if not _sec_slots.acquire(timeout=min(2.0, timeout)):
+        raise TimeoutError("too many SEC fetches already in flight")
+    out = {"done": threading.Event()}
+    threading.Thread(target=_sec_fetch, args=(url, timeout, out),
+                     daemon=True).start()
+    if not out["done"].wait(timeout):
+        # the thread is left to finish and be discarded; Python cannot
+        # interrupt a socket read, and waiting for it is the bug
+        raise TimeoutError(f"SEC did not answer within {timeout:.0f}s")
+    if out.get("error"):
+        raise out["error"]
+    return out["value"]
 
 
 class Expired(Exception):
@@ -954,7 +1007,14 @@ def _sec_within(budget_s: float):
         if left <= 1:
             get_json.expired = True
             raise Expired(url)
-        return _sec_json(url, timeout=min(8.0, left))
+        try:
+            return _sec_json(url, timeout=min(8.0, left))
+        except TimeoutError:
+            # the fetch itself ran out of time, which is the same fact as
+            # the budget running out and must be reported the same way —
+            # not as "this company files no balance sheet"
+            get_json.expired = True
+            raise
     get_json.expired = False
     return get_json
 
@@ -1363,12 +1423,14 @@ def _warm_credit():
     t0, done = time.time(), 0
     for t in board:
         try:
-            # nothing is waiting on this one, so it can afford to be patient
-            if _credit_for(t, budget_s=90).get("dd") is not None:
+            # patient, but not unbounded: this shares one gunicorn worker
+            # with every request, and a name that cannot be read in half a
+            # minute is better skipped than left holding a thread
+            if _credit_for(t, budget_s=30).get("dd") is not None:
                 done += 1
         except Exception:
             pass
-        time.sleep(0.2)          # SEC asks for 10 requests/second; this is 5
+        time.sleep(0.5)          # SEC asks for 10 requests/second; this is 2
     print(f"[warm] credit: {done}/{len(board)} of the board measured in "
           f"{time.time() - t0:.0f}s", flush=True)
 

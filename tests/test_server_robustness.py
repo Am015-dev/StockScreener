@@ -238,4 +238,64 @@ A._published_get = _real_pub
 print(f"the price book expires after {A.BOOK_TTL:.0f}s and is refetched, rather "
       f"than being frozen for the life of the process")
 
+
+# ---- a slow SEC response must be abandoned, not waited out ----
+# Boeing held a request thread past 90 seconds while a 16-second budget
+# was supposedly in force, because requests' `timeout` is a gap BETWEEN
+# BYTES, not a total: a body that drips steadily never trips it. Reading
+# with iter_content does not fix it either — a fixed chunk size blocks
+# until the buffer fills and chunk_size=None reads to EOF, so a deadline
+# checked inside the loop is never reached. This drips a byte every 20ms,
+# which is exactly the shape that defeated both.
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class _Drip(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        try:
+            self.wfile.write(b'{"units": {"USD": [')
+            for _ in range(100000):
+                self.wfile.write(b" ")
+                self.wfile.flush()
+                time.sleep(0.02)
+        except Exception:
+            pass
+
+    def log_message(self, *a):
+        pass
+
+
+_srv = HTTPServer(("127.0.0.1", 0), _Drip)
+_port = _srv.server_address[1]
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+
+_t0 = time.time()
+try:
+    A._sec_json(f"http://127.0.0.1:{_port}/slow.json", timeout=4)
+    raise AssertionError("a response that never ends must not return a value")
+except TimeoutError:
+    pass
+_took = time.time() - _t0
+assert _took < 10, f"a 4-second budget took {_took:.1f}s — the body is unbounded"
+print(f"a response that never stops arriving is abandoned after {_took:.1f}s")
+
+# and the caller turns that into a refusal, not a crash or a hang
+A._cik_for = lambda t, timeout=8.0: 1
+A._sec_json = lambda url, timeout=15: (_ for _ in ()).throw(
+    TimeoutError("SEC did not answer"))
+A._price_book = lambda fetch=False: BOOK2          # SLOW has prices, not filings
+BOOK2["series"]["SLOW"] = list(_twin)
+A.cache_store.put("credit:SLOW", None)
+_rep = A._credit_for("SLOW", budget_s=4)
+assert _rep["ok"] and _rep["dd"] is None
+assert "did not answer in time" in _rep["verdict"], _rep["verdict"]
+assert not _rep.get("cached"), "a timed-out report must not be cached"
+print("the credit report turns a slow SEC into a refusal that names the reason")
+# no shutdown(): the handler is still mid-drip and shutdown() waits for it.
+# The server thread is a daemon, so the process exits regardless.
+
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")
