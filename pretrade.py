@@ -195,18 +195,18 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
                 if gain < 0.35:
                     add("warn",
                         f"This adds money at risk without spreading it wider",
-                        f"Your {len(measured)} positions already behave like about "
-                        f"{before:.0f} separate one{'' if round(before) == 1 else 's'}, "
-                        f"because several move together. "
-                        f"Adding this leaves that roughly unchanged — so it is more "
-                        f"money exposed to bets you already have.{basis}")
+                        f"Your {len(measured)} positions behave like about "
+                        f"{before:.1f} separate ones today, and about {after:.1f} "
+                        f"with this added — near enough no change, because it "
+                        f"moves with something you already hold. It is more money "
+                        f"on a bet you have, not a new one.{basis}")
                 else:
                     add("ok",
                         f"This genuinely spreads your money wider",
                         f"Your {len(measured)} positions behave like about "
-                        f"{before:.0f} separate one{'' if round(before) == 1 else 's'} "
-                        f"today. With this, about {after:.0f} — it is a different "
-                        f"bet, not a bigger version of one you have.{basis}")
+                        f"{before:.1f} separate ones today, and about {after:.1f} "
+                        f"with this added — it is a different bet, not a bigger "
+                        f"version of one you already have.{basis}")
 
     # ---- 4. do the costs eat it? ----
     if friction_pct is not None and reward_eur:

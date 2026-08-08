@@ -215,4 +215,32 @@ for _claim in ("Across 8 positions", "You hold 8 positions",
 assert "Your 3 positions" in _text, _text
 print("holdings with no published history are named and excluded from the count")
 
+
+# ---- the two numbers in that sentence must not collide ----
+# Rounded to whole numbers, 1.9 and 2.5 both print as "2", so the sentence
+# read "about 2 ... with this, about 2" under a headline saying it spread
+# the book wider. Both figures appear, and they differ when the verdict
+# says they should.
+import re as _re
+
+
+def _spread(r):
+    return next((f for f in r["findings"]
+                 if "spread" in f["headline"]), None)
+
+
+wide = _spread(pretrade.check("XOM", HELD, BOOK, {}, True))
+narrow = _spread(pretrade.check("AVGO", HELD, BOOK, {"AVGO": 90}, True))
+for f, same in ((wide, False), (narrow, True)):
+    assert f is not None
+    nums = [float(x) for x in _re.findall(r"about (\d+\.\d)", f["detail"])]
+    assert len(nums) == 2, f["detail"]
+    if same:
+        assert abs(nums[1] - nums[0]) < 0.35, f["detail"]
+    else:
+        assert nums[1] - nums[0] >= 0.35, f["detail"]
+assert "different bet" in wide["detail"]
+assert "moves with something you already hold" in narrow["detail"]
+print("the before and after figures are both shown, and agree with the verdict")
+
 print("\nCOLD-START BEHAVIOUR PINNED")
