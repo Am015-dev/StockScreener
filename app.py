@@ -233,6 +233,24 @@ def _adopt_published(preset: dict) -> bool:
         _state["backtest"] = payload["backtest"]
         _state["bt_rules"] = payload.get("bt_rules")
         _state["bt_status"] = "done"
+    # The track record travels with the results for the same reason. Render
+    # wipes the disk on every deploy, so a journal that lives only here is
+    # empty within hours of being written — the live site was reporting
+    # "0 picks recorded" while the runner held the full history. Restoring
+    # is additive: existing (ticker, scan_date) rows are kept, so a pick
+    # logged locally is never overwritten by the published copy.
+    rows = payload.get("journal_rows")
+    if rows:
+        try:
+            added = journal.restore(rows)
+            _state["journal"] = journal.snapshot()
+            if added:
+                _state["log"].append(
+                    f"Track record: restored {added} logged pick(s) published "
+                    f"by the scheduled scan — the local disk is wiped on every "
+                    f"deploy, so the history lives with the results.")
+        except Exception as e:
+            _state["log"].append(f"Track-record restore skipped: {e}")
     _state["published_preset"] = preset["preset"]
     _state["log"].append(
         f"Results published by the scheduled scan ({preset['preset']} preset) — "

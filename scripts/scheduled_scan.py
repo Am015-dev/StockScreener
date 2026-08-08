@@ -136,9 +136,16 @@ def run_preset(name: str, overrides: dict, universe_max: int,
 
     # the track record only means anything if picks are logged as they are
     # published, so the scheduled run keeps it up to date too
+    journal_rows = []
     try:
         journal.record_picks(rows)
         journal.update_outcomes(lambda t: None)
+        # Publish the log itself, not just today's picks. Render wipes the
+        # disk on every deploy, so a track record that lives only on the
+        # web instance is empty within hours of being written — the live
+        # site was showing "0 picks recorded" while the runner held a full
+        # history. Shipping it with the results makes it survive.
+        journal_rows = journal.export_all()
     except Exception as e:
         progress(f"journal update skipped: {e}")
 
@@ -151,6 +158,8 @@ def run_preset(name: str, overrides: dict, universe_max: int,
         "pending": res.get("pending") or [],
         "breadth": res.get("breadth"),
         "concentration": res.get("concentration"),
+        "journal_rows": journal_rows,
+        "journal": journal.snapshot() if journal_rows else None,
         "health": res.get("health"),
         "params_used": p,
         "universe_size": res.get("universe_size"),
