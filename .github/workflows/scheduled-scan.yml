@@ -108,43 +108,17 @@ jobs:
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
             HEAD:screener-data
 
-      - name: Ship results into the deployed build
-        if: env.UPSTREAM_UNAVAILABLE != '1'
-        continue-on-error: true
-        run: |
-          # Stash the results OUTSIDE the work tree first: the checkout below
-          # replaces the work tree, which would delete the very files being
-          # shipped.
-          stash=$(mktemp -d)
-          cp published/*.json "$stash"/ || { echo "nothing to ship"; exit 0; }
-          # And REMOVE them: the deploy branch now tracks these same paths,
-          # so git refuses a checkout that would overwrite untracked files.
-          # Copying alone is not enough — that is what failed the last run.
-          rm -f published/*.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          BRANCH=claude/pullback-uptrend-screener-vvlzeb
-          git fetch origin "$BRANCH" --depth=1
-          git checkout -q -B ship "origin/$BRANCH"
-          mkdir -p published
-          cp "$stash"/*.json published/
-          git add -f published/*.json
-          if git diff --cached --quiet; then
-            echo "results unchanged — nothing to ship"
-          else
-            git commit -q -m "Published scan $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push -q "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-              HEAD:"$BRANCH"
-            echo "shipped $(ls published/*.json | wc -l) result files"
-          fi
-          # Return the tree to exactly how the scan left it. Checking out
-          # another branch and back DELETES these files, because they are
-          # tracked on the deploy branch but not here — which is what broke
-          # the Summary step that reads them next.
-          git checkout -q -
-          mkdir -p published
-          cp "$stash"/*.json published/
-          echo "restored $(ls published/*.json | wc -l) result files to the work tree"
+      # NOT shipped into the deployed branch any more. That step committed
+      # the results into the branch Render serves, so every scan triggered a
+      # redeploy: hourly, during market hours, the instance restarted and
+      # lost its earnings calendar, price book and credit cache. Readers met
+      # "the calendar is still loading, try again in a minute" — caused by
+      # the publish itself, not by a cold start.
+      #
+      # It existed because results were adopted only at boot, so a restart
+      # was the only way a new scan reached the page. app.py now polls the
+      # data branch, which is both fresher (no wait for a deploy) and
+      # cheaper (no restart). See _results_refresher.
 
       # Reporting must never fail the job: the scan and the publish have
       # already happened by this point, and losing a seven-minute run to a

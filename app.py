@@ -200,16 +200,27 @@ _published = {"ts": 0.0, "index": None}
 
 
 def _published_get(path: str):
-    """A published file: from the copy shipped with this build if present,
-    otherwise over the network. The local copy needs no token and survives
-    the disk wipe, so it is tried first."""
+    """A published file: over the network, falling back to any copy shipped
+    with this build.
+
+    The network is tried FIRST, which is the opposite of the original
+    order. A shipped copy is frozen at build time, so preferring it meant
+    that the moment the scan stopped committing results into the deployed
+    branch, the site would have served the same board forever — fresher
+    data sitting one request away and never read. The local copy is a
+    genuine fallback for a build that ships its own data or a network that
+    is refusing, and that is all it should be."""
     local = os.path.join(PUBLISHED_DIR, path)
-    try:
-        if os.path.exists(local):
-            with open(local) as f:
-                return json.load(f)
-    except Exception:
-        pass
+
+    def _local():
+        try:
+            if os.path.exists(local):
+                with open(local) as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
+
     import requests as rq
     headers = {}
     tok = os.environ.get("PUBLISHED_TOKEN") or os.environ.get("GITHUB_TOKEN")
@@ -221,7 +232,7 @@ def _published_get(path: str):
             return r.json()
     except Exception:
         pass
-    return None
+    return _local()
 
 
 def _published_index(force: bool = False):
@@ -799,6 +810,10 @@ def snapshot_load():
 # cannot be done live.
 _book = {"ts": 0.0, "data": None}
 BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
+# Scans publish hourly while the market is open. Polling more often than
+# that only costs requests; polling far less often means a reader sees
+# yesterday's board on a warm instance.
+RESULTS_POLL_S = float(os.environ.get("RESULTS_POLL_S", "600"))
 
 
 def _price_book(fetch: bool = False) -> dict:
@@ -841,6 +856,35 @@ def _vol_book(fetch: bool = False) -> dict:
     _vols.update(data=data, ts=time.time())
     print(f"[warm] volatility book: {len(data)} tickers", flush=True)
     return data
+
+
+def _results_refresher():
+    """Adopt each new scan without waiting for a redeploy.
+
+    Results were adopted exactly once, at boot. The only reason the site
+    ever showed a NEW scan was that the scan job committed its output into
+    the deployed branch, which made Render redeploy — so every hour, on
+    the hour, during market hours, the instance restarted and lost its
+    earnings calendar, price book and credit cache. That is the "still
+    loading, try again in a minute" a reader hits: not a cold start, a
+    scheduled one.
+
+    Polling for results instead means the scan can publish to its own data
+    branch and never touch the build, and the instance stays warm between
+    code changes. It also fixes the failure the shipping step existed to
+    prevent: a boot-time fetch that fails no longer leaves the site empty
+    until someone restarts it, because the next poll picks it up.
+    """
+    first = True
+    while True:
+        time.sleep(20 if first else RESULTS_POLL_S)
+        first = False
+        try:
+            if _load_published(force=True):
+                print(f"[poll] adopted a newer published scan: "
+                      f"{len(_state.get('results') or [])} picks", flush=True)
+        except Exception as e:
+            print(f"[poll] published results unavailable: {e}", flush=True)
 
 
 def _book_refresher():
@@ -1450,6 +1494,7 @@ if not os.environ.get("SKIP_WARM"):
     threading.Thread(target=_warm_check_data, daemon=True).start()
     threading.Thread(target=_book_refresher, daemon=True).start()
     threading.Thread(target=_calendar_refresher, daemon=True).start()
+    threading.Thread(target=_results_refresher, daemon=True).start()
     threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 

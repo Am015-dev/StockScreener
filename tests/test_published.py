@@ -194,11 +194,15 @@ with open(os.path.join(pubdir, "balanced.json"), "w") as f:
 os.environ["PUBLISHED_DIR"] = pubdir
 
 
-def must_not_call(*a, **k):
-    raise AssertionError("a shipped result file must not trigger a network call")
+# The network is tried first now, and the shipped copy is the fallback —
+# preferring the local file meant a build that stopped receiving committed
+# results would serve the same board forever. A refusing network is what
+# makes the shipped copy matter.
+def network_down(*a, **k):
+    raise ConnectionError("no network")
 
 
-requests.get = must_not_call
+requests.get = network_down
 importlib.reload(app_mod)
 # same reason as above: startup adoption is driven explicitly under
 # SKIP_WARM, and this is the path a restart takes
@@ -207,7 +211,7 @@ st3 = app_mod._state
 assert st3["status"] == "done", st3["status"]
 assert len(st3["results"]) == 6, len(st3["results"])
 assert st3["published_preset"] == "balanced"
-print("results shipped with the build load on startup, with zero network calls")
+print("with the network refusing, results shipped with the build still load")
 
 # and a build with no shipped results still falls back to the network
 shutil.rmtree(pubdir)

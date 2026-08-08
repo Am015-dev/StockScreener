@@ -298,4 +298,40 @@ print("the credit report turns a slow SEC into a refusal that names the reason")
 # no shutdown(): the handler is still mid-drip and shutdown() waits for it.
 # The server thread is a daemon, so the process exits regardless.
 
+
+
+# ---- new scans must reach a warm instance without a restart ----
+# Results were adopted once, at boot, so the ONLY way a new scan reached
+# the page was the scan job committing into the deployed branch and
+# triggering a redeploy. That is why a reader met "the earnings calendar
+# is still loading" on the hour, every hour: the publish restarted the
+# instance and wiped the calendar, the price book and the credit cache.
+import inspect as _inspect2
+
+assert hasattr(A, "_results_refresher"), \
+    "without a poller, a warm instance serves the scan it booted with"
+_src2 = _inspect2.getsource(A._results_refresher)
+assert "while True" in _src2 and "_load_published" in _src2
+_started = _inspect2.getsource(A).split('if not os.environ.get("SKIP_WARM")')[-1]
+assert "_results_refresher" in _started, "the poller is defined but never started"
+
+# and the scan must no longer push into the branch Render deploys
+_wf = (ROOT / ".github/workflows/scheduled-scan.yml").read_text()
+assert "Ship results into the deployed build" not in _wf, \
+    "committing results into the deployed branch redeploys the site hourly"
+assert "HEAD:screener-data" in _wf, "the data branch publish must remain"
+assert "claude/pullback-uptrend-screener-vvlzeb" not in _wf, \
+    "the scan job must not write to the deploy branch at all"
+print("new scans reach a warm instance by polling, not by restarting it")
+
+# a poll that finds nothing newer must not disturb what is on screen
+A._state.update(results=[{"ticker": "KEEP"}], results_ts=time.time(),
+                status="done")
+_before = list(A._state["results"])
+A._published_index = lambda force=False: {"presets": [
+    {"preset": "old", "results_ts": time.time() - 86400, "scan_hash": "z"}]}
+assert A._load_published(force=True) is False
+assert A._state["results"] == _before, "an older published scan replaced a newer one"
+print("a poll that finds only older results leaves the page alone")
+
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")
