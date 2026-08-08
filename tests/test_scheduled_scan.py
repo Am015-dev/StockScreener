@@ -210,16 +210,23 @@ _frame = _pd.concat({t: _pd.DataFrame(
 # the scan's universe is ordered largest-first, so the big names lead
 screener._cache.update(ohlc=_frame, universe=_big + _small)
 _book = scheduled_scan.price_book(max_tickers=30, days=60)
-assert len(_book) == 30, len(_book)
-assert set(_big) <= set(_book), \
-    f"a cap must drop the smallest names, not the end of the alphabet: {sorted(_book)[:5]}"
+# the published book is one shared calendar plus one aligned series per
+# ticker; correlating without the calendar lines columns up by row position
+assert set(_book) == {"dates", "series"}, sorted(_book)
+assert len(_book["dates"]) == 60, len(_book["dates"])
+_series = _book["series"]
+assert len(_series) == 30, len(_series)
+assert all(len(v) == 60 for v in _series.values()), \
+    "every series must be the same length as the calendar, nulls included"
+assert set(_big) <= set(_series), \
+    f"a cap must drop the smallest names, not the end of the alphabet: {sorted(_series)[:5]}"
 print(f"price book cap keeps the largest names: {_big} survived a cap of 30 over "
       f"{len(_big) + len(_small)} tickers")
 
 # and with no universe order recorded it must still return something usable
 screener._cache.update(ohlc=_frame, universe=None)
 _fallback = scheduled_scan.price_book(max_tickers=30, days=60)
-assert len(_fallback) == 30, len(_fallback)
+assert len(_fallback["series"]) == 30, len(_fallback["series"])
 print("with no universe order recorded it still fills the book rather than emptying it")
 
 # a ticker with too little history is omitted, never padded

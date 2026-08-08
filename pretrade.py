@@ -29,8 +29,24 @@ from __future__ import annotations
 import concentration
 
 
+def _series_of(price_book: dict) -> dict:
+    """The published book is {"dates": [...], "series": {...}}; older
+    payloads were a bare {ticker: [closes]}. Read both, so a redeploy that
+    lands before the next scan does not blank the check."""
+    if isinstance(price_book, dict) and "series" in price_book:
+        return price_book.get("series") or {}
+    return price_book or {}
+
+
+def _dates_of(price_book: dict) -> list | None:
+    if isinstance(price_book, dict) and "series" in price_book:
+        return price_book.get("dates")
+    return None
+
+
 def _corr_series(price_book: dict, tickers: list[str]) -> dict:
-    return {t: price_book[t] for t in tickers if price_book.get(t)}
+    series = _series_of(price_book)
+    return {t: series[t] for t in tickers if series.get(t)}
 
 
 def check(ticker: str, holdings: list[dict], price_book: dict,
@@ -49,6 +65,24 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
     held = [h.get("ticker", "").strip().upper()
             for h in (holdings or []) if h.get("ticker")]
     held = [h for h in held if h and h != ticker]
+    # How much money sits in each position. The bets figure is a property
+    # of the portfolio, not of the ticker list, and the sentence built
+    # from it talks about the reader's book — so where shares and a cost
+    # are known, they are used, and where they are not the equal-weight
+    # assumption is stated rather than implied.
+    weights, priced = {}, 0
+    for h in (holdings or []):
+        t = (h.get("ticker") or "").strip().upper()
+        if not t or t == ticker:
+            continue
+        try:
+            sh, cost = float(h.get("shares") or 0), float(h.get("cost") or 0)
+        except (TypeError, ValueError):
+            sh = cost = 0
+        if sh > 0 and cost > 0:
+            weights[t] = sh * cost
+            priced += 1
+    weighted = priced == len(held) and priced > 0
     out: dict = {"ticker": ticker, "held": held, "findings": [], "verdict": "ok"}
 
     def add(level, headline, detail):
@@ -91,9 +125,17 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
             "Paste your positions to find out whether this is a new bet or one "
             "you already have.")
     else:
+        dates = _dates_of(price_book)
         series = _corr_series(price_book, held + [ticker])
-        corr = concentration.correlation(series)
-        if (corr.empty or ticker not in corr.columns) and warming and not price_book:
+        corr = concentration.correlation(series, dates=dates)
+        # Holdings with no usable history were silently dropped from the
+        # comparison while the sentences still counted all of them, so a
+        # reader with eight positions of which three could be measured was
+        # told "across 8 positions" — and one of the five unchecked ones
+        # could be the same trade. Name them instead.
+        measured = [h for h in held if h in getattr(corr, "columns", [])]
+        unmeasured = [h for h in held if h not in measured]
+        if (corr.empty or ticker not in corr.columns) and warming and not _series_of(price_book):
             add("warn", "Price history is still loading",
                 "Overlap against your holdings needs the published price book, which "
                 "arrives shortly after a restart. Try again in a minute.")
@@ -103,46 +145,65 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
                 "with what you hold, not as if it were new.")
         else:
             pairs = sorted(
-                ((float(corr.at[ticker, h]), h) for h in held
-                 if h in corr.columns and h != ticker),
+                ((float(corr.at[ticker, h]), h) for h in measured
+                 if h != ticker),
                 reverse=True)
+            if unmeasured:
+                shown = ", ".join(unmeasured[:6])
+                more = f" and {len(unmeasured) - 6} more" if len(unmeasured) > 6 else ""
+                add("warn",
+                    f"{len(unmeasured)} of your {len(held)} positions could not be compared",
+                    f"There is no published price history for {shown}{more}, so the "
+                    f"overlap below is measured against the other "
+                    f"{len(measured)} only. Treat the unlisted ones as if they "
+                    f"overlap, not as if they were separate.")
             if pairs:
                 top, partner = pairs[0]
-                pct = int(round(max(0.0, top) * 100))
                 if top >= concentration.SAME_TRADE:
-                    add("warn", f"You already own {pct}% of this trade",
-                        f"{ticker} and {partner} have moved together {pct}% of the "
-                        f"time over the last {concentration.CORR_DAYS} trading days. "
-                        f"Buying it doubles that position rather than adding a new "
-                        f"one — and one bad morning takes out both.")
+                    add("warn", f"You already own most of this trade",
+                        f"{ticker} and {partner} move together closely — a "
+                        f"correlation of {top:.2f} over the last "
+                        f"{concentration.CORR_DAYS} trading days. Buying it "
+                        f"doubles that position rather than adding a new one, "
+                        f"and one bad morning takes out both.")
                 elif top >= 0.4:
-                    add("note", f"Partly overlaps {partner} ({pct}%)",
+                    add("note", f"Partly overlaps {partner} ({top:.2f})",
                         f"Some of this bet is one you already hold. Size it as an "
                         f"addition to {partner}, not as a separate position.")
                 else:
                     add("ok", "This is a genuinely new bet",
-                        f"Its closest match in your book is {partner} at {pct}% — "
+                        f"Its closest match among the holdings that could be "
+                        f"measured is {partner}, at a correlation of {top:.2f} — "
                         f"low enough that they can fail independently.")
 
             # ---- 3. bets before and after ----
             before = concentration.effective_bets(
-                concentration.correlation(_corr_series(price_book, held)))
+                concentration.correlation(_corr_series(price_book, held),
+                                          dates=dates))
             after = concentration.effective_bets(corr)
             if before is not None and after is not None:
                 out["bets_before"] = round(before, 1)
                 out["bets_after"] = round(after, 1)
+                # the figure counts stocks, not euros — see
+                # concentration.effective_bets for why it is not weighted
+                basis = (" This counts each holding once: it is about which "
+                         "stocks you hold, not how much of each.")
                 gain = after - before
                 if gain < 0.35:
                     add("warn",
                         f"Your book stays at about {after:.1f} real bets",
-                        f"You hold {len(held)} positions worth about {before:.1f} "
+                        f"You hold {len(measured)} measurable positions worth "
+                        f"about {before:.1f} "
                         f"independent bets. Adding this makes it {after:.1f} — you "
-                        f"take on more money at risk without spreading it further.")
+                        f"take on more money at risk without spreading it "
+                        f"further.{basis}")
                 else:
                     add("ok",
                         f"Real bets rise from {before:.1f} to {after:.1f}",
-                        f"Across {len(held)} positions, this genuinely widens the "
-                        f"book rather than thickening a bet you already have.")
+                        f"Across the {len(measured)} positions that could be "
+                        f"measured, this genuinely widens the "
+                        f"book rather than thickening a bet you already "
+                        f"have.{basis}")
 
     # ---- 4. do the costs eat it? ----
     if friction_pct is not None and reward_eur:

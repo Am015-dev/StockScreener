@@ -365,3 +365,93 @@ assert r["dd"] is None and "market" in " ".join(r["missing"]).lower(), r
 print("share count: an unavailable count refuses the whole report, it does not guess")
 
 print("\nALL SHARE-COUNT TESTS PASSED")
+
+
+# ---- both halves of a balance sheet must describe the same balance sheet ----
+# T-Mobile stopped tagging `Liabilities` in 2013 and never stopped tagging
+# `LiabilitiesCurrent`. Reading the latest of each gave current liabilities
+# from 2026 against a total from 2013: 10.3bn instead of 157.3bn, market
+# leverage of 9% instead of 27%, and a distance of 12.23 instead of 8.21.
+# HPE moved a whole band the same way, from "watch it" to "comfortable".
+NOW = "2026-08-08"
+
+
+def _facts(**tags):
+    return {"facts": {"us-gaap": {
+        t: {"units": {"USD": [{"form": "10-Q", "end": e, "val": v}]}}
+        for t, (e, v) in tags.items()}}}
+
+
+tmus = _facts(LiabilitiesCurrent=("2026-06-30", 23.554e9),
+              Liabilities=("2013-03-31", 10.271e9),
+              LiabilitiesAndStockholdersEquity=("2026-06-30", 213.553e9),
+              StockholdersEquity=("2026-06-30", 56.265e9))
+bs = credit.balance_sheet(tmus, today=NOW)
+assert bs["source"] == "assets minus equity", bs
+assert abs(bs["total_liabilities"] - 157.288e9) < 1e7, bs["total_liabilities"]
+assert bs["as_of"] == "2026-06-30"
+print(f"a 2013 total is not combined with a 2026 current: the identity gives "
+      f"{bs['total_liabilities']/1e9:.1f}bn, not 10.3bn")
+
+# with no identity to fall back on, it refuses rather than mixing dates.
+# A total old enough to fail the age gate is dropped before it can be
+# mismatched with anything; the case that survives that gate is two
+# filings a quarter apart, and it must be refused too.
+stale = _facts(LiabilitiesCurrent=("2026-06-30", 23.554e9),
+               Liabilities=("2013-03-31", 10.271e9))
+bs2 = credit.balance_sheet(stale, today=NOW)
+assert bs2["source"] is None and bs2["total_liabilities"] is None, bs2
+assert credit.default_point(bs2["current_liabilities"],
+                            bs2["total_liabilities"]) is None
+
+skew = _facts(LiabilitiesCurrent=("2026-06-30", 23.554e9),
+              Liabilities=("2026-03-31", 150.0e9))
+bs3 = credit.balance_sheet(skew, today=NOW)
+assert bs3["source"] is None, bs3
+assert bs3["mismatched"] is True and bs3["total_as_of"] == "2026-03-31", bs3
+assert bs3["total_liabilities"] is None, \
+    "a total from another quarter must not sit in the field the model reads"
+assert bs3["total_unusable"] == 150.0e9, "it is still reported, just not used"
+assert credit.default_point(bs3["current_liabilities"],
+                            bs3["total_liabilities"]) is None
+print("two filings one quarter apart are reported separately, never combined")
+
+# a total below current is a contradiction, not negative long-term debt
+assert credit.default_point(23.554e9, 10.271e9) is None, \
+    "clamping the difference to zero turns a mismatch into a confident number"
+print("total below current refuses instead of clamping to zero long-term debt")
+
+# ---- one currency, and it is the one the market cap is quoted in ----
+# Enbridge files in CAD; Toyota files in JPY and its yen rows outrank its
+# dollar ones. Weighing 31.4 trillion yen of liabilities against a dollar
+# market capitalisation produced "comfortable" for a company it had priced
+# at ten times its real size.
+yen = {"facts": {"us-gaap": {"Liabilities": {"units": {
+    "JPY": [{"form": "20-F", "end": "2026-03-31", "val": 31.4e12}],
+    "USD": [{"form": "20-F", "end": "2026-03-31", "val": 212e9}]}},
+    "LiabilitiesCurrent": {"units": {
+        "JPY": [{"form": "20-F", "end": "2026-03-31", "val": 20.1e12}],
+        "USD": [{"form": "20-F", "end": "2026-03-31", "val": 136e9}]}}}}}
+bsy = credit.balance_sheet(yen, today=NOW)
+assert bsy["total_liabilities"] == 212e9, bsy["total_liabilities"]
+assert bsy["current_liabilities"] == 136e9
+print("a filer reporting in two currencies is read in dollars, not whichever "
+      "unit happens to carry the later date")
+
+cad_only = {"facts": {"us-gaap": {"Liabilities": {"units": {
+    "CAD": [{"form": "40-F", "end": "2026-06-30", "val": 93.7e9}]}}}}}
+assert credit.balance_sheet(cad_only, today=NOW)["total_liabilities"] is None, \
+    "a non-USD filer must be refused, not converted at an implied rate of 1"
+print("a filer reporting only in another currency is refused outright")
+
+# ---- and the balance sheet itself has an age limit ----
+ancient = _facts(LiabilitiesCurrent=("2019-09-30", 1.0e9),
+                 Liabilities=("2019-09-30", 3.0e9))
+assert credit.balance_sheet(ancient, today=NOW)["total_liabilities"] is None
+fresh = _facts(LiabilitiesCurrent=("2026-06-30", 1.0e9),
+               Liabilities=("2026-06-30", 3.0e9))
+assert credit.balance_sheet(fresh, today=NOW)["total_liabilities"] == 3.0e9
+print(f"a filing older than {credit.FILING_MAX_AGE_DAYS} days is refused, "
+      f"the same as a stale share count")
+
+print("\nBALANCE-SHEET INTEGRITY PINNED")

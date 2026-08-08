@@ -38,6 +38,10 @@ def build(loadings, idio=0.004, factors=None):
 
 
 F = rng.normal(0, 0.012, (3, N))
+# One shared calendar for the synthetic book. Correlation now REQUIRES it:
+# lining columns up by position is only correct when every stock traded on
+# exactly the same days, and silently wrong when they did not.
+DATES = [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(N)]
 series = {}
 for t in ("SEMI1", "SEMI2", "SEMI3", "SEMI4"):
     series[t] = build([1, 0, 0], factors=F)
@@ -47,7 +51,7 @@ series["BANK1"] = build([0, 0, 1], factors=F)
 series["LONE1"] = build([0, 0, 0], idio=0.014, factors=F)
 series["LONE2"] = build([0, 0, 0], idio=0.014, factors=F)
 
-corr = cc.correlation(series)
+corr = cc.correlation(series, dates=DATES)
 assert corr.shape == (9, 9), corr.shape
 
 # ---- the headline number must count factors, not rows ----
@@ -130,14 +134,14 @@ print("a pick with no measured track record gets no contribution figure and no r
 
 # too little history is not independence
 short = {"A": [100, 101, 102], "B": [50, 51, 52]}
-assert cc.correlation(short).empty, "3 closes cannot produce a correlation"
-assert cc.effective_bets(cc.correlation(short)) is None
+assert cc.correlation(short, dates=DATES).empty, "3 closes cannot produce a correlation"
+assert cc.effective_bets(cc.correlation(short, dates=DATES)) is None
 print(f"under {cc.MIN_OVERLAP} overlapping observations the answer is None, not 'independent'")
 
 # a flat line has no correlation to anything and must be dropped, not NaN'd
 flat = dict(series)
 flat["FLAT"] = [100.0] * N
-c2 = cc.correlation(flat)
+c2 = cc.correlation(flat, dates=DATES)
 assert "FLAT" not in c2.columns, "a zero-variance series must be excluded"
 assert cc.effective_bets(c2) is not None, "excluding it must not poison the matrix"
 print("a zero-variance series is excluded rather than allowed to produce NaNs")
@@ -277,3 +281,65 @@ assert len(kept) + len(dropped) == len(rows)
 print("every row is either kept or reported dropped — none vanish")
 
 print("\nALL DE-DUPLICATION TESTS PASSED")
+
+
+# ---- the calendar bug: position is not a date ----
+# The first version dropped each ticker's index and lined the columns up by
+# position. A London listing sitting out three UK bank holidays the NYSE
+# traded was enough to turn a correlation of 1.00 into 0.49 — the book
+# reporting 1.76 independent bets where it held one. Two series of
+# different lengths were worse: identical prices scored -0.006, and the
+# check told the reader a stock they already owned was "a genuinely new bet".
+_base = build([1, 0, 0], factors=F)
+_holidays = {7, 23, 61}                     # days the second listing did not trade
+
+# same company, two listings, one calendar with gaps
+_gapped = [None if i in _holidays else v for i, v in enumerate(_base)]
+_pair = cc.correlation({"US": _base, "LSE": _gapped}, dates=DATES)
+assert not _pair.empty, "a few missing days must not make it unmeasurable"
+_rho = float(_pair.at["US", "LSE"])
+assert _rho > 0.99, f"the same price path must correlate at ~1.00, got {_rho:.2f}"
+assert abs(cc.effective_bets(_pair) - 1.0) < 0.05, cc.effective_bets(_pair)
+print(f"one company on two calendars correlates at {_rho:.2f} and counts as "
+      f"{cc.effective_bets(_pair):.2f} bets, not two")
+
+# and without dates a multi-ticker frame is refused rather than guessed
+_blind = cc.correlation({"US": _base, "LSE": _base})
+assert _blind.empty, \
+    "with no calendar the correlation is unknowable and must not be invented"
+print("with no dates the correlation is refused, not computed off row position")
+
+# unequal lengths can no longer be lined up end-to-start
+_short = dict(zip(DATES[30:], _base[30:]))
+_mixed = cc.correlation({"US": _base, "CUT": [None] * 30 + _base[30:]}, dates=DATES)
+assert _mixed.empty or float(_mixed.at["US", "CUT"]) > 0.99, _mixed
+print("a shorter series is aligned to its own dates, never to another's")
+
+print("\nCALENDAR ALIGNMENT PINNED")
+
+
+# ---- the bets figure counts stocks, and says so ----
+# Weighting this by position size was tried and reverted: the
+# principal-components form of Meucci's measure RISES as a book
+# concentrates (four names in two correlated pairs score 2.31 with 99% of
+# the money in one of them, against 1.04 held evenly), and a
+# diversification number that improves as you concentrate is worse than
+# none. The measure stays a property of the names held, and the sentence
+# built from it has to say that.
+_four = {"NV": build([1, 0, 0], factors=F), "AM": build([1, 0, 0], factors=F),
+         "KO": build([0, 1, 0], factors=F), "PE": build([0, 1, 0], factors=F)}
+_c4 = cc.correlation(_four, dates=DATES)
+_bets = cc.effective_bets(_c4)
+assert _bets is not None and 1.5 < _bets < 2.6, _bets
+print(f"four names driven by two factors count {_bets:.2f} bets")
+
+import inspect as _inspect
+assert "weights" not in _inspect.signature(cc.effective_bets).parameters, \
+    "if this grows a weights argument, the caller's sentence must change too"
+import pretrade as _pt
+_src = _inspect.getsource(_pt.check)
+assert "not how much of each" in _src, \
+    "the reader must be told the figure counts holdings, not euros"
+print("the caller states that it counts holdings rather than position sizes")
+
+print("\nBETS BASIS PINNED")

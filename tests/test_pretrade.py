@@ -40,8 +40,14 @@ def mk(load, idio=0.004):
     return [round(float(x), 2) for x in 100 * np.cumprod(1 + r)]
 
 
-BOOK = {"NVDA": mk([1, 0]), "AMD": mk([1, 0]), "AVGO": mk([1, 0]),
-        "KO": mk([0, 1]), "PEP": mk([0, 1]), "XOM": mk([0, 0], idio=0.015)}
+# The published book carries one shared calendar and one aligned series
+# per ticker. Correlating without it lines columns up by row position,
+# which is only right when every stock traded on exactly the same days.
+DATES = [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(N)]
+BOOK = {"dates": DATES,
+        "series": {"NVDA": mk([1, 0]), "AMD": mk([1, 0]), "AVGO": mk([1, 0]),
+                   "KO": mk([0, 1]), "PEP": mk([0, 1]),
+                   "XOM": mk([0, 0], idio=0.015)}}
 HELD = [{"ticker": "NVDA"}, {"ticker": "AMD"}, {"ticker": "KO"}]
 
 
@@ -185,5 +191,27 @@ assert "if not build:" in src, "build=False must return before the request loop"
 assert src.index("if not build:") < src.index("for i in range("), \
     "the guard must come BEFORE the loop it is guarding"
 print("_earnings_calendar(build=False) returns before the 32-request loop")
+
+
+# ---- holdings that could not be compared must be named, not counted ----
+# Every sentence used to count len(held) while the comparison only ever
+# covered the holdings that appear in the published book. A reader with
+# eight positions, three of them measurable, was told "across 8 positions"
+# — and any of the five unchecked ones could have been the same trade.
+MIXED = [{"ticker": t} for t in
+         ("NVDA", "AMD", "KO", "TSLA", "VOD.L", "ASML.AS", "7203.T", "BABA")]
+rm = pretrade.check("XOM", MIXED, BOOK, {}, True)
+_text = " ".join(f["headline"] + " " + f["detail"] for f in rm["findings"])
+assert "could not be compared" in _text, _text
+for _t in ("TSLA", "VOD.L", "ASML.AS"):
+    assert _t in _text, f"{_t} was silently dropped from the comparison"
+# naming the total in "5 of your 8 could not be compared" is fine; what
+# must not survive is a claim ABOUT all eight that only covered three
+for _claim in ("Across 8 positions", "You hold 8 positions",
+               "You hold 8 measurable"):
+    assert _claim not in _text, f"{_claim!r} describes positions never measured"
+assert ("3 measurable positions" in _text
+        or "the 3 positions that could be measured" in _text), _text
+print("holdings with no published history are named and excluded from the count")
 
 print("\nCOLD-START BEHAVIOUR PINNED")

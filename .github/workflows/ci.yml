@@ -61,6 +61,8 @@ jobs:
         run: python tests/test_credit.py
       - name: Credit endpoint (peer ranking computed on read, warmer)
         run: python tests/test_credit_endpoint.py
+      - name: Home page renders any row shape (no 500 = no blank site)
+        run: python tests/test_page_robustness.py
       - name: Market clock (sessions vs wall-clock, holidays, DST)
         run: python tests/test_market_clock.py
       - name: Simulation realism (costs, ATR stops, hold cap, liquidity)

@@ -110,3 +110,40 @@ assert mc.KNOWN_THROUGH >= dt.date(2027, 12, 1), mc.KNOWN_THROUGH
 print(f"{len(mc.HOLIDAYS)} holidays known through {mc.KNOWN_THROUGH}")
 
 print("\nALL MARKET-CLOCK TESTS PASSED")
+
+
+# ---- "the current session" must mean the scan's prices are from it ----
+# The phrase branched on whether a market happened to be open while the
+# reader looked, not on whether the scan came from that session. Friday's
+# closes read at 10:00 Monday were described as live, and a scan run
+# premarket (which can only hold the previous close) was dated to the day
+# it ran, so it still claimed to be zero sessions old after a full session
+# had traded.
+import datetime as _d
+
+FRI_CLOSE = _d.datetime(2026, 8, 7, 20, 30, tzinfo=_d.timezone.utc)   # 16:30 ET
+MON_OPEN = _d.datetime(2026, 8, 10, 14, 0, tzinfo=_d.timezone.utc)    # 10:00 ET
+
+st = mc.staleness(FRI_CLOSE.timestamp(), now_utc=MON_OPEN)
+assert st["market"]["is_open"] is True, st["market"]
+assert "current session" not in st["phrase"], st["phrase"]
+assert "Friday" in st["phrase"], st["phrase"]
+print(f"Friday's closes read on Monday morning: {st['phrase']!r}, not 'current'")
+
+# a scan taken during today's session, read during that same session, IS live
+MON_MID = _d.datetime(2026, 8, 10, 17, 0, tzinfo=_d.timezone.utc)     # 13:00 ET
+MON_LATE = _d.datetime(2026, 8, 10, 19, 0, tzinfo=_d.timezone.utc)    # 15:00 ET
+live = mc.staleness(MON_MID.timestamp(), now_utc=MON_LATE)
+assert live["phrase"] == "from the current session", live["phrase"]
+print("a scan taken during the session being traded still reads as current")
+
+# a premarket scan holds the PREVIOUS close, and must age from it
+MON_PRE = _d.datetime(2026, 8, 10, 12, 30, tzinfo=_d.timezone.utc)    # 08:30 ET
+TUE_MID = _d.datetime(2026, 8, 11, 17, 0, tzinfo=_d.timezone.utc)
+pre = mc.staleness(MON_PRE.timestamp(), now_utc=TUE_MID)
+assert pre["sessions"] >= 1, pre
+assert "Friday" in pre["phrase"] or pre["sessions"] >= 1, pre
+print(f"a premarket scan is dated to the last close, not the day it ran "
+      f"({pre['sessions']} session(s) old on Tuesday)")
+
+print("\nSESSION-PROVENANCE PINNED")
