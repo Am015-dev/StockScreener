@@ -101,21 +101,37 @@ def simulate(p: dict, universe: list, progress) -> dict | None:
         return None
 
 
-def price_book(max_tickers: int = 1200, days: int = 60) -> dict:
+def price_book(max_tickers: int = 2000, days: int = 60) -> dict:
     """Last `days` closes per ticker, from the frame the scan already
     downloaded.
 
     This is what makes the pre-trade check free to run: the web instance
     answers "how correlated is this with what I hold" out of a published
     file instead of calling Yahoo per ticker, which is both rate-limited
-    and impossible from a datacenter IP. Roughly 600KB for 1,200 names.
+    and impossible from a datacenter IP.
+
+    The ordering matters and cost a live bug. The first version walked
+    `data.columns.levels[0]`, which pandas returns SORTED, and truncated
+    it — so a cap of 1,200 over a 1,500-name scan did not drop the 300
+    least liquid stocks, it dropped everything after roughly the letter T.
+    WM, WCN and XPO were all in the published board and all missing from
+    the book, and the check answered "overlap could not be measured" for
+    exactly the names at the end of the alphabet. The scan's own universe
+    is ordered by size, so it is used when available and the cap now sits
+    above the scanned universe rather than inside it.
     """
     out: dict = {}
     try:
         data = screener._cache.get("ohlc")
         if data is None:
             return out
-        for t in list(getattr(data.columns, "levels", [[]])[0])[:max_tickers]:
+        available = set(getattr(data.columns, "levels", [[]])[0])
+        ordered = [t for t in (screener._cache.get("universe") or [])
+                   if t in available]
+        for t in available:            # anything the universe list missed
+            if t not in ordered:
+                ordered.append(t)
+        for t in ordered[:max_tickers]:
             try:
                 closes = data[t]["Close"].dropna()
                 if len(closes) >= days:

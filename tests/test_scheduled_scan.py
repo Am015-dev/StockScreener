@@ -184,3 +184,51 @@ assert p5.returncode == 1, (p5.returncode, p5.stderr[-300:])
 print("a genuine defect still exits 1 (fails the job)")
 
 print("\nALL SCHEDULED-SCAN TESTS PASSED")
+
+# ---- the price book must not be truncated alphabetically ----
+# The first version walked data.columns.levels[0], which pandas returns
+# SORTED, and sliced it. A cap of 1,200 over a 1,500-name scan therefore
+# dropped everything after roughly the letter T rather than the 300 least
+# liquid names. WM, WCN and XPO were all on the published board and all
+# missing from the book, so the check answered "overlap could not be
+# measured" for exactly the names at the end of the alphabet.
+import numpy as _np
+import pandas as _pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import scheduled_scan
+
+_n = 120
+_small = [f"A{i:03d}" for i in range(60)]
+_big = ["WM", "WCN", "XPO"]
+_idx = _pd.bdate_range(end=_pd.Timestamp.today(), periods=_n)
+_frame = _pd.concat({t: _pd.DataFrame(
+    {"Open": _np.linspace(10, 20, _n), "High": _np.linspace(10, 21, _n),
+     "Low": _np.linspace(9, 19, _n), "Close": _np.linspace(10, 20, _n),
+     "Volume": _np.full(_n, 1e6)}, index=_idx) for t in _big + _small}, axis=1)
+
+# the scan's universe is ordered largest-first, so the big names lead
+screener._cache.update(ohlc=_frame, universe=_big + _small)
+_book = scheduled_scan.price_book(max_tickers=30, days=60)
+assert len(_book) == 30, len(_book)
+assert set(_big) <= set(_book), \
+    f"a cap must drop the smallest names, not the end of the alphabet: {sorted(_book)[:5]}"
+print(f"price book cap keeps the largest names: {_big} survived a cap of 30 over "
+      f"{len(_big) + len(_small)} tickers")
+
+# and with no universe order recorded it must still return something usable
+screener._cache.update(ohlc=_frame, universe=None)
+_fallback = scheduled_scan.price_book(max_tickers=30, days=60)
+assert len(_fallback) == 30, len(_fallback)
+print("with no universe order recorded it still fills the book rather than emptying it")
+
+# a ticker with too little history is omitted, never padded
+_short = _pd.concat({"TINY": _pd.DataFrame(
+    {"Open": [1.0] * 10, "High": [1.0] * 10, "Low": [1.0] * 10,
+     "Close": [1.0] * 10, "Volume": [1e6] * 10},
+    index=_pd.bdate_range(end=_pd.Timestamp.today(), periods=10))}, axis=1)
+screener._cache.update(ohlc=_short, universe=["TINY"])
+assert scheduled_scan.price_book(days=60) == {}, "10 closes cannot fill a 60-day book"
+print("a ticker with less than the full window is omitted, not padded")
+
+print("\nPRICE-BOOK ORDERING PINNED")
