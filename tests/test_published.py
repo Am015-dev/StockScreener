@@ -22,6 +22,14 @@ for k, f in (("MARKET_DB", "market.db"), ("JOURNAL_DB", "journal.db"),
 # its startup adoption fetches the real published index and caches
 # it — which a stub installed later can no longer displace.
 os.environ["SKIP_WARM"] = "1"
+# The deploy branch SHIPS published/*.json — the scan job commits them —
+# so a CI checkout carries real results that _published_get reads from
+# disk before any stub is consulted. That is how this file published
+# "relaxed" and CI adopted "wide-net" from the live branch. Point the
+# lookup at an empty directory; the shipped-results case below sets it
+# deliberately to a directory it controls.
+os.environ["PUBLISHED_DIR"] = os.path.join(TMP, "empty_published")
+os.makedirs(os.environ["PUBLISHED_DIR"], exist_ok=True)
 sys.path.insert(0, str(ROOT))
 
 import journal
