@@ -77,9 +77,11 @@
     {% if b.n_qualified %}
     <p class="lead">{{ b.n_qualified }} name{{ '' if b.n_qualified == 1 else 's' }}
        dipped to support today.</p>
-    <p class="warn" style="font-weight:600;margin:0 0 .9rem">Research only — not
-      recommendations. This pattern has not been profitable in the five-year replay.
-      <a href="/limits" style="color:inherit">See the numbers</a>.</p>
+    <p class="warn" style="font-weight:600;margin:0 0 .9rem">This is a filter, not a
+      signal. Tested against random entry over 526 trades, the pattern performed
+      <em>worse</em> than a coin flip managed the same way — so treat this as a list of
+      liquid stocks near a defended price with verified earnings dates, and nothing more.
+      <a href="/limits" style="color:inherit">The test</a>.</p>
     <div class="wrap">
       <table class="wl">
         <thead><tr>
@@ -144,9 +146,9 @@
       <p>No picks logged yet.</p>
     {% endif %}
     {% if b.bar.profit_factor is not none and not b.bar.passes %}
-    <p class="bar" style="margin-top:.9rem">The five-year replay of these rules does not
-      clear the bar this project set for itself.
-      <a href="/limits">The numbers, and everything else that is wrong with it</a>.</p>
+    <p class="bar" style="margin-top:.9rem">A permutation test found this pattern
+      indistinguishable from random entry (p = 0.50).
+      <a href="/limits">The test, and everything else that is wrong with it</a>.</p>
     {% elif b.bar.passes %}
     <p class="bar pass" style="margin-top:.9rem"><b class="ok">These rules clear the
       tradeable bar</b> in the five-year replay. <a href="/limits">See the working</a>.</p>

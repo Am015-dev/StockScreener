@@ -4,30 +4,43 @@ Current as of 8 August 2026. This page exists because a screener that
 only publishes what works is not evidence of anything. Everything below
 is a limitation a reader could otherwise discover the expensive way.
 
-## The strategy does not currently clear its own bar
+## The signal is indistinguishable from random entry
 
-This is the most important entry on the page.
+This is the most important entry on the page, and it replaces a weaker
+one. Earlier this file said the strategy "does not clear its own bar",
+which is true and misses the point: a bar is a threshold, and failing it
+invites the thought that tuning might fix it.
 
-The bar, set before the measurements were taken: profit factor ≥ 1.5,
-maximum drawdown no worse than the S&P 500 over the same window, Sortino
-≥ 1.0. The most recent five-year replay of the published rule set, run
-through a realistic five-position book with costs:
+A permutation test on 8 August 2026 answered the prior question. The real
+pullback signal was run over 376 stocks, then compared against 25 runs of
+**coin-flip entry** on the same stocks over the same days, managed by
+byte-for-byte identical code — same ATR stop, same target, same holding
+cap, same costs, same one-trade-per-ticker rule. Only the choice of which
+bars to enter was replaced.
 
-| Measure | Result | Bar | Verdict |
-|---|---|---|---|
-| Profit factor | 0.62 | ≥ 1.5 | fails |
-| Max drawdown | −283% of risk unit | not worse than SPY's −18.8% | fails |
-| Sortino | −2.04 | ≥ 1.0 | fails |
-| Return | — | vs SPY +82.5% | fails |
+| | trades | avg outcome | win rate | profit factor |
+|---|---|---|---|---|
+| Pullback signal | 526 | +0.060R | 40% | 1.10 |
+| **Random entry** | ~671 | **+0.066R** | **57.8%** | **1.214** |
 
-The best configuration found across a six-way parameter sweep — ATR
-stops with a fifteen-bar time exit — reached profit factor 1.07, a 39%
-win rate and a −18.4% drawdown. That is the only variant whose drawdown
-matched the index, and it still does not clear the bar.
+**z = −0.07, p = 0.50.** Twelve of twenty-five coin flips did as well or
+better — exactly half, which is what "no information" looks like. Random
+entry beat the signal on all three measures.
 
-The site says this on its own front page, in the simulation panel,
-without being asked. **No part of this tool should be traded on real
-money until that verdict changes.** The picks are a hypothesis generator.
+The honest reading: the RSI dip zone, the uptrend filter, the
+reward:risk floor and the relative-strength gate are not selecting
+anything. Whatever small positive expectancy appears in the numbers comes
+from the trade *management* — the stop placement and the time exit — and
+is available to anyone entering at random.
+
+**Nothing on this site should be treated as a trading signal.** The daily
+list is a filter: liquid stocks near a price level buyers previously
+defended, with earnings dates verified. That is a factual screen output.
+It is not evidence that buying them makes money, and this test is the
+reason the wording changed.
+
+The test lives in `scripts/null_test.py` and runs from the Actions tab, so
+the claim can be re-checked rather than taken on trust.
 
 ## Coverage
 
