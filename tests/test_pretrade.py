@@ -62,18 +62,18 @@ def headline(r, level):
 # ---- the finding that justifies the price ----
 r = pretrade.check("AVGO", HELD, BOOK, {"AVGO": 30}, True)
 h = headline(r, "warn")
-assert "already own" in h, h
+assert "already own this trade" in h, h
 assert r["verdict"] == "warn"
 assert r["bets_before"] and r["bets_after"]
 assert r["bets_after"] - r["bets_before"] < 0.35, (r["bets_before"], r["bets_after"])
 print(f"buying a third semiconductor: {h!r}; book goes "
-      f"{r['bets_before']} -> {r['bets_after']} real bets")
+      f"{r['bets_before']} -> {r['bets_after']} independent bets")
 
 # ---- and the opposite verdict, on the same book ----
 r2 = pretrade.check("XOM", HELD, BOOK, {}, True)
 assert r2["verdict"] == "ok", [f["headline"] for f in r2["findings"]]
 assert r2["bets_after"] - r2["bets_before"] >= 0.35
-assert "genuinely new bet" in " ".join(f["headline"] for f in r2["findings"])
+assert "do not already own" in " ".join(f["headline"] for f in r2["findings"])
 print(f"buying something uncorrelated: verdict ok, book goes "
       f"{r2['bets_before']} -> {r2['bets_after']}")
 
@@ -103,7 +103,7 @@ print("earnings: 4 days -> block, 30 days -> pass, absent from a COMPLETE "
 unknown = pretrade.check("NOTINBOOK", HELD, BOOK, {"NOTINBOOK": 30}, True)
 warn = headline(unknown, "warn")
 assert warn and "could not be measured" in warn, [f["headline"] for f in unknown["findings"]]
-assert "genuinely new bet" not in " ".join(f["headline"] for f in unknown["findings"]), \
+assert "do not already own" not in " ".join(f["headline"] for f in unknown["findings"]), \
     "an unmeasurable overlap must never be reported as a new bet"
 print("a ticker with no shared history: reported unmeasurable, never as 'new'")
 
@@ -111,7 +111,7 @@ print("a ticker with no shared history: reported unmeasurable, never as 'new'")
 bare = pretrade.check("AVGO", [], BOOK, {"AVGO": 30}, True)
 assert "No holdings given" in " ".join(f["headline"] for f in bare["findings"])
 assert "bets_before" not in bare
-assert "genuinely new bet" not in " ".join(f["headline"] for f in bare["findings"]), \
+assert "do not already own" not in " ".join(f["headline"] for f in bare["findings"]), \
     "with no book, the check cannot say a trade is new"
 print("with no holdings: asks for them rather than declaring the trade clean")
 
@@ -210,8 +210,9 @@ for _t in ("TSLA", "VOD.L", "ASML.AS"):
 for _claim in ("Across 8 positions", "You hold 8 positions",
                "You hold 8 measurable"):
     assert _claim not in _text, f"{_claim!r} describes positions never measured"
-assert ("3 measurable positions" in _text
-        or "the 3 positions that could be measured" in _text), _text
+# the sentence about the book must count the 3 that were compared, not
+# all 8 — the phrasing has changed twice, the requirement has not
+assert "Your 3 positions" in _text, _text
 print("holdings with no published history are named and excluded from the count")
 
 print("\nCOLD-START BEHAVIOUR PINNED")

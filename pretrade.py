@@ -160,21 +160,24 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
             if pairs:
                 top, partner = pairs[0]
                 if top >= concentration.SAME_TRADE:
-                    add("warn", f"You already own most of this trade",
-                        f"{ticker} and {partner} move together closely — a "
-                        f"correlation of {top:.2f} over the last "
-                        f"{concentration.CORR_DAYS} trading days. Buying it "
-                        f"doubles that position rather than adding a new one, "
-                        f"and one bad morning takes out both.")
+                    add("warn", f"You already own this trade, under another name",
+                        f"{ticker} and {partner} have moved almost in lockstep for "
+                        f"the last three months. Buying it makes your {partner} "
+                        f"position bigger; it does not add a second one. One bad "
+                        f"morning takes out both.")
                 elif top >= 0.4:
-                    add("note", f"Partly overlaps {partner} ({top:.2f})",
-                        f"Some of this bet is one you already hold. Size it as an "
-                        f"addition to {partner}, not as a separate position.")
+                    share = int(round(top * 100))
+                    add("note", f"Part of this is a bet you already have",
+                        f"{ticker} and {partner} tend to move the same way — when "
+                        f"one has a bad day the other usually does too, about "
+                        f"{share} times out of a hundred. Buy less than you were "
+                        f"going to, and count it as more of {partner} rather than "
+                        f"as something new.")
                 else:
-                    add("ok", "This is a genuinely new bet",
-                        f"Its closest match among the holdings that could be "
-                        f"measured is {partner}, at a correlation of {top:.2f} — "
-                        f"low enough that they can fail independently.")
+                    add("ok", "This is something you do not already own",
+                        f"The closest thing in your book is {partner}, and the two "
+                        f"move independently enough that a bad week for one is not "
+                        f"a bad week for the other.")
 
             # ---- 3. bets before and after ----
             before = concentration.effective_bets(
@@ -186,24 +189,24 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
                 out["bets_after"] = round(after, 1)
                 # the figure counts stocks, not euros — see
                 # concentration.effective_bets for why it is not weighted
-                basis = (" This counts each holding once: it is about which "
-                         "stocks you hold, not how much of each.")
+                basis = (" This counts each holding once, so it reflects which "
+                         "stocks you own rather than how much of each.")
                 gain = after - before
                 if gain < 0.35:
                     add("warn",
-                        f"Your book stays at about {after:.1f} real bets",
-                        f"You hold {len(measured)} measurable positions worth "
-                        f"about {before:.1f} "
-                        f"independent bets. Adding this makes it {after:.1f} — you "
-                        f"take on more money at risk without spreading it "
-                        f"further.{basis}")
+                        f"This adds money at risk without spreading it wider",
+                        f"Your {len(measured)} positions already behave like about "
+                        f"{before:.0f} separate one{'' if round(before) == 1 else 's'}, "
+                        f"because several move together. "
+                        f"Adding this leaves that roughly unchanged — so it is more "
+                        f"money exposed to bets you already have.{basis}")
                 else:
                     add("ok",
-                        f"Real bets rise from {before:.1f} to {after:.1f}",
-                        f"Across the {len(measured)} positions that could be "
-                        f"measured, this genuinely widens the "
-                        f"book rather than thickening a bet you already "
-                        f"have.{basis}")
+                        f"This genuinely spreads your money wider",
+                        f"Your {len(measured)} positions behave like about "
+                        f"{before:.0f} separate one{'' if round(before) == 1 else 's'} "
+                        f"today. With this, about {after:.0f} — it is a different "
+                        f"bet, not a bigger version of one you have.{basis}")
 
     # ---- 4. do the costs eat it? ----
     if friction_pct is not None and reward_eur:

@@ -375,35 +375,42 @@ function paintCredit(d, run) {
     return;
   }
   const lvl = CREDIT_LEVEL[d.band] || "note";
-  const bits = [];
-  if (d.market_leverage !== null && d.market_leverage !== undefined)
-    bits.push("Its debts are " + Math.round(d.market_leverage * 100) +
-              "% of what the market says the whole business is worth");
+  // Plain sentences first, arithmetic underneath. The old version led with
+  // "10.09 standard deviations of asset value" and then, when the estimate
+  // was rough, told the reader not to read it as a decimal — a precise
+  // number and an instruction to ignore its precision, in one breath.
+  const lev = (d.market_leverage !== null && d.market_leverage !== undefined)
+    ? Math.round(d.market_leverage * 100) : null;
+  let lead;
+  if (lev === null) lead = "";
+  else if (lev < 25) lead = `It owes little next to what it is worth: debts are ` +
+    `${lev}% of the company's market value.`;
+  else if (lev < 60) lead = `It carries real debt — ${lev}% of the company's ` +
+    `market value — but comfortably less than the business is worth.`;
+  else lead = `It is heavily borrowed: debts are ${lev}% of the whole company's ` +
+    `market value, so a fall in the share price closes the gap quickly.`;
+
+  const extra = [];
   if (d.percentile !== null && d.percentile !== undefined)
-    bits.push("that is stronger than " + d.percentile + "% of the " +
-              d.peers_n + " other names measured today");
-  // a period average is not a point-in-time share count; say so rather
-  // than presenting the two as the same number
+    extra.push(`Against the ${d.peers_n} other companies measured today it sits ` +
+               `at the ${d.percentile >= 50 ? "stronger" : "weaker"} end — safer ` +
+               `than ${d.percentile}% of them.`);
   if (d.shares_tag && d.shares_tag.indexOf("WeightedAverage") > -1)
-    bits.push("its share count is a quarterly average, because this filer " +
-              "stopped reporting a cover-page figure");
-  // the distance is only as firm as the volatility under it, and the
-  // published price book carries a quarter of a year, not the year the
-  // model was designed around
-  if (d.vol_thin && d.vol_obs)
-    bits.push("its share-price volatility is measured over only " + d.vol_obs +
-              " trading days, so read the distance as a band, not a decimal");
-  else if (d.vol_obs)
-    bits.push("its volatility is measured over " + d.vol_obs +
-              " days of returns");
-  const src = d.as_of ? ` Read from its balance sheet filed to ${esc(d.as_of)}.` : "";
+    extra.push("Its share count is a quarterly average, because this company " +
+               "stopped publishing a current one.");
+  // one statement about precision, not a number followed by a retraction
+  const precise = d.vol_thin
+    ? `The estimate is rough: only ${d.vol_obs} days of share-price history ` +
+      `went into it, so treat the band, not the figure.`
+    : `Distance to default ${d.dd}, from ${d.vol_obs} days of share prices and ` +
+      `its balance sheet filed to ${esc(d.as_of || "an unknown date")}.`;
+
   el.innerHTML = `<p style="margin:0 0 .6rem"><b style="color:${COLOR[lvl]}">` +
     `${ICON[lvl]} Credit standing: ${esc(d.band)}</b><br>` +
-    `<span class="tiny">${d.dd} standard deviations of asset value sit between ` +
-    `this company and the point where its debts come due against too little ` +
-    `to pay them.${bits.length ? " " + esc(bits.join("; ")) + "." : ""}${src} ` +
-    `No default probability is quoted — that step needs a database of actual ` +
-    `defaults, which is the part that is not free.</span></p>`;
+    `<span class="tiny">${esc(lead)} ${esc(extra.join(" "))} ${esc(precise)} ` +
+    `No chance-of-default percentage is given — that needs a database of ` +
+    `companies that actually defaulted, which is the part nobody gives away.` +
+    `</span></p>`;
 }
 
 async function runCheck() {
