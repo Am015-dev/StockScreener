@@ -145,7 +145,13 @@ def run_preset(name: str, overrides: dict, universe_max: int,
         # web instance is empty within hours of being written — the live
         # site was showing "0 picks recorded" while the runner held a full
         # history. Shipping it with the results makes it survive.
-        journal_rows = journal.export_all()
+        # Capped: this ships inside every preset file, so an uncapped export
+        # would grow the payload without bound (~270 bytes a row, three
+        # presets). The most recent 1,500 is roughly a year of daily picks
+        # and keeps each file well under a megabyte. The runner's own
+        # journal.db keeps the complete history and round-trips through the
+        # data branch, so nothing is lost — only what travels is trimmed.
+        journal_rows = journal.export_all()[-1500:]
     except Exception as e:
         progress(f"journal update skipped: {e}")
 
