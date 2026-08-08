@@ -315,7 +315,12 @@ const CREDIT_LEVEL = {"very far from trouble": "ok", "comfortable": "ok",
 function paintCredit(d) {
   const el = document.getElementById("ckCredit");
   if (!el) return;
-  if (!d || !d.ok) { el.innerHTML = ""; return; }
+  if (!d || !d.ok) {
+    // silence would read as "this company has no credit issues"
+    el.innerHTML = '<p class="tiny" style="color:var(--ink-3)">Credit standing ' +
+      'could not be read this time. The rest of the check above is unaffected.</p>';
+    return;
+  }
   if (d.dd === null || d.dd === undefined) {
     // a refusal is a result: it says which input was missing, not "error"
     el.innerHTML = '<p class="tiny" style="color:var(--ink-3)">Credit standing: ' +

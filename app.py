@@ -840,12 +840,44 @@ CREDIT_TTL = float(os.environ.get("CREDIT_TTL", "86400"))   # filings are quarte
 _cik_map = {"ts": 0.0, "data": None}
 
 
-def _sec_json(url: str):
+def _sec_json(url: str, timeout: float = 15):
     import requests as rq
-    r = rq.get(url, headers={"User-Agent": screener.SEC_UA}, timeout=15)
+    r = rq.get(url, headers={"User-Agent": screener.SEC_UA}, timeout=timeout)
     if r.status_code != 200:
         raise RuntimeError(f"SEC {r.status_code}")
     return r.json()
+
+
+class Expired(Exception):
+    """The report ran out of time before the filings answered."""
+
+
+def _sec_within(budget_s: float):
+    """A fetcher that answers within a total budget, not per request.
+
+    One credit report can make eight sequential SEC calls — five balance
+    sheet tags, the whole-filer fallback, and two share-count tags. A
+    15-second timeout on each of them is a two-minute timeout on the
+    report, which is what it turned out to be in production: Carnival
+    held a worker thread for 120 seconds and returned nothing, twice.
+    The caller needs a bound on the answer, not on each step towards it.
+
+    Expiry is also recorded on the returned function, because both callers
+    in credit.py catch per-tag failures and carry on — so a report that ran
+    out of time would otherwise be indistinguishable from a company that
+    files nothing, and would be reported as "missing balance sheet" when
+    the balance sheet is right there.
+    """
+    end = time.time() + budget_s
+
+    def get_json(url):
+        left = end - time.time()
+        if left <= 1:
+            get_json.expired = True
+            raise Expired(url)
+        return _sec_json(url, timeout=min(8.0, left))
+    get_json.expired = False
+    return get_json
 
 
 def _cik_for(ticker: str) -> int | None:
@@ -888,7 +920,7 @@ def _with_peers(rep: dict) -> dict:
     return rep
 
 
-def _credit_for(ticker: str) -> dict:
+def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     """One company's Distance to Default, cached, or an explicit refusal.
 
     Shared by the endpoint and the warmer below. It has to be shared: the
@@ -910,8 +942,14 @@ def _credit_for(ticker: str) -> dict:
                            "only, so this company's filings are not "
                            "available here.",
                 "missing": ["SEC filings"]}
+    sec = _sec_within(budget_s)
     try:
-        bs = credit.fetch_balance_sheet(cik, _sec_json)
+        bs = credit.fetch_balance_sheet(cik, sec)
+    except Expired:
+        return {"ok": True, "ticker": ticker, "dd": None,
+                "verdict": "The SEC did not answer in time. Nothing is wrong "
+                           "with the company — try again in a moment.",
+                "missing": ["SEC filings"]}
     except Exception as e:
         return {"ok": True, "ticker": ticker, "dd": None,
                 "verdict": f"Could not read the filings ({type(e).__name__}).",
@@ -930,11 +968,11 @@ def _credit_for(ticker: str) -> dict:
         # A refused share count leaves equity None and the report says so;
         # it does not fall back to a stale register.
         try:
-            shares = credit.shares_outstanding(cik, _sec_json)
+            shares = credit.shares_outstanding(cik, sec)
             if shares.get("shares"):
                 equity = shares["shares"] * float(closes[-1])
         except Exception:
-            shares = {}
+            shares = {}          # including Expired: the report says what it lacks
 
     rep = credit.report(ticker, equity, closes, bs["current_liabilities"],
                         bs["total_liabilities"], as_of=bs.get("as_of"))
@@ -943,7 +981,14 @@ def _credit_for(ticker: str) -> dict:
     rep["endpoint"] = bs.get("source_endpoint")
     rep["shares_as_of"] = shares.get("as_of")
     rep["shares_tag"] = shares.get("tag")
-    if shares.get("stale_as_of") and equity is None:
+    # a report that ran out of time is not a report about a company that
+    # files nothing, and must not be worded as one — or cached as one
+    if rep.get("dd") is None and sec.expired:
+        rep["timed_out"] = True
+        rep["verdict"] = ("The SEC did not answer in time, so this is not "
+                          "measured yet. Nothing is wrong with the company — "
+                          "try again in a moment.")
+    elif shares.get("stale_as_of") and equity is None:
         rep["verdict"] = (
             "This company last reported a share count on "
             f"{shares['stale_as_of']}, which is too old to price it today, "
@@ -1195,7 +1240,8 @@ def _warm_credit():
     t0, done = time.time(), 0
     for t in board:
         try:
-            if _credit_for(t).get("dd") is not None:
+            # nothing is waiting on this one, so it can afford to be patient
+            if _credit_for(t, budget_s=90).get("dd") is not None:
                 done += 1
         except Exception:
             pass
