@@ -41,6 +41,7 @@ except Exception:  # older/newer yfinance layouts — fall back to message sniff
         pass
 
 import cache_store
+import concentration
 import db as market_db
 import universe_static
 
@@ -2022,6 +2023,45 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 row["hist"] = f"{e['win_rate']:.0f}% of {e['n']}"
                 row["hist_avg_r"] = e["avg_r"]
 
+    # ---- how many bets are actually in this list? ----
+    # A ranked list invites the reader to treat the rows as separate
+    # decisions. In one tape they are usually not: the setup that fires on
+    # one semiconductor fires on its supply chain, and they stop out on the
+    # same morning. This project's own five-year replay is the evidence —
+    # profit factor 1.62 taking every signal alone, 0.62 through a
+    # five-slot book, with no change to any individual trade.
+    conc, groups = {}, []
+    try:
+        held = [h.get("ticker") for h in (p.get("holdings") or [])
+                if isinstance(h, dict) and h.get("ticker")]
+        # the per-row spark IS the price history — no extra download
+        series = {r["ticker"]: r.get("spark") for r in rows if r.get("spark")}
+        corr = concentration.correlation(series)
+        order = [r["ticker"] for r in rows]
+        groups = concentration.clusters(corr, order)
+
+        def edge_of(ticker):
+            e = edge.get(ticker) if edge else None
+            if e and e.get("avg_r") is not None:
+                return float(e["avg_r"]), int(e["n"]), "this stock"
+            star = (edge or {}).get("*")
+            if star and star.get("avg_r") is not None:
+                return float(star["avg_r"]), int(star["n"]), "rule set"
+            return None    # unmeasured stays unranked, never averaged in
+
+        enriched = concentration.marginal(rows, corr, edge_of, held)
+        rows[:] = enriched
+        df = pd.DataFrame(rows)
+        conc = concentration.summarise(rows, corr, groups)
+        conc["clusters"] = [g for g in groups if g["n"] >= 2]
+        if conc.get("effective_bets") is not None:
+            progress(f"Concentration: {conc['n_picks']} picks, but only "
+                     f"{conc['effective_bets']} independent bets "
+                     f"({conc['n_clusters']} clusters at "
+                     f"ρ≥{concentration.SAME_TRADE:g}).")
+    except Exception as e:
+        progress(f"Concentration analysis skipped: {type(e).__name__}: {e}")
+
     pending = sorted((row for row, m in near
                       if any(g == "unverified" for g, _r in m)),
                      key=lambda r: r.get("score", 0), reverse=True)[:30]
@@ -2029,6 +2069,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
             "elapsed_s": elapsed, "params": p, "portfolio": port_summary,
             "near": near_rows, "relax_hints": relax_hints, "pending": pending,
             "breadth": {"pct": breadth_pct, "risk_factor": risk_factor},
+            "concentration": conc,
             "health": {"blocked_unverified": len(pending)}}
 
 

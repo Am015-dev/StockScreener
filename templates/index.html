@@ -448,6 +448,13 @@
   <section>
     <h2>All results <span id="resultCount"></span></h2>
     <div id="verdict" style="display:none;font-size:1.05rem;font-weight:600;margin:0 0 .6rem"></div>
+    <div id="concBox" style="display:none;margin:0 0 .8rem;background:rgba(42,120,214,.07);border:1px solid var(--accent);border-radius:var(--r);padding:.8rem 1rem">
+      <div id="concHead" style="font-weight:640"></div>
+      <div id="concBody" class="hint" style="margin:.3rem 0 0"></div>
+      <details id="concDetails" style="margin-top:.4rem"><summary class="hint"
+        style="cursor:pointer">Show the clusters and the re-ranking</summary>
+        <div id="concClusters" style="margin-top:.4rem"></div></details>
+    </div>
     <div id="resultsAge" class="hint" style="display:none;margin:0 0 .6rem"></div>
     <div class="secsub">Every stock that passed all filters, best score first.
       Hover a column header for what it means.</div>
@@ -609,6 +616,8 @@ const COLDEFS = [
   ["resistance","Target",      "The recent high the price could realistically climb back to — where you'd take profit.", fmtNum],
   ["RR",       "Reward:Risk",  "Possible gain vs possible loss. 3 = you stand to win €3 per €1 risked.", fmtNum],
   ["score",    "Score",        "Overall quality 0–100: 70+ strong, 50–69 okay, below 50 weak.", fmtNum],
+  ["mpc_r",    "Adds (R)",     "What this pick is expected to ADD to your book, in R, after removing the part of the bet you already own. Expected outcome × the fraction of it that is a genuinely separate bet. This is the column to rank by — the Score treats every row as if it were your only position.", v => (v > 0 ? "+" : "") + v + "R"],
+  ["corr_max", "Same as",      "How closely this moves with something already committed — a stock you hold, or a pick above it on this list. 0.7+ means it is the same trade twice, and one bad morning takes out both.", v => v],
   // Earnings sits here, next to the score, and not near the end of the row.
   // It is the column most likely to cost the reader money — a report can
   // gap the price straight through a stop — and at the far right it was
@@ -1222,6 +1231,73 @@ function drawCurve(pts) {
   };
 }
 
+// ---- concentration: how many independent bets this list really contains ----
+function renderConcentration(c, rows) {
+  const box = document.getElementById("concBox");
+  if (!c || c.effective_bets == null || !rows.length) {
+    box.style.display = "none";
+    return;
+  }
+  box.style.display = "block";
+  const n = c.n_picks, eb = c.effective_bets;
+  const ratio = eb / Math.max(n, 1);
+  const head = document.getElementById("concHead");
+  // the headline states the gap between what the list looks like and what
+  // it is; the wording changes only when the finding does
+  head.innerHTML = ratio >= 0.8
+    ? `🎯 <b>${esc(n)}</b> picks, and about <b>${esc(eb)}</b> genuinely separate bets — this list is well spread.`
+    : `⚠️ <b>${esc(n)}</b> picks, but only about <b>${esc(eb)}</b> genuinely separate bets.`;
+  head.style.color = ratio >= 0.8 ? "var(--green)" : "var(--amber)";
+
+  const big = c.biggest_cluster;
+  const parts = [];
+  if (big && big.n >= 2)
+    parts.push(`The largest group is <b>${esc(big.n)}</b> names that move together ` +
+      `(average correlation ${esc(big.mean_corr)}): ${big.tickers.map(esc).join(", ")}. ` +
+      `Buying all of them is one position in ${esc(big.n)} pieces — and one bad ` +
+      `morning takes out every piece.`);
+  parts.push(`Measured on ${esc(c.corr_days)} sessions of daily moves across ` +
+    `${esc(c.n_measured)} of the ${esc(n)} picks. Two names count as the same ` +
+    `trade at correlation ${esc(c.same_trade_threshold)} or above.`);
+  if (c.unverified_edge)
+    parts.push(`<span style="color:var(--amber)">${esc(c.unverified_edge)} pick(s) ` +
+      `have no measured track record under these rules, so they carry no "Adds (R)" ` +
+      `figure and are not ranked by it — an unmeasured edge is not an average one.</span>`);
+  document.getElementById("concBody").innerHTML = parts.join(" ");
+
+  // the re-ranking: what the Score says vs what the contribution says
+  const moved = rows.filter(r => r.rank_delta != null && Math.abs(r.rank_delta) >= 2)
+    .sort((a, b) => Math.abs(b.rank_delta) - Math.abs(a.rank_delta)).slice(0, 8);
+  let html = "";
+  if (moved.length) {
+    html += `<div class="hint" style="margin:.2rem 0 .35rem">Ranking by contribution ` +
+      `instead of score moves these most:</div><table class="rsp"><thead><tr>` +
+      `<th>Stock</th><th>By score</th><th>By contribution</th><th>Move</th>` +
+      `<th>Because</th></tr></thead><tbody>` +
+      moved.map(r => `<tr><td data-l="Stock">${esc(r.ticker)}</td>` +
+        `<td data-l="By score">#${esc(r.score_rank)}</td>` +
+        `<td data-l="By contribution">#${esc(r.mpc_rank)}</td>` +
+        `<td data-l="Move" style="color:${r.rank_delta > 0 ? "var(--green)" : "var(--amber)"}">` +
+        `${r.rank_delta > 0 ? "▲" : "▼"} ${esc(Math.abs(r.rank_delta))}</td>` +
+        `<td data-l="Because" class="notes">${r.corr_with
+          ? `moves ${esc(r.corr_max)} with ${esc(r.corr_with)}` +
+            `${r.held_overlap ? " (which you hold)" : " (ranked above it)"}`
+          : "no close match above it"}</td></tr>`).join("") +
+      `</tbody></table>`;
+  }
+  const cl = (c.clusters || []).filter(g => g.n >= 2);
+  if (cl.length) {
+    html += `<div class="hint" style="margin:.6rem 0 .35rem">Groups that are one ` +
+      `trade each:</div><ul style="margin:0;padding-left:1.1rem">` +
+      cl.map(g => `<li class="hint"><b>${esc(g.tickers.length)} names</b> ` +
+        `(ρ ${esc(g.mean_corr)}): ${g.tickers.map(esc).join(", ")}</li>`).join("") +
+      `</ul>`;
+  }
+  document.getElementById("concClusters").innerHTML =
+    html || `<div class="hint">No group of two or more picks correlates above ` +
+            `${esc(c.same_trade_threshold)} — nothing here is a duplicate trade.</div>`;
+}
+
 // ---- pending-verification picks: visible immediately, never hidden ----
 function renderPending(pending) {
   // Blocked rows now render inside the results table (see renderTable), so
@@ -1446,17 +1522,34 @@ async function refresh() {
   renderBacktest(s.backtest, s.bt_status || "idle");
   renderPending(s.pending);
 
-  // never let picks masquerade as fresh: always show their age
+  // Never let picks masquerade as fresh — but "fresh" is measured in
+  // trading sessions, not hours. Friday's close read on a Saturday is the
+  // newest data that exists; a clock that called it "10 hours old" and
+  // told the reader to rerun was warning about the weekend.
   const ageEl = document.getElementById("resultsAge");
+  const fresh = s.freshness;
   if ((s.results || []).length && s.results_ts) {
     const mins = Math.max(0, Math.round(Date.now() / 1000 / 60 - s.results_ts / 60));
     ageEl.style.display = "block";
-    ageEl.textContent = s.status === "running"
-      ? "⏱ Live scan in progress — rows update as they are found."
-      : `⏱ These picks are from the scan ${mins < 60 ? mins + " min" : (mins / 60).toFixed(1) + " h"} ago` +
+    if (s.status === "running") {
+      ageEl.textContent = "⏱ Live scan in progress — rows update as they are found.";
+      ageEl.style.color = "var(--muted)";
+    } else if (fresh && fresh.sessions != null) {
+      const advice = fresh.stale
+        ? "Entry/stop/target levels have moved — rerun before acting."
+        : (fresh.market && fresh.market.is_open
+            ? "Prices are moving now — re-check levels before acting."
+            : "Nothing has traded since, so these levels still stand.");
+      ageEl.textContent = `⏱ Picks ${fresh.phrase}` +
+        `${s.restored ? ", loaded automatically from the database" : ""}. ${advice}`;
+      ageEl.style.color = fresh.stale ? "var(--amber)" : "var(--muted)";
+    } else {
+      ageEl.textContent = `⏱ These picks are from the scan ` +
+        `${mins < 60 ? mins + " min" : (mins / 60).toFixed(1) + " h"} ago` +
         `${s.restored ? ", loaded automatically from the database" : ""}. ` +
         `Entry/stop/target levels move with the market — rerun before acting.`;
-    ageEl.style.color = (mins > 120 && s.status !== "running") ? "var(--amber)" : "var(--muted)";
+      ageEl.style.color = (mins > 120) ? "var(--amber)" : "var(--muted)";
+    }
   } else ageEl.style.display = "none";
 
   // degraded-safety banner: broken gates must be loud, not a CSV footnote
@@ -1493,9 +1586,24 @@ async function refresh() {
       ` (${ageMin < 1 ? "just now" : ageMin < 60 ? ageMin + " min ago" : (ageMin / 60).toFixed(1) + " h ago"})` +
       ` · ${esc(s.universe_size || 0)} stocks scanned` +
       (s.status === "running" ? " · <span style=\"color:var(--amber)\">scan in progress</span>" : "");
-    asOf.style.color = today ? "var(--text)" : "var(--amber)";
-    if (!today) asOf.innerHTML += ' · <span style="color:var(--amber)">not today — press Run</span>';
+    // "not today" is only a problem if a session has happened since. Over a
+    // weekend it is simply the truth about when the market last traded, and
+    // saying "press Run" there sends the reader to re-scan a closed market.
+    const behind = fresh && fresh.sessions != null ? fresh.stale : !today;
+    asOf.style.color = behind ? "var(--amber)" : "var(--text)";
+    if (s.market && s.market.label && !s.market.is_open)
+      asOf.innerHTML += `<div style="font-weight:400;font-size:.85rem;color:var(--ink-2);margin-top:.15rem">` +
+        `${esc(s.market.label)}</div>`;
+    if (behind) asOf.innerHTML += ' <span style="color:var(--amber)">— a session has traded since; press Run</span>';
   } else asOf.style.display = "none";
+
+  // ---- how many bets are actually in this list ----
+  // A ranked list invites the reader to treat the rows as separate
+  // decisions. This project's own five-year replay is the counter-example:
+  // profit factor 1.62 taking every signal alone, 0.62 through a five-slot
+  // book, with no change to any individual trade. The difference was
+  // entirely that signals arrive in clusters.
+  renderConcentration(s.concentration, s.results || []);
 
   const verdict = document.getElementById("verdict");
   if (s.status === "running" && s.scanned != null && s.universe_size) {

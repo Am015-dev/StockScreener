@@ -81,7 +81,8 @@ def _is_upstream(err: str) -> bool:
 
 PUBLISH_KEYS = ("results", "top_picks", "rejection_summary", "near_misses",
                 "params_used", "near_board", "relax_hints", "pending",
-                "breadth", "health", "universe_size", "scanned", "elapsed_s",
+                "breadth", "concentration", "health", "universe_size",
+                "scanned", "elapsed_s",
                 "results_ts")
 
 
@@ -149,6 +150,7 @@ def run_preset(name: str, overrides: dict, universe_max: int,
         "relax_hints": res.get("relax_hints") or {},
         "pending": res.get("pending") or [],
         "breadth": res.get("breadth"),
+        "concentration": res.get("concentration"),
         "health": res.get("health"),
         "params_used": p,
         "universe_size": res.get("universe_size"),
