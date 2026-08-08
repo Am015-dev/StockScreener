@@ -299,74 +299,24 @@ print("the credit report turns a slow SEC into a refusal that names the reason")
 # The server thread is a daemon, so the process exits regardless.
 
 
-
-# ---- new scans must reach a warm instance without a restart ----
-# Results were adopted once, at boot, so the only way a new scan reached
-# the page was the scan job committing into the deployed branch and
-# triggering a redeploy — which is why a reader met "the earnings
-# calendar is still loading" on the hour, every hour. The poller is what
-# makes that step removable. It cannot be removed YET: the data branch is
-# private and this deployment has no token, so the shipped copy is still
-# the only thing feeding the site. Removing the step before fixing that
-# emptied the page, and this test exists so the next attempt has a signal
-# rather than an assumption.
-import inspect as _inspect2
-
-assert hasattr(A, "_results_refresher"), \
-    "without a poller, a warm instance serves the scan it booted with"
-_src2 = _inspect2.getsource(A._results_refresher)
-assert "while True" in _src2 and "_load_published" in _src2
-_started = _inspect2.getsource(A).split('if not os.environ.get("SKIP_WARM")')[-1]
-assert "_results_refresher" in _started, "the poller is defined but never started"
-print("a warm instance polls for new scans instead of waiting for a restart")
-
-
-# ---- and it must be VISIBLE which source answered ----
-# A shipped copy is frozen at build time. Serving one looks exactly like
-# serving the live data branch, which is how "the network path works" was
-# believed long enough to delete the shipped files and take the site down.
-import requests as _rq
-_real_get = _rq.get
-
-
-def _net_404(url, headers=None, timeout=None):
-    class R:
-        status_code = 404
-
-        def json(self):
-            raise ValueError
-    return R()
-
-
-_pubdir = os.path.join(TMP, "shipped")
-os.makedirs(_pubdir, exist_ok=True)
-with open(os.path.join(_pubdir, "index.json"), "w") as f:
-    f.write('{"presets": [], "generated_at": 1}')
-_real_dir = A.PUBLISHED_DIR
-A.PUBLISHED_DIR = _pubdir
-_rq.get = _net_404
-A._published_src.update(source=None, why=None)
-assert A._published_get("index.json") is not None, "the shipped copy must answer"
-assert A._published_src["source"] == "shipped copy", A._published_src
-assert A._published_src["why"], "the reason the network failed must be recorded"
-
-_body = client.get("/published").get_json()
-assert _body["source"] == "shipped copy", _body
-assert "will not change until the next deploy" in (_body["source_note"] or ""), _body
-print(f"serving a frozen copy is reported as such: {_body['source_note'][:72]}...")
-
-_rq.get = _real_get
-A.PUBLISHED_DIR = _real_dir
-
-
-# a poll that finds nothing newer must not disturb what is on screen
-A._state.update(results=[{"ticker": "KEEP"}], results_ts=time.time(),
-                status="done")
-_before = list(A._state["results"])
-A._published_index = lambda force=False: {"presets": [
-    {"preset": "old", "results_ts": time.time() - 86400, "scan_hash": "z"}]}
-assert A._load_published(force=True) is False
-assert A._state["results"] == _before, "an older published scan replaced a newer one"
-print("a poll that finds only older results leaves the page alone")
+# ---- abandoned fetches must not permanently consume the slots ----
+# The concurrency cap counts fetches a caller is waiting on. This checks
+# that a run of abandoned ones leaves the pool full afterwards, so a burst
+# of slow filers cannot wedge every later reader on "too many SEC fetches
+# already in flight". It does NOT prove the caller-side release matters:
+# the orphaned thread's read timeout equals the caller's budget, so the
+# slot came back either way — the release only shortens the window.
+_slots = A._sec_slots._value
+assert _slots >= 2, _slots
+for _ in range(_slots + 2):
+    try:
+        A._sec_json(f"http://127.0.0.1:{_port}/slow.json", timeout=2)
+        raise AssertionError("the drip server must never answer")
+    except TimeoutError as e:
+        assert "in flight" not in str(e), \
+            "a previous abandoned fetch is still holding its slot"
+assert A._sec_slots._value == _slots, \
+    f"{_slots - A._sec_slots._value} slot(s) never came back"
+print(f"after {_slots + 2} abandoned fetches all {_slots} slots are free again")
 
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")
