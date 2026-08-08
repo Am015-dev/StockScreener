@@ -1645,8 +1645,15 @@ async function refresh() {
     if (n) {
       const top = s.results[0];
       const br = s.breadth || {};
+      // "best" means best by expected contribution, not by score — and after
+      // the re-ranking those routinely differ, so saying "best: MAR (score
+      // 41)" without the reason reads as a bug rather than a finding
+      const lead = top.mpc_r != null
+        ? `best: ${esc(top.ticker)} — expected to add ${esc(top.mpc_r)}R` +
+          ` (score ${esc(top.score)}; ranked by what it adds, not by score).`
+        : `best: ${esc(top.ticker)} (score ${esc(top.score)}).`;
       verdict.innerHTML = `✅ ${esc(n)} of ${esc(s.universe_size)} scanned stocks ` +
-        `qualify today — best: ${esc(top.ticker)} (score ${esc(top.score)}).` +
+        `qualify today — ${lead}` +
         (br.risk_factor < 1 ? ` <span style="color:var(--amber)">⚠ weak market ` +
          `breadth (${esc(br.pct)}%) — position sizes throttled to ${esc(br.risk_factor)}×.</span>` : "");
     } else if ((s.pending || []).length) {
