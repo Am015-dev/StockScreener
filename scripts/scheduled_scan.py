@@ -101,6 +101,32 @@ def simulate(p: dict, universe: list, progress) -> dict | None:
         return None
 
 
+def price_book(max_tickers: int = 1200, days: int = 60) -> dict:
+    """Last `days` closes per ticker, from the frame the scan already
+    downloaded.
+
+    This is what makes the pre-trade check free to run: the web instance
+    answers "how correlated is this with what I hold" out of a published
+    file instead of calling Yahoo per ticker, which is both rate-limited
+    and impossible from a datacenter IP. Roughly 600KB for 1,200 names.
+    """
+    out: dict = {}
+    try:
+        data = screener._cache.get("ohlc")
+        if data is None:
+            return out
+        for t in list(getattr(data.columns, "levels", [[]])[0])[:max_tickers]:
+            try:
+                closes = data[t]["Close"].dropna()
+                if len(closes) >= days:
+                    out[t] = [round(float(x), 2) for x in closes.iloc[-days:]]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
 def _assert_publishable(name: str, p: dict) -> None:
     """Refuse to publish a rule set that would show unverified picks.
 
@@ -241,8 +267,26 @@ def main() -> int:
         print(f"[{name}] published {len(payload['results'])} picks "
               f"from {payload['universe_size']} stocks")
 
+    # The price book: 60 daily closes per scanned ticker, written once so
+    # the web instance can answer "how correlated is this with what I
+    # already hold" without a single Yahoo call. Per-ticker requests are
+    # rate-limited and fail outright from a datacenter IP, which is why
+    # the check could not exist without this file.
+    book = {}
+    if index:
+        try:
+            book = price_book()
+            if book:
+                (out / "prices.json").write_text(json.dumps(book))
+                kb = (out / "prices.json").stat().st_size / 1024
+                print(f"published price book: {len(book)} tickers x 60 closes "
+                      f"({kb:.0f} KB)")
+        except Exception as e:
+            print(f"price book skipped: {type(e).__name__}: {e}", file=sys.stderr)
+
     (out / "index.json").write_text(json.dumps({
         "generated_at": time.time(), "presets": index, "failures": failures,
+        "price_book": {"n": len(book), "days": 60} if book else None,
     }, default=str))
 
     if not index:

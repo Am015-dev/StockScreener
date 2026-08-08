@@ -105,6 +105,41 @@
       if it works.{% endif %}</p>
     {% endif %}
   </div>
+
+<script>
+// The check runs against a price book published by the scheduled scan, so
+// this is one small POST — no crawl, no per-ticker lookup, nothing that can
+// time out.
+const ICON = {ok: "\u2713", note: "\u00b7", warn: "\u26a0", block: "\u26d4"};
+const COLOR = {ok: "var(--green)", note: "var(--ink-2)", warn: "var(--amber)",
+               block: "var(--red)"};
+const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+document.getElementById("ckGo").addEventListener("click", async () => {
+  const t = document.getElementById("ckTicker").value.trim();
+  const out = document.getElementById("ckOut");
+  if (!t) { out.innerHTML = '<p class="tiny">Type a ticker first.</p>'; return; }
+  out.innerHTML = '<p class="tiny">Checking\u2026</p>';
+  try {
+    const r = await fetch("/check", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ticker: t,
+        holdings: document.getElementById("ckHold").value})});
+    const d = await r.json();
+    if (!d.ok) { out.innerHTML = `<p class="tiny">${esc(d.error || "could not check")}</p>`; return; }
+    let html = d.findings.map(f =>
+      `<p style="margin:0 0 .6rem"><b style="color:${COLOR[f.level]}">` +
+      `${ICON[f.level]} ${esc(f.headline)}</b><br>` +
+      `<span class="tiny">${esc(f.detail)}</span></p>`).join("");
+    if (!d.book_size) html += '<p class="tiny">No price book published yet, so overlap ' +
+      'could not be measured. It arrives with the next scheduled scan.</p>';
+    out.innerHTML = html;
+  } catch (e) {
+    out.innerHTML = '<p class="tiny">Could not reach the checker.</p>';
+  }
+});
+</script>
   {% else %}
   <div class="card act">
     <p class="lead">No action today.</p>
@@ -178,6 +213,26 @@
     {% endif %}
   </div>
   {% endif %}
+
+  <div class="card">
+    <h2>Check a trade of your own</h2>
+    <p class="tiny" style="margin-bottom:.7rem">Type what you are about to buy and what
+      you already hold. This tells you what a free screener cannot: how much of the trade
+      you already own, whether an earnings report is about to land on it, and whether your
+      book gets wider or just heavier. It makes no prediction — every answer is a
+      measurement.</p>
+    <label class="tiny" for="ckTicker">Buying</label>
+    <input id="ckTicker" placeholder="AVGO" autocomplete="off"
+      style="width:100%;padding:.55rem .7rem;margin:.2rem 0 .7rem;border:1px solid var(--line);
+             border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem">
+    <label class="tiny" for="ckHold">Already holding (tickers, separated by spaces)</label>
+    <input id="ckHold" placeholder="NVDA AMD KO" autocomplete="off"
+      style="width:100%;padding:.55rem .7rem;margin:.2rem 0 .8rem;border:1px solid var(--line);
+             border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem">
+    <button id="ckGo" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
+      background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer">Check it</button>
+    <div id="ckOut" style="margin-top:1rem"></div>
+  </div>
 
   <footer class="tiny">
     Scanned {{ b.scanned or 0 }} stocks{% if b.asof %} at {{ b.asof }}{% endif %}.
