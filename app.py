@@ -863,41 +863,59 @@ def _cik_for(ticker: str) -> int | None:
     return (_cik_map["data"] or {}).get(ticker.upper())
 
 
-@app.route("/credit", methods=["POST"])
-def credit_report():
-    """How far a company is from not being able to pay its debts.
+def _with_peers(rep: dict) -> dict:
+    """Rank a distance against every other measured name on today's board.
 
-    The paid version of this report maps the model onto an empirical
-    default frequency using a proprietary default database. That step is
-    absent here and no probability is emitted in its place — see
-    credit.py. What is returned is the distance itself, its drivers, and
-    where it sits among the other names on today's board, which is the
-    number a reader acts on and the one that needs no calibration.
+    Computed on read rather than stored with the report, because the peer
+    set grows as the board is measured: the first company measured has no
+    peers at all, and a ranking cached at that moment would be served as
+    "unavailable" for the next 24 hours to everyone who asked. It costs
+    nothing to redo — these are cache reads, not network calls.
     """
-    body = request.get_json(silent=True) or {}
-    ticker = str(body.get("ticker") or "").strip().upper()
-    if not ticker:
-        return jsonify({"ok": False, "error": "no ticker given"}), 400
+    if rep.get("dd") is None:
+        return rep
+    me = (rep.get("ticker") or "").upper()
+    peers = []
+    for other in (_state.get("results") or []):
+        t2 = (other.get("ticker") or "").upper()
+        if not t2 or t2 == me:
+            continue
+        hit, c = cache_store.fetch(f"credit:{t2}", CREDIT_TTL)
+        if hit and isinstance(c, dict) and c.get("dd") is not None:
+            peers.append(c["dd"])
+    rep = dict(rep, peers_n=len(peers),
+               percentile=credit.percentile(rep["dd"], peers))
+    return rep
 
+
+def _credit_for(ticker: str) -> dict:
+    """One company's Distance to Default, cached, or an explicit refusal.
+
+    Shared by the endpoint and the warmer below. It has to be shared: the
+    peer ranking is computed from OTHER names' cached reports, so if only
+    the endpoint could populate the cache, the ranking would require five
+    strangers to have looked up five other companies first and would be
+    absent almost every time it was asked for.
+    """
     key = f"credit:{ticker}"
     hit, cached = cache_store.fetch(key, CREDIT_TTL)
     if hit and isinstance(cached, dict):
         cached["cached"] = True
-        return jsonify(cached)
+        return _with_peers(cached)
 
     cik = _cik_for(ticker)
     if cik is None:
-        return jsonify({"ok": True, "ticker": ticker, "dd": None,
-                        "verdict": "Not a US filer — SEC XBRL covers US listings "
-                                   "only, so this company's filings are not "
-                                   "available here.",
-                        "missing": ["SEC filings"]})
+        return {"ok": True, "ticker": ticker, "dd": None,
+                "verdict": "Not a US filer — SEC XBRL covers US listings "
+                           "only, so this company's filings are not "
+                           "available here.",
+                "missing": ["SEC filings"]}
     try:
         bs = credit.fetch_balance_sheet(cik, _sec_json)
     except Exception as e:
-        return jsonify({"ok": True, "ticker": ticker, "dd": None,
-                        "verdict": f"Could not read the filings ({type(e).__name__}).",
-                        "missing": ["SEC filings"]})
+        return {"ok": True, "ticker": ticker, "dd": None,
+                "verdict": f"Could not read the filings ({type(e).__name__}).",
+                "missing": ["SEC filings"]}
 
     row = next((r for r in (_state.get("results") or [])
                 if (r.get("ticker") or "").upper() == ticker), None)
@@ -931,21 +949,27 @@ def credit_report():
             f"{shares['stale_as_of']}, which is too old to price it today, "
             "so its market value cannot be established from filings alone.")
 
-    # peers: every other name on today's board with a computable distance
-    if rep.get("dd") is not None:
-        peers = []
-        for other in (_state.get("results") or []):
-            t2 = (other.get("ticker") or "").upper()
-            if t2 == ticker:
-                continue
-            h2, c2 = cache_store.fetch(f"credit:{t2}", CREDIT_TTL)
-            if h2 and isinstance(c2, dict) and c2.get("dd") is not None:
-                peers.append(c2["dd"])
-        rep["peers_n"] = len(peers)
-        rep["percentile"] = credit.percentile(rep["dd"], peers)
     if rep.get("dd") is not None:
         cache_store.put(key, rep)
-    return jsonify(rep)
+    return _with_peers(rep)
+
+
+@app.route("/credit", methods=["POST"])
+def credit_report():
+    """How far a company is from not being able to pay its debts.
+
+    The paid version of this report maps the model onto an empirical
+    default frequency using a proprietary default database. That step is
+    absent here and no probability is emitted in its place — see
+    credit.py. What is returned is the distance itself, its drivers, and
+    where it sits among the other names on today's board, which is the
+    number a reader acts on and the one that needs no calibration.
+    """
+    body = request.get_json(silent=True) or {}
+    ticker = str(body.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"ok": False, "error": "no ticker given"}), 400
+    return jsonify(_credit_for(ticker))
 
 
 @app.route("/limits")
@@ -1138,11 +1162,54 @@ def _warm_check_data():
         print(f"[warm] price book: {len(book)} tickers", flush=True)
     except Exception as e:
         print(f"[warm] price book failed: {e}", flush=True)
+    _warm_credit()
 
 
-threading.Thread(target=_warm_check_data, daemon=True).start()
-threading.Thread(target=_book_refresher, daemon=True).start()
-threading.Thread(target=_crumb_hunter, daemon=True).start()
+def _warm_credit():
+    """Compute today's board's credit reports so the ranking has peers.
+
+    The peer percentile is the one number here that a proprietary model
+    has no advantage over — a ranking is invariant to whatever mapping
+    turns distances into probabilities — and it needs at least five other
+    measured names to exist. Left to the endpoint alone it would almost
+    never appear, because it would depend on five other people having
+    looked up five other companies first.
+
+    So the board is measured up front, in the background, once a day. It
+    is ~25 companies at a couple of seconds each against filings that
+    change quarterly, and no request ever waits for it.
+    """
+    # the board arrives from stored results or a published scan, either of
+    # which can land after this thread starts, so wait for it rather than
+    # giving up on an empty list and leaving the ranking permanently absent
+    board = []
+    for _ in range(60):
+        board = [(r.get("ticker") or "").upper()
+                 for r in (_state.get("results") or [])]
+        if board:
+            break
+        time.sleep(5)
+    if not board:
+        print("[warm] credit: no board to measure", flush=True)
+        return
+    t0, done = time.time(), 0
+    for t in board:
+        try:
+            if _credit_for(t).get("dd") is not None:
+                done += 1
+        except Exception:
+            pass
+        time.sleep(0.2)          # SEC asks for 10 requests/second; this is 5
+    print(f"[warm] credit: {done}/{len(board)} of the board measured in "
+          f"{time.time() - t0:.0f}s", flush=True)
+
+
+# The test suite is hermetic — it imports this module and must not reach
+# Nasdaq, the SEC or GitHub to do it.
+if not os.environ.get("SKIP_WARM"):
+    threading.Thread(target=_warm_check_data, daemon=True).start()
+    threading.Thread(target=_book_refresher, daemon=True).start()
+    threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 
 # A scan that has said nothing for this long is not working, whatever its

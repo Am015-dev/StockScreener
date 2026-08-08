@@ -101,7 +101,7 @@
              cursor:pointer;padding:0;font:inherit">edit</button></p>
 
     <div class="card act">
-      <p class="tiny" style="margin:0 0 .5rem">{{ b.date }}{% if b.market_label %} ·
+      <p class="tiny" style="margin:0 0 .5rem">{{ b.date or "Undated" }}{% if b.market_label %} ·
         {{ b.market_label }}{% endif %}</p>
       {% if b.action %}
       <p class="lead" style="margin-bottom:.7rem">Closest to the setup today:
@@ -303,6 +303,48 @@ document.getElementById("ownCsv").addEventListener("change", async ev => {
 const ICON = {ok: "✓", note: "·", warn: "⚠", block: "⛔"};
 const COLOR = {ok: "var(--green)", note: "var(--ink-2)", warn: "var(--amber)",
                block: "var(--red)"};
+// Distance to Default, from the company's own filings. The commercial
+// version of this maps the distance onto an observed default frequency
+// using a proprietary default database; that step is missing here and
+// nothing is invented in its place, so the line reports the distance and
+// the ranking and stops there.
+const CREDIT_LEVEL = {"very far from trouble": "ok", "comfortable": "ok",
+                      "watch it": "note", "close to the edge": "warn",
+                      "in distress on this measure": "block"};
+
+function paintCredit(d) {
+  const el = document.getElementById("ckCredit");
+  if (!el) return;
+  if (!d || !d.ok) { el.innerHTML = ""; return; }
+  if (d.dd === null || d.dd === undefined) {
+    // a refusal is a result: it says which input was missing, not "error"
+    el.innerHTML = '<p class="tiny" style="color:var(--ink-3)">Credit standing: ' +
+      esc(d.verdict || "could not be established from filings.") + '</p>';
+    return;
+  }
+  const lvl = CREDIT_LEVEL[d.band] || "note";
+  const bits = [];
+  if (d.market_leverage !== null && d.market_leverage !== undefined)
+    bits.push("Its debts are " + Math.round(d.market_leverage * 100) +
+              "% of what the market says the whole business is worth");
+  if (d.percentile !== null && d.percentile !== undefined)
+    bits.push("that is stronger than " + d.percentile + "% of the " +
+              d.peers_n + " other names measured today");
+  // a period average is not a point-in-time share count; say so rather
+  // than presenting the two as the same number
+  if (d.shares_tag && d.shares_tag.indexOf("WeightedAverage") > -1)
+    bits.push("its share count is a quarterly average, because this filer " +
+              "stopped reporting a cover-page figure");
+  const src = d.as_of ? ` Read from its balance sheet filed to ${esc(d.as_of)}.` : "";
+  el.innerHTML = `<p style="margin:0 0 .6rem"><b style="color:${COLOR[lvl]}">` +
+    `${ICON[lvl]} Credit standing: ${esc(d.band)}</b><br>` +
+    `<span class="tiny">${d.dd} standard deviations of asset value sit between ` +
+    `this company and the point where its debts come due against too little ` +
+    `to pay them.${bits.length ? " " + esc(bits.join("; ")) + "." : ""}${src} ` +
+    `No default probability is quoted — that step needs a database of actual ` +
+    `defaults, which is the part that is not free.</span></p>`;
+}
+
 document.getElementById("ckGo").addEventListener("click", async () => {
   const t = document.getElementById("ckTicker").value.trim();
   const out = document.getElementById("ckOut");
@@ -329,6 +371,18 @@ document.getElementById("ckGo").addEventListener("click", async () => {
   const bail = setTimeout(() => ctl.abort(), 25000);
   const done = () => { clearInterval(tick); clearTimeout(bail);
     btn.disabled = false; btn.style.opacity = ""; btn.textContent = "Check it"; };
+  // The credit standing is a separate question answered by separate data
+  // (SEC filings, not prices), so it runs alongside the check rather than
+  // inside it. The check does not get slower because this exists, and the
+  // line fills itself in when the filings come back a second or two later.
+  const cctl = new AbortController();
+  const cbail = setTimeout(() => cctl.abort(), 20000);
+  const credit = fetch("/credit", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      signal: cctl.signal,
+      body: JSON.stringify({ticker: t})})
+    .then(r => r.json()).catch(() => null)
+    .finally(() => clearTimeout(cbail));
   try {
     const held = loadHoldings() || [];
     const r = await fetch("/check", {method: "POST",
@@ -347,7 +401,10 @@ document.getElementById("ckGo").addEventListener("click", async () => {
       `<span class="tiny">${esc(f.detail)}</span></p>`).join("");
     if (!d.book_size) html += '<p class="tiny">No price book published yet, so overlap ' +
       'could not be measured. It arrives with the next scheduled scan.</p>';
-    out.innerHTML = html || '<p class="tiny">Nothing to report.</p>';
+    out.innerHTML = (html || '<p class="tiny">Nothing to report.</p>') +
+      '<div id="ckCredit"><p class="tiny" style="color:var(--ink-3)">' +
+      'Reading its filed balance sheet…</p></div>';
+    paintCredit(await credit);
   } catch (e) {
     done();
     out.innerHTML = e && e.name === "AbortError"

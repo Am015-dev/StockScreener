@@ -196,4 +196,22 @@ assert not (imported & banned), \
 print(f"brief.py imports only {sorted(imported)} — it renders decisions, it cannot "
       f"make one wrong")
 
+# ---- a trade that cannot be fully described is not shown at all ----
+# The card states an entry, a stop and a euro risk as plain facts and the
+# template formats all three as numbers. A pick missing any of them used
+# to take the whole page down with a 500; the fix must be to withhold the
+# card, not to print "None" where a stop price belongs — a half-described
+# trade reads as a complete one.
+full = {"ticker": "ZZA", "price": 100.0, "stop": 94.0, "resistance": 118.0,
+        "risk_EUR": 100.0, "RR": 3.2, "shares": 12.0}
+assert brief.build({"results": [dict(full)]})["action"] is not None
+
+for missing in ("stop", "risk_EUR", "price"):
+    partial = dict(full)
+    partial[missing] = None
+    out = brief.build({"results": [partial]})
+    assert out["action"] is None, \
+        f"a pick with no {missing} must not be presented as today's trade"
+print("a pick missing its stop, its risk or its price is withheld, not half-drawn")
+
 print("\nALL BRIEF TESTS PASSED")
