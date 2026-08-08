@@ -25,6 +25,8 @@ sys.path.insert(0, str(ROOT))
 import app as A
 import screener
 
+REAL_PRICE_BOOK = A._price_book   # later sections stub this out
+
 client = A.app.test_client()
 
 
@@ -68,6 +70,34 @@ A._on_partial([{"ticker": "LIVE", "score": 9}], 10, 10,
 assert A._state["results"][0]["ticker"] == "LIVE", "the current scan still writes"
 print("a cancelled scan's rows and log lines are dropped; the new one's are kept")
 
+# and the explanation the reader cancelled to get must survive the restore
+# that follows it. Restoring stored results reports its own status, which
+# overwrote the abandoned-scan verdict with "done" — so the page claimed
+# the scan had finished, which is the opposite of what happened.
+A._state.update(status="running", generation=A._state["generation"],
+                started_at=time.time(), last_progress_ts=time.time() - 999,
+                error=None)
+_restored = {"n": 0}
+_real_snap = A._load_snapshot
+
+
+def _snap_that_reports_done():
+    _restored["n"] += 1
+    A._state.update(status="done", error=None, results=[{"ticker": "OLD"}])
+    return True
+
+
+A._load_snapshot = _snap_that_reports_done
+assert client.post("/cancel").status_code == 200
+A._load_snapshot = _real_snap
+assert _restored["n"] == 1, "the restore did not run"
+st = client.get("/status").get_json()
+assert st["status"] == "error", st["status"]
+assert "abandoned" in (st["error"] or "").lower(), st["error"]
+assert any(r.get("ticker") == "OLD" for r in st.get("results") or []), \
+    "stored results are still worth showing alongside the explanation"
+print("cancelling keeps its explanation even when stored results are restored")
+
 
 # ---- /alert must not run a scan on the web instance ----
 # It ran a full 1,000-stock scan inline in the request thread, on an
@@ -106,5 +136,101 @@ assert "while True" in src and "_earnings_calendar" in src
 started = inspect.getsource(A).split("if not os.environ.get(\"SKIP_WARM\")")[-1]
 assert "_calendar_refresher" in started, "the refresher is defined but never started"
 print("the earnings calendar is rebuilt on a loop, not once at boot")
+
+
+# ---- the /check ROUTE, not just the helper underneath it ----
+# pretrade.check() is covered thoroughly in isolation. The route that
+# assembles its arguments was covered only by "did not return 500", and
+# two mutations survived that: forcing the calendar's `complete` flag to
+# True (so a company merely ABSENT from a broken calendar reads as
+# verified instead of blocked — the exact fail-open the product exists to
+# remove), and dropping `holdings` (so every check silently answers "no
+# holdings given" and never measures overlap).
+N_DAYS = 70
+DATES2 = [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(N_DAYS)]
+
+
+def _walk(seed, drift=0.0):
+    x, out, v = seed, [], 100.0
+    for _ in range(N_DAYS):
+        x = (1103515245 * x + 12345) % (2 ** 31)
+        v *= 1 + drift + ((x / 2 ** 31) - 0.5) * 0.03
+        out.append(round(v, 2))
+    return out
+
+
+_twin = _walk(5)
+BOOK2 = {"dates": DATES2,
+         "series": {"AAA": _twin, "BBB": list(_twin), "ZZZ": _walk(99)}}
+A._price_book = lambda fetch=False: BOOK2
+A._state.update(results=[], status="done")
+
+
+def _check(ticker, holdings, cal, complete):
+    screener._earnings_calendar = lambda build=False, **k: (cal, complete)
+    A.cache_store.put(f"earncal:{screener.EARN_CAL_DAYS}", {"x": 1})
+    return client.post("/check", json={"ticker": ticker,
+                                       "holdings": holdings}).get_json()
+
+
+_real_cal = screener._earnings_calendar
+
+# a company ABSENT from a COMPLETE calendar has no earnings due: pass
+r = _check("ZZZ", [{"ticker": "AAA"}], {"AAA": 90}, True)
+_heads = " ".join(f["headline"] for f in r["findings"])
+assert "still loading" not in _heads, _heads
+assert not any(f["level"] == "block" for f in r["findings"]), _heads
+
+# the SAME input against a HOLED calendar must block instead
+r = _check("ZZZ", [{"ticker": "AAA"}], {"AAA": 90}, False)
+assert any(f["level"] == "block" for f in r["findings"]), \
+    "absence from an incomplete calendar must block, not read as verified"
+print("the route passes the calendar's completeness through: absent+complete "
+      "passes, absent+holed blocks")
+
+# earnings inside the gate window block whatever the completeness flag says
+r = _check("ZZZ", [{"ticker": "AAA"}], {"ZZZ": 3}, True)
+assert any(f["level"] == "block" for f in r["findings"]), r["findings"]
+print("an earnings date inside the gate window blocks the trade")
+
+# and the holdings actually reach the comparison
+r = _check("AAA", [{"ticker": "BBB"}], {"AAA": 90, "BBB": 90}, True)
+_text = " ".join(f["headline"] + " " + f["detail"] for f in r["findings"])
+assert "No holdings given" not in _text, _text
+assert "already own" in _text or "overlap" in _text.lower(), _text
+assert r.get("book_size") == 3, r.get("book_size")
+print("holdings posted to the route reach the overlap comparison")
+
+screener._earnings_calendar = _real_cal
+
+
+# ---- the price book must actually expire ----
+# Dropping the TTL check left the suite green. The refresher calls through
+# the same function, so a book that never expires is a book that is never
+# refreshed: the correlation half of every check would run on frozen
+# prices indefinitely, with nothing on the page saying so.
+A._price_book = REAL_PRICE_BOOK
+A._book.update(data={"dates": ["2026-01-01"], "series": {"OLD": [1.0]}},
+               ts=time.time())
+assert A._price_book().get("series", {}).get("OLD"), "a fresh book is served"
+
+A._book["ts"] = time.time() - (A.BOOK_TTL + 60)
+fetched = {"n": 0}
+_real_pub = A._published_get
+
+
+def _pub(path):
+    if path == "prices.json":
+        fetched["n"] += 1
+        return {"dates": ["2026-02-02"], "series": {"NEW": [2.0]}}
+    return _real_pub(path)
+
+
+A._published_get = _pub
+assert A._price_book(fetch=True)["series"].get("NEW"), "an expired book refetches"
+assert fetched["n"] == 1, fetched
+A._published_get = _real_pub
+print(f"the price book expires after {A.BOOK_TTL:.0f}s and is refetched, rather "
+      f"than being frozen for the life of the process")
 
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")

@@ -141,8 +141,11 @@ print("a scan taken during the session being traded still reads as current")
 MON_PRE = _d.datetime(2026, 8, 10, 12, 30, tzinfo=_d.timezone.utc)    # 08:30 ET
 TUE_MID = _d.datetime(2026, 8, 11, 17, 0, tzinfo=_d.timezone.utc)
 pre = mc.staleness(MON_PRE.timestamp(), now_utc=TUE_MID)
+# the phrase for an aged scan counts sessions; the point of the fix is
+# that a premarket scan is dated to the PREVIOUS close, so by Tuesday
+# midday a Monday-premarket scan is a full session behind
 assert pre["sessions"] >= 1, pre
-assert "Friday" in pre["phrase"] or pre["sessions"] >= 1, pre
+assert pre["phrase"] in ("one session old", "2 sessions old"), pre["phrase"]
 print(f"a premarket scan is dated to the last close, not the day it ran "
       f"({pre['sessions']} session(s) old on Tuesday)")
 

@@ -457,7 +457,10 @@ def _load_snapshot(params=None) -> bool:
 
 market_db._drop_dead_weight()   # reclaim the write-only bars table, once
 # published results first: they are produced by the scheduled scan and are
-# usually fresher than anything this instance still has after a restart
+# usually fresher than anything this instance still has after a restart.
+# Deliberately NOT behind SKIP_WARM: adopting a published scan at startup
+# is the behaviour test_published exists to check, and the tests that do
+# not care about it stub the fetch or take one fast 404.
 if not _load_published():
     if not _load_snapshot():
         _load_cached_csv()
@@ -1425,7 +1428,15 @@ def cancel():
         _state["generation"] = _state.get("generation", 0) + 1
     # Reloading the published board here means a reader trying to escape a
     # hang waits on two network fetches to do it. The poller picks it up.
+    #
+    # The restore below reports its own status, which would overwrite the
+    # explanation the reader cancelled to get. Stored results ARE worth
+    # showing, but not at the cost of the page silently claiming the scan
+    # finished — so the verdict is put back after.
+    why = _state["error"]
     restored = _load_snapshot()
+    with _lock:
+        _state.update(status="error", error=why)
     return jsonify({"ok": True, "restored_previous": bool(restored)})
 
 

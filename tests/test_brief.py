@@ -165,8 +165,12 @@ for banned in ("One action today: buy", "we recommend", "you should buy",
                "our recommendation", "buy this", "top pick of the day"):
     assert banned.lower() not in src.lower(), \
         f"recommendation language on the card: {banned!r}"
-assert "no better than random entry" in src or "filter, not a" in src, \
-    "the card must say the pattern tested no better than random"
+# NOT a disjunct with "filter, not a" — that was already asserted above,
+# so the whole check could never fail, and rewriting the banner to
+# "tested absolutely brilliantly" left the suite green.
+assert "no better than random entry" in src, \
+    "the card must say, in those words, that the pattern tested no better "\
+    "than random entry"
 print(f"watchlist of {len(b['watchlist'])} rows, permanent research-only banner, "
       f"no recommendation language")
 

@@ -174,6 +174,10 @@ with open(os.path.join(pubdir, "balanced.json"), "w") as f:
     json.dump(local, f)
 
 os.environ["PUBLISHED_DIR"] = pubdir
+# The suite is hermetic. Warmers reach Nasdaq, GitHub and the SEC at
+# import time, which is latency and a hang risk in CI, not a result
+# any assertion here depends on.
+os.environ["SKIP_WARM"] = "1"
 
 
 def must_not_call(*a, **k):
