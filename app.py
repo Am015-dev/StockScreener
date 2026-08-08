@@ -197,36 +197,19 @@ PUBLISHED_BASE = os.environ.get(
     "https://raw.githubusercontent.com/Am015-dev/StockScreener/screener-data")
 PUBLISHED_TTL = float(os.environ.get("PUBLISHED_TTL", "900"))   # re-check every 15 min
 _published = {"ts": 0.0, "index": None}
-# Where the last published read actually came from. Without this, a site
-# serving a frozen build-time copy is indistinguishable from one serving
-# the live data branch.
-_published_src = {"source": None, "why": None}
 
 
 def _published_get(path: str):
-    """A published file: over the network, falling back to any copy shipped
-    with this build.
-
-    The network is tried FIRST, which is the opposite of the original
-    order. A shipped copy is frozen at build time, so preferring it meant
-    that the moment the scan stopped committing results into the deployed
-    branch, the site would have served the same board forever — fresher
-    data sitting one request away and never read. The local copy is a
-    genuine fallback for a build that ships its own data or a network that
-    is refusing, and that is all it should be."""
+    """A published file: from the copy shipped with this build if present,
+    otherwise over the network. The local copy needs no token and survives
+    the disk wipe, so it is tried first."""
     local = os.path.join(PUBLISHED_DIR, path)
-
-    def _local(reason):
-        _published_src["source"] = "shipped copy"
-        _published_src["why"] = reason
-        try:
-            if os.path.exists(local):
-                with open(local) as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return None
-
+    try:
+        if os.path.exists(local):
+            with open(local) as f:
+                return json.load(f)
+    except Exception:
+        pass
     import requests as rq
     headers = {}
     tok = os.environ.get("PUBLISHED_TOKEN") or os.environ.get("GITHUB_TOKEN")
@@ -235,16 +218,10 @@ def _published_get(path: str):
     try:
         r = rq.get(f"{PUBLISHED_BASE}/{path}", headers=headers, timeout=20)
         if r.status_code == 200:
-            _published_src.update(source="data branch", why=None)
             return r.json()
-        why = f"HTTP {r.status_code}"
-    except Exception as e:
-        why = type(e).__name__
-    # Falling back is not a detail. A shipped copy is frozen at build time,
-    # so a site quietly serving one looks identical to a site serving live
-    # results — which is how "the network path works" was believed for long
-    # enough to delete the shipped files and empty the page.
-    return _local(why)
+    except Exception:
+        pass
+    return None
 
 
 def _published_index(force: bool = False):
@@ -822,10 +799,6 @@ def snapshot_load():
 # cannot be done live.
 _book = {"ts": 0.0, "data": None}
 BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
-# Scans publish hourly while the market is open. Polling more often than
-# that only costs requests; polling far less often means a reader sees
-# yesterday's board on a warm instance.
-RESULTS_POLL_S = float(os.environ.get("RESULTS_POLL_S", "600"))
 
 
 def _price_book(fetch: bool = False) -> dict:
@@ -868,35 +841,6 @@ def _vol_book(fetch: bool = False) -> dict:
     _vols.update(data=data, ts=time.time())
     print(f"[warm] volatility book: {len(data)} tickers", flush=True)
     return data
-
-
-def _results_refresher():
-    """Adopt each new scan without waiting for a redeploy.
-
-    Results were adopted exactly once, at boot. The only reason the site
-    ever showed a NEW scan was that the scan job committed its output into
-    the deployed branch, which made Render redeploy — so every hour, on
-    the hour, during market hours, the instance restarted and lost its
-    earnings calendar, price book and credit cache. That is the "still
-    loading, try again in a minute" a reader hits: not a cold start, a
-    scheduled one.
-
-    Polling for results instead means the scan can publish to its own data
-    branch and never touch the build, and the instance stays warm between
-    code changes. It also fixes the failure the shipping step existed to
-    prevent: a boot-time fetch that fails no longer leaves the site empty
-    until someone restarts it, because the next poll picks it up.
-    """
-    first = True
-    while True:
-        time.sleep(20 if first else RESULTS_POLL_S)
-        first = False
-        try:
-            if _load_published(force=True):
-                print(f"[poll] adopted a newer published scan: "
-                      f"{len(_state.get('results') or [])} picks", flush=True)
-        except Exception as e:
-            print(f"[poll] published results unavailable: {e}", flush=True)
 
 
 def _book_refresher():
@@ -1506,7 +1450,6 @@ if not os.environ.get("SKIP_WARM"):
     threading.Thread(target=_warm_check_data, daemon=True).start()
     threading.Thread(target=_book_refresher, daemon=True).start()
     threading.Thread(target=_calendar_refresher, daemon=True).start()
-    threading.Thread(target=_results_refresher, daemon=True).start()
     threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 
@@ -1576,13 +1519,7 @@ def published_route():
     """What the scheduled scan has published, and how old it is."""
     idx = _published_index()
     return jsonify({"base": PUBLISHED_BASE, "index": idx,
-                    "using": _state.get("published_preset"),
-                    "source": _published_src.get("source"),
-                    "source_note": (
-                        f"the data branch is unreachable ({_published_src['why']}), "
-                        f"so this is the copy shipped with the build and will not "
-                        f"change until the next deploy"
-                        if _published_src.get("source") == "shipped copy" else None)})
+                    "using": _state.get("published_preset")})
 
 
 @app.route("/published/refresh", methods=["POST"])

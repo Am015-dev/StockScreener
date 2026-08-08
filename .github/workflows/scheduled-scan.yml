@@ -108,21 +108,6 @@ jobs:
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
             HEAD:screener-data
 
-      # Ship the results into the deployed branch as well.
-      #
-      # This costs a Render redeploy on every scan, which restarts the
-      # instance and wipes its earnings calendar, price book and credit
-      # cache — that is the "still loading, try again in a minute" a reader
-      # meets on the hour. It was removed for exactly that reason and had
-      # to go straight back: the data branch is only readable with a token
-      # this deployment does not have, so raw.githubusercontent.com 404s
-      # and the shipped copy is the ONLY thing feeding the site. Removing
-      # it emptied the page.
-      #
-      # Making the repository public, or setting PUBLISHED_TOKEN on the
-      # web service, is what removes this step for good. app.py already
-      # polls the data branch (_results_refresher), so the moment either
-      # is true the hourly restart can go.
       - name: Ship results into the deployed build
         if: env.UPSTREAM_UNAVAILABLE != '1'
         continue-on-error: true
@@ -134,6 +119,7 @@ jobs:
           cp published/*.json "$stash"/ || { echo "nothing to ship"; exit 0; }
           # And REMOVE them: the deploy branch now tracks these same paths,
           # so git refuses a checkout that would overwrite untracked files.
+          # Copying alone is not enough — that is what failed the last run.
           rm -f published/*.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -151,7 +137,10 @@ jobs:
               HEAD:"$BRANCH"
             echo "shipped $(ls published/*.json | wc -l) result files"
           fi
-          # Return the tree to exactly how the scan left it.
+          # Return the tree to exactly how the scan left it. Checking out
+          # another branch and back DELETES these files, because they are
+          # tracked on the deploy branch but not here — which is what broke
+          # the Summary step that reads them next.
           git checkout -q -
           mkdir -p published
           cp "$stash"/*.json published/
