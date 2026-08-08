@@ -344,9 +344,11 @@ function paintCredit(d) {
   // published price book carries a quarter of a year, not the year the
   // model was designed around
   if (d.vol_thin && d.vol_obs)
-    bits.push("its share-price volatility is measured over " + d.vol_obs +
-              " trading days rather than a full year, so read the distance " +
-              "as a band, not a decimal");
+    bits.push("its share-price volatility is measured over only " + d.vol_obs +
+              " trading days, so read the distance as a band, not a decimal");
+  else if (d.vol_obs)
+    bits.push("its volatility is measured over " + d.vol_obs +
+              " days of returns");
   const src = d.as_of ? ` Read from its balance sheet filed to ${esc(d.as_of)}.` : "";
   el.innerHTML = `<p style="margin:0 0 .6rem"><b style="color:${COLOR[lvl]}">` +
     `${ICON[lvl]} Credit standing: ${esc(d.band)}</b><br>` +

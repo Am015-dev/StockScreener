@@ -125,6 +125,34 @@ solo = client.post("/credit", json={"ticker": "AAA"}).get_json()
 assert solo["dd"] is not None and solo["percentile"] is None
 print("a company that is not on today's board is measured but not ranked")
 
+# ---- the published volatility is preferred over the 60-day window ----
+# The price book carries 60 closes, which prices the shares but estimates
+# an annualised volatility badly. The scan publishes one volatility per
+# ticker from years of returns; the endpoint must use it when present.
+A._state["results"] = [{"ticker": t} for t in LEVERAGE]
+A.cache_store.put("credit:GGG", None)
+window = A._credit_for("GGG")
+assert window["vol_source"] == "price window", window
+
+A._vol_book = lambda fetch=False: {"GGG": {"vol": 0.62, "obs": 1_240,
+                                           "as_of": "2026-08-07"}}
+A.cache_store.put("credit:GGG", None)
+published = A._credit_for("GGG")
+assert published["vol_source"] == "published", published
+assert published["equity_vol"] == 0.62 and published["vol_obs"] == 1240
+assert published["vol_thin"] is False
+assert published["dd"] < window["dd"], \
+    "a higher volatility must shorten the distance, not be quietly ignored"
+print(f"the published volatility reaches the report: {window['dd']} on 60 closes "
+      f"becomes {published['dd']} on 1,240 returns")
+
+# a ticker absent from the published book still answers off the window
+A.cache_store.put("credit:HHH", None)
+missing = A._credit_for("HHH")
+assert missing["dd"] is not None and missing["vol_source"] == "price window"
+print("a ticker missing from the volatility book still answers, and says so")
+A._vol_book = lambda fetch=False: {}
+
 # ---- the report is bounded in total, not per SEC call ---------------
 # One report makes up to eight sequential SEC calls. A 15-second timeout
 # on each is a two-minute timeout on the report, which is what production

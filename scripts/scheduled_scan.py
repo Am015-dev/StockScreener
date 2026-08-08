@@ -101,6 +101,61 @@ def simulate(p: dict, universe: list, progress) -> dict | None:
         return None
 
 
+def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
+    """Annualised volatility of daily log returns, over ALL history held.
+
+    The price book carries 60 closes because 60 closes x 1,500 tickers is
+    already a 600KB download for a 512MB instance, and it exists to answer
+    correlation questions where a quarter is enough.
+
+    The credit model is a different matter. Merton takes an equity
+    volatility and KMV estimates it from a year of daily returns; a
+    quarter estimates a 22% annualised volatility with roughly a +/-9%
+    standard error, and that error goes straight into the distance to
+    default. Four times the history would be four times the file — but
+    the volatility itself is ONE NUMBER per ticker. The scan already has
+    the full frame in memory, so it is computed here, once, and published
+    as a few tens of kilobytes.
+
+    Returned per ticker: the volatility, the number of returns behind it,
+    and the last date, so the consumer can say how firm the figure is
+    instead of implying they are all equally firm.
+    """
+    import math
+    out: dict = {}
+    try:
+        data = screener._cache.get("ohlc")
+        if data is None:
+            return out
+        available = set(getattr(data.columns, "levels", [[]])[0])
+        ordered = [t for t in (screener._cache.get("universe") or [])
+                   if t in available]
+        for t in available:
+            if t not in ordered:
+                ordered.append(t)
+        for t in ordered[:max_tickers]:
+            try:
+                closes = data[t]["Close"].dropna()
+                c = [float(x) for x in closes.tolist() if x and float(x) > 0]
+                if len(c) < min_obs + 1:
+                    continue
+                rets = [math.log(c[i] / c[i - 1]) for i in range(1, len(c))]
+                n = len(rets)
+                mean = sum(rets) / n
+                var = sum((r - mean) ** 2 for r in rets) / (n - 1)
+                sd = math.sqrt(var) * math.sqrt(252.0)
+                if sd <= 1e-6:
+                    continue          # a flat series is not a zero-risk stock
+                last = closes.index[-1]
+                out[t] = {"vol": round(sd, 5), "obs": n,
+                          "as_of": str(getattr(last, "date", lambda: last)())}
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
 def price_book(max_tickers: int = 2000, days: int = 60) -> dict:
     """Last `days` closes per ticker, from the frame the scan already
     downloaded.
@@ -300,9 +355,27 @@ def main() -> int:
         except Exception as e:
             print(f"price book skipped: {type(e).__name__}: {e}", file=sys.stderr)
 
+    # One volatility per ticker, from all the history the scan holds — the
+    # credit model's distance is only as firm as this number, and 60
+    # closes is not enough to make it firm.
+    vols = {}
+    if index:
+        try:
+            vols = volatility_book()
+            if vols:
+                (out / "vol.json").write_text(json.dumps(vols))
+                kb = (out / "vol.json").stat().st_size / 1024
+                med = sorted(v["obs"] for v in vols.values())[len(vols) // 2]
+                print(f"published volatility book: {len(vols)} tickers, "
+                      f"median {med} returns each ({kb:.0f} KB)")
+        except Exception as e:
+            print(f"volatility book skipped: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+
     (out / "index.json").write_text(json.dumps({
         "generated_at": time.time(), "presets": index, "failures": failures,
         "price_book": {"n": len(book), "days": 60} if book else None,
+        "vol_book": {"n": len(vols)} if vols else None,
     }, default=str))
 
     if not index:
