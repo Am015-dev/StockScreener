@@ -118,6 +118,14 @@ def build(state: dict, market: dict | None = None,
                              if reward and pick.get("friction_pct") else None),
             "sector": pick.get("sector"),
         }
+        # The card states an entry, a stop and a euro risk as plain facts,
+        # and the template formats them as numbers. A pick missing any of
+        # the three cannot be described without inventing one of them, and
+        # a half-described trade is worse than no card: it reads as
+        # complete. Withhold it the same way an unverifiable pick is
+        # withheld, rather than rendering "None" or failing the whole page.
+        if stop is None or risk is None or not price:
+            action = None
 
     # Blocked, grouped by the rule that stopped them — never a bare count.
     groups: dict[str, list[str]] = {}
