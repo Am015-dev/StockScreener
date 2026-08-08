@@ -215,3 +215,37 @@ for missing in ("stop", "risk_EUR", "price"):
 print("a pick missing its stop, its risk or its price is withheld, not half-drawn")
 
 print("\nALL BRIEF TESTS PASSED")
+
+
+# ---- a London listing is quoted in pence, not dollars ----
+# The card hardcoded "$" in front of every price, so a £285.50 entry on a
+# UK line rendered as "$28,550" — wrong symbol and wrong magnitude at once.
+uk = {"ticker": "BT-A.L", "price": 285.5, "stop": 268.0, "resistance": 337.0,
+      "risk_EUR": 100.0, "RR": 3.0, "shares": 40.0, "support": 275.0}
+out = brief.build({"results": [uk]})
+assert out["action"]["unit"] == "p", out["action"]["unit"]
+assert out["action"]["cost"].startswith("p"), out["action"]["cost"]
+assert out["watchlist"][0]["unit"] == "p"
+
+for tick, unit in (("AAPL", "$"), ("CSX", "$"), ("NESN.SW", "CHF "),
+                   ("ASML.AS", "€"), ("SHOP.TO", "C$")):
+    row = dict(uk, ticker=tick)
+    assert brief.build({"results": [row]})["action"]["unit"] == unit, tick
+print("prices carry the listing's own currency: pence, francs, euros, "
+      "Canadian and US dollars")
+
+# and brief.py still cannot reach the market to work that out
+import ast as _ast2
+_tree2 = _ast2.parse((ROOT / "brief.py").read_text())
+_imported2 = set()
+for _n in _ast2.walk(_tree2):
+    if isinstance(_n, _ast2.Import):
+        _imported2.update(a.name.split(".")[0] for a in _n.names)
+    elif isinstance(_n, _ast2.ImportFrom) and _n.module:
+        _imported2.add(_n.module.split(".")[0])
+assert "screener" not in _imported2, \
+    "the currency map is duplicated on purpose; importing screener here would " \
+    "give this module a route to the market"
+print("the currency map is local — the card still cannot reach the market")
+
+print("\nCURRENCY PINNED")

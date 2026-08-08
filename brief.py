@@ -38,6 +38,24 @@ def _plain_block_reason(why: str) -> str:
     return (why or "blocked").split("—")[0].strip()[:70] or "blocked"
 
 
+# What a listing is quoted in, from its suffix. London quotes in PENCE,
+# so a £285.50 cost was rendering as "$28,550" — wrong symbol and wrong
+# magnitude at once. Duplicated from screener.CCY_SUFFIX rather than
+# imported: this module is deliberately unable to reach the market, and a
+# test enforces that.
+_SUFFIX_UNIT = {
+    "L": "p", "SW": "CHF ", "CO": "DKK ", "ST": "SEK ", "OL": "NOK ",
+    "AS": "€", "PA": "€", "DE": "€", "MI": "€", "MC": "€", "BR": "€",
+    "HE": "€", "LS": "€", "IR": "€", "VI": "€", "TO": "C$", "T": "C$",
+}
+
+
+def _unit(ticker: str) -> str:
+    """The symbol this listing's prices are quoted in."""
+    parts = str(ticker or "").rsplit(".", 1)
+    return _SUFFIX_UNIT.get(parts[1].upper(), "$") if len(parts) == 2 else "$"
+
+
 def _money(x, cur="$"):
     if x is None:
         return None
@@ -122,7 +140,8 @@ def build(state: dict, market: dict | None = None,
             "name": pick.get("name") or pick.get("ticker"),
             "shares": round(shares, 2),
             "price": price,
-            "cost": _money(round(shares * price, 2)),
+            "unit": _unit(pick.get("ticker")),
+            "cost": _money(round(shares * price, 2), _unit(pick.get("ticker"))),
             "stop": stop,
             "risk_eur": risk,
             "target": target,
@@ -210,6 +229,7 @@ def build(state: dict, market: dict | None = None,
         "n_qualified": len(results),
         "watchlist": [
             {"ticker": r.get("ticker"), "name": r.get("name"),
+             "unit": _unit(r.get("ticker")),
              "price": _f(r.get("price")), "stop": _f(r.get("stop")),
              "target": _f(r.get("resistance")), "rsi": _f(r.get("RSI")),
              # both halves, not just the divisor: a row carrying a support
