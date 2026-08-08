@@ -25,6 +25,10 @@ on:
         description: "How many coin-flip runs"
         default: "25"
 
+permissions:
+  contents: write        # the result branch; without this the push 403s and
+                         # the job reports failure after a successful test
+
 jobs:
   null-test:
     runs-on: ubuntu-latest

@@ -153,16 +153,20 @@ for k in ("ticker", "price", "stop", "target", "rsi", "earnings"):
     assert k in w, (k, w)
 assert w["support_dist"] is not None
 src = (ROOT / "templates" / "brief.html").read_text()
-assert "Research only \u2014 not" in src or "Research only" in src, \
-    "the research-only banner must be permanent, not conditional on a flag"
+# The banner must state the permutation-test finding, not a softer
+# version of it. "Has not been profitable" invites the thought that
+# tuning might fix it; "indistinguishable from random entry" does not.
+assert "filter, not a" in src, "the card must not present the list as a signal"
+assert "worse" in src and "coin flip" in src, \
+    "the banner must state that random entry beat the pattern"
 # Affirmative language only — the disclaimer itself contains the word
 # "recommendations", and a bare substring check flags its own denial.
 for banned in ("One action today: buy", "we recommend", "you should buy",
                "our recommendation", "buy this", "top pick of the day"):
     assert banned.lower() not in src.lower(), \
         f"recommendation language on the card: {banned!r}"
-assert "not\n      recommendations" in src or "not recommendations" in src \
-    or "Research only" in src, "the research-only disclaimer must be present"
+assert "not a\n      signal" in src or "filter, not a" in src, \
+    "the disclaimer must say this is a filter rather than a signal"
 print(f"watchlist of {len(b['watchlist'])} rows, permanent research-only banner, "
       f"no recommendation language")
 
