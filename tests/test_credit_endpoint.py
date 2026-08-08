@@ -56,6 +56,12 @@ LEVERAGE = {"AAA": 0.05, "BBB": 0.10, "CCC": 0.20, "DDD": 0.30, "EEE": 0.40,
             "FFF": 0.55, "GGG": 0.70, "HHH": 0.90, "III": 1.20, "JJJ": 1.60,
             "KKK": 2.20, "LLL": 3.00}
 SHARES = 1_000_000_000                     # x last close ~= 100bn market value
+# The share-count age gate is measured against the real clock, so a
+# fixture with an absolute date is a test that fails on a future Tuesday
+# with nothing having changed. The date moves with the test.
+import datetime as _dt
+FILED = (_dt.date.today() - _dt.timedelta(days=20)).isoformat()
+PERIOD = (_dt.date.today() - _dt.timedelta(days=45)).isoformat()
 CIK = {t: i + 1 for i, t in enumerate(LEVERAGE)}
 BY_CIK = {v: k for k, v in CIK.items()}
 sec_calls = []
@@ -67,13 +73,13 @@ def fake_sec(url, timeout=15):
     t = BY_CIK[cik]
     lev = LEVERAGE[t] * SHARES * PRICES[-1]
     if url.endswith("Liabilities.json"):
-        return {"units": {"USD": [{"form": "10-Q", "end": "2026-06-30",
+        return {"units": {"USD": [{"form": "10-Q", "end": PERIOD,
                                    "val": lev}]}}
     if url.endswith("LiabilitiesCurrent.json"):
-        return {"units": {"USD": [{"form": "10-Q", "end": "2026-06-30",
+        return {"units": {"USD": [{"form": "10-Q", "end": PERIOD,
                                    "val": lev * 0.4}]}}
     if url.endswith("EntityCommonStockSharesOutstanding.json"):
-        return {"units": {"shares": [{"form": "10-Q", "end": "2026-07-31",
+        return {"units": {"shares": [{"form": "10-Q", "end": FILED,
                                       "val": SHARES}]}}
     return {"units": {}}
 

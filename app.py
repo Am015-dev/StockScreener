@@ -457,7 +457,10 @@ def _load_snapshot(params=None) -> bool:
 
 market_db._drop_dead_weight()   # reclaim the write-only bars table, once
 # published results first: they are produced by the scheduled scan and are
-# usually fresher than anything this instance still has after a restart
+# usually fresher than anything this instance still has after a restart.
+# Deliberately NOT behind SKIP_WARM: adopting a published scan at startup
+# is the behaviour test_published exists to check, and the tests that do
+# not care about it stub the fetch or take one fast 404.
 if not _load_published():
     if not _load_snapshot():
         _load_cached_csv()

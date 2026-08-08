@@ -150,3 +150,24 @@ assert any("defensive mode" in l for l in log_w), log_w
 print(f"breadth throttle OK: {b['pct']}% breadth -> 0.25x, flags + sizing scaled")
 
 print("\nALL SIZING-MATH TESTS PASSED")
+
+
+# ---- a position may never exceed the cash there is to buy it with ----
+# This was untested: deleting the cap left the whole suite green while the
+# board could suggest a position larger than the reader's account.
+sh, flag = screener._cap_to_cash(100.0, 10_000.0, 2_500.0)
+assert flag == "cash_capped", flag
+assert abs(sh - 25.0) < 1e-9, sh
+assert abs(sh * 100.0 - 2_500.0) < 1e-6, "the capped position must fit the cash"
+
+sh, flag = screener._cap_to_cash(100.0, 1_000.0, 2_500.0)
+assert flag is None and sh == 100.0, (sh, flag)
+
+for cash in (0.0, -50.0):
+    sh, flag = screener._cap_to_cash(100.0, 10_000.0, cash)
+    assert flag == "no_cash", (cash, flag)
+    assert sh == 100.0, "with no cash the size is reported unchanged AND flagged"
+print("position size is capped to available cash, and no cash is flagged rather "
+      "than silently sized")
+
+print("\nCASH CAP PINNED")

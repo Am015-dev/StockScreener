@@ -310,9 +310,12 @@ assert _blind.empty, \
 print("with no dates the correlation is refused, not computed off row position")
 
 # unequal lengths can no longer be lined up end-to-start
-_short = dict(zip(DATES[30:], _base[30:]))
 _mixed = cc.correlation({"US": _base, "CUT": [None] * 30 + _base[30:]}, dates=DATES)
-assert _mixed.empty or float(_mixed.at["US", "CUT"]) > 0.99, _mixed
+# not "empty OR correct": an aligner regression that returns an empty
+# frame would pass that, and empty means the check silently stops
+# measuring overlap at all
+assert not _mixed.empty, "a series starting later must still be comparable"
+assert float(_mixed.at["US", "CUT"]) > 0.99, float(_mixed.at["US", "CUT"])
 print("a shorter series is aligned to its own dates, never to another's")
 
 print("\nCALENDAR ALIGNMENT PINNED")

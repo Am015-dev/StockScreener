@@ -287,6 +287,43 @@ METHODOLOGY_MAX = {
 RR_SANE_MAX = 8.0
 
 
+def _rr_gate(ticker, price, stop, resistance, reject) -> bool:
+    """True if this setup's reward:risk is believable enough to publish.
+
+    Extracted so it can be tested. It was inline, and the test that
+    claimed to cover it compared two module constants — deleting the gate
+    entirely left every test green while the live board carried a
+    reward:risk of 16.5 built on a swing high years out of date.
+    """
+    risk_ps = price - stop
+    rr = (resistance - price) / risk_ps if risk_ps > 0 else float("nan")
+    if not np.isfinite(rr):
+        reject(ticker, "degenerate risk math")
+        return False
+    if rr > RR_SANE_MAX:
+        # the swing high is stale or structurally meaningless; displaying
+        # "R:R 16.5" invites a trade that is not there
+        reject(ticker, f"implausible reward:risk {rr:.1f} "
+                       f"(> {RR_SANE_MAX:g}) — target level is stale")
+        return False
+    return True
+
+
+def _cap_to_cash(shares: float, pos_value_eur: float,
+                 cash_eur: float) -> tuple[float, str | None]:
+    """Trim a position to the cash actually available.
+
+    Extracted so it can be tested: this is the only thing standing between
+    the board and a suggested position larger than the reader has money
+    for, and deleting it left the whole suite green.
+    """
+    if cash_eur <= 0:
+        return shares, "no_cash"
+    if pos_value_eur > cash_eur:
+        return shares * (cash_eur / pos_value_eur), "cash_capped"
+    return shares, None
+
+
 def clean_params(overrides: dict | None) -> dict:
     """Merge user overrides onto DEFAULTS, coercing and clamping everything.
 
@@ -1511,14 +1548,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 risk_ps = price - stop
                 reward_ps = resistance - price
                 rr = reward_ps / risk_ps if risk_ps > 0 else float("nan")
-                if not np.isfinite(rr):
-                    reject(ticker, "degenerate risk math")
-                    continue
-                if rr > RR_SANE_MAX:
-                    # the swing high is stale or structurally meaningless;
-                    # displaying "R:R 16.5" invites a trade that is not there
-                    reject(ticker, f"implausible reward:risk {rr:.1f} "
-                                   f"(> {RR_SANE_MAX:g}) — target level is stale")
+                if not _rr_gate(ticker, price, stop, resistance, reject):
                     continue
 
                 # ---- Stage 1 soft gates: a failure here still leaves a complete
@@ -1733,12 +1763,11 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     if held:
                         status = ("ADD" if held["pnl_pct"] is None
                                   else f"ADD ({held['pnl_pct']:+.1f}%)")
-                    pos_value_eur = _to_eur(shares * price, ticker)
-                    if port["cash_eur"] <= 0:
-                        flags.append("no_cash")
-                    elif pos_value_eur > port["cash_eur"]:
-                        shares *= port["cash_eur"] / pos_value_eur
-                        flags.append("cash_capped")
+                    shares, _cash_flag = _cap_to_cash(
+                        shares, _to_eur(shares * price, ticker),
+                        port["cash_eur"])
+                    if _cash_flag:
+                        flags.append(_cash_flag)
                     pos_value_eur = _to_eur(shares * price, ticker)
                     if sector and port["book_eur"] > 0:
                         sector_after = round((port["sector_val"].get(sector, 0.0) + pos_value_eur)

@@ -76,9 +76,41 @@ assert sell < 50, f"a Sell-rated name scored {sell}; it must not read as 'okay'"
 print(f"analyst Sell: {neutral} -> {sell} (Buy {buy}) — no longer a top-half score")
 
 # ---- an implausible reward:risk is a data fault, not an opportunity ----
+# This used to assert only that two CONSTANTS compared as expected, which
+# cannot fail and did not touch the screener: deleting the emit-time gate
+# outright left the whole suite green. The audit that prompted the gate
+# found "R:R 16.5" on the live board, from a swing high years stale. So
+# the gate itself is now run.
 assert screener.RR_SANE_MAX <= 10, screener.RR_SANE_MAX
-assert 16.5 > screener.RR_SANE_MAX, "R:R 16.5 must be rejected outright"
-print(f"reward:risk above {screener.RR_SANE_MAX:g} rejected as a stale target level")
+_rejects = {}
+
+
+def _reject(t, why):
+    _rejects[t] = why
+
+
+_gate = screener._rr_gate if hasattr(screener, "_rr_gate") else None
+assert _gate is not None, "the reward:risk gate must be callable to be testable"
+
+# a stale target level: 16.5:1 on a name whose stop is 1% away
+assert _gate("STALE", price=100.0, stop=99.0, resistance=116.5,
+             reject=_reject) is False
+assert "STALE" in _rejects and "implausible" in _rejects["STALE"], _rejects
+assert "16.5" in _rejects["STALE"], _rejects["STALE"]
+
+# a normal setup passes untouched
+_rejects.clear()
+assert _gate("FINE", price=100.0, stop=95.0, resistance=115.0,
+             reject=_reject) is True
+assert not _rejects, _rejects
+
+# and degenerate risk math is refused rather than dividing by zero
+_rejects.clear()
+assert _gate("FLAT", price=100.0, stop=100.0, resistance=115.0,
+             reject=_reject) is False
+assert "degenerate" in _rejects["FLAT"], _rejects
+print(f"reward:risk above {screener.RR_SANE_MAX:g} is rejected by the gate "
+      f"itself, not merely by a comparison of two constants")
 
 # ---- no published preset may fail open or break the methodology ----
 import scheduled_scan
@@ -111,6 +143,10 @@ print("the publisher refuses a fail-open or off-methodology preset")
 # both were supposedly banned.
 os.environ.setdefault("JOURNAL_DB", os.path.join(TMP, "j.db"))
 os.environ.setdefault("RESULTS_CSV", os.path.join(TMP, "r.csv"))
+# The suite is hermetic. Warmers reach Nasdaq, GitHub and the SEC at
+# import time, which is latency and a hang risk in CI, not a result
+# any assertion here depends on.
+os.environ["SKIP_WARM"] = "1"
 import app as app_mod
 
 good = {"ticker": "OK", "RSI": 44.0, "RR": 3.0, "price": 100.0, "support": 96.0}

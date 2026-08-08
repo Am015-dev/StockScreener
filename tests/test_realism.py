@@ -209,7 +209,9 @@ backtest._simulate_block(dict(_p, _null_rate=0.05, _null_seed=1), _frame,
 backtest._simulate_block(dict(_p, _null_rate=0.001, _null_seed=1), _frame,
                          list(walkers), _lo, None)
 assert len(_hi) > len(_lo), (len(_hi), len(_lo))
-assert _lo == [] or len(_lo) < len(_hi)
+assert len(_lo) <= 2, (
+    f"a 0.001 entry rate produced {len(_lo)} trades; the coin flip is not "
+    f"driving entries")
 print(f"null mode enters on the coin flip only: rate 0.05 -> {len(_hi)} trades, "
       f"rate 0.001 -> {len(_lo)}")
 

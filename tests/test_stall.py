@@ -20,6 +20,10 @@ for k, f in (("MARKET_DB", "m.db"), ("JOURNAL_DB", "j.db"),
              ("SCREENER_CACHE_DB", "c.db"), ("RESULTS_CSV", "r.csv")):
     os.environ[k] = os.path.join(TMP, f)
 os.environ["STALL_AFTER_S"] = "2"
+# The suite is hermetic. Warmers reach Nasdaq, GitHub and the SEC at
+# import time, which is latency and a hang risk in CI, not a result
+# any assertion here depends on.
+os.environ["SKIP_WARM"] = "1"
 sys.path.insert(0, str(ROOT))
 
 import screener
@@ -41,6 +45,9 @@ def watched_universe(p, progress=print):
 
 screener._yahoo_auth_session = watched_auth
 screener.build_universe = watched_universe
+# 32 sequential Nasdaq requests, ~75 seconds of the job budget, and not a
+# thing this test asserts on
+screener._earnings_calendar = lambda build=False, **k: ({}, False)
 try:
     screener.run_screener({}, progress=lambda m: (said.append(str(m)),
                                                   order.append("progress"))[0])
