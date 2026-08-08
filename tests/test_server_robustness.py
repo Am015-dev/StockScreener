@@ -20,6 +20,11 @@ os.environ.update(MARKET_DB=os.path.join(TMP, "m.db"),
                   JOURNAL_DB=os.path.join(TMP, "j.db"),
                   SCREENER_CACHE_DB=os.path.join(TMP, "c.db"),
                   RESULTS_CSV=os.path.join(TMP, "r.csv"), SKIP_WARM="1")
+# The deploy branch SHIPS published/*.json, so a CI checkout has real
+# scan results on disk that the app adopts at import — overriding
+# whatever this test set up. Point the lookup somewhere empty.
+os.environ["PUBLISHED_DIR"] = os.path.join(TMP, "no_published")
+os.makedirs(os.environ["PUBLISHED_DIR"], exist_ok=True)
 sys.path.insert(0, str(ROOT))
 
 import app as A
