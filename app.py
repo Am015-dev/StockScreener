@@ -27,6 +27,7 @@ import cache_store
 import journal
 import market_clock
 import portfolio_import
+import pretrade
 import screener
 
 app = Flask(__name__)
@@ -742,6 +743,61 @@ def snapshot_load():
     stored = market_db.snapshot_index()
     return jsonify({"ok": True, "found": False, "n_stored": len(stored),
                     "message": "These filters have not been scanned yet."})
+
+
+# ---- the price book behind the pre-trade check ----
+# 60 daily closes per scanned ticker, published by the scheduled scan.
+# It exists so the check can measure correlation against a reader's own
+# holdings without a per-ticker Yahoo call — those are rate-limited and
+# fail outright from a datacenter IP, which is the whole reason this
+# cannot be done live.
+_book = {"ts": 0.0, "data": None}
+BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
+
+
+def _price_book() -> dict:
+    if _book["data"] is not None and time.time() - _book["ts"] < BOOK_TTL:
+        return _book["data"]
+    data = _published_get("prices.json") or {}
+    _book.update(data=data, ts=time.time())
+    return data
+
+
+@app.route("/check", methods=["POST"])
+def check_trade():
+    """What a reader cannot work out from a free screener: how much of this
+    trade they already own, whether the earnings date is genuinely verified,
+    and whether their book gets wider or just heavier."""
+    body = request.get_json(silent=True) or {}
+    ticker = str(body.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"ok": False, "error": "no ticker given"}), 400
+    holdings = body.get("holdings") or []
+    if isinstance(holdings, str):
+        holdings = [{"ticker": t.strip()} for t in holdings.replace(",", " ").split()
+                    if t.strip()]
+
+    book = _price_book()
+    # Earnings come from the same published scan, so the answer here is the
+    # one the board used — not a second opinion that could disagree with it.
+    earn, complete = {}, False
+    try:
+        earn, complete = screener._earnings_calendar()
+    except Exception:
+        pass
+
+    row = next((r for r in (_state.get("results") or [])
+                if (r.get("ticker") or "").upper() == ticker), None)
+    res = pretrade.check(
+        ticker, holdings, book, earn, complete,
+        risk_eur=(row or {}).get("risk_EUR"),
+        reward_eur=((row["risk_EUR"] * row["RR"]) if row and row.get("risk_EUR")
+                    and row.get("RR") else None),
+        friction_pct=(row or {}).get("friction_pct"))
+    res["ok"] = True
+    res["book_size"] = len(book)
+    res["in_todays_scan"] = row is not None
+    return jsonify(res)
 
 
 @app.route("/limits")

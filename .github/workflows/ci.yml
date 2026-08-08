@@ -55,6 +55,8 @@ jobs:
         run: python tests/test_concentration.py
       - name: Today's brief (one card, "no action" as a valid answer)
         run: python tests/test_brief.py
+      - name: Pre-trade check (overlap, earnings, bets before/after)
+        run: python tests/test_pretrade.py
       - name: Market clock (sessions vs wall-clock, holidays, DST)
         run: python tests/test_market_clock.py
       - name: Simulation realism (costs, ATR stops, hold cap, liquidity)
