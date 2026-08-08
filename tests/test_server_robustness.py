@@ -319,4 +319,29 @@ assert A._sec_slots._value == _slots, \
     f"{_slots - A._sec_slots._value} slot(s) never came back"
 print(f"after {_slots + 2} abandoned fetches all {_slots} slots are free again")
 
+
+# ---- the warmer must stop when the SEC is refusing ----
+# It walks the whole board at boot. If the SEC is rate-limiting this IP,
+# pressing on turns a temporary block into a sustained one AND competes
+# with every live request, so a reader gets "the SEC did not answer in
+# time" for every company while the warmer is busy earning that refusal.
+_calls = {"n": 0}
+_real_credit_for = A._credit_for
+
+
+def _always_refuses(t, budget_s=16.0):
+    _calls["n"] += 1
+    return {"ok": True, "ticker": t, "dd": None, "verdict": "no"}
+
+
+A._credit_for = _always_refuses
+A._state["results"] = [{"ticker": f"T{i}"} for i in range(25)]
+_t0 = time.time()
+A._warm_credit()
+A._credit_for = _real_credit_for
+assert _calls["n"] <= 4, \
+    f"the warmer made {_calls['n']} calls against a refusing SEC"
+print(f"a refusing SEC stops the warmer after {_calls['n']} attempts, "
+      f"not {len(A._state['results'])}")
+
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")
