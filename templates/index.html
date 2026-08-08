@@ -885,24 +885,12 @@ async function cancelScan() {
   refresh();
 }
 
-async function runScan() {
-  saveLocal();
-  const r = await fetch("/run", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(collectParams()),
-  });
-  if (r.ok) {
-    document.getElementById("filterBox").open = false;
-    document.getElementById("logBox").open = true;
-    lastAsked = null;   // this scan replaces the stored one for these filters
-    const note = document.getElementById("snapNote");
-    note.style.display = "block";
-    note.style.color = "var(--muted)";
-    note.textContent = "⏳ Re-scanning — this will replace the stored scan for these filters.";
-  }
-  if (r.ok || r.status === 409) startPolling();
-}
+// runScan() lived here. It POSTed to /run, which started a crawl inside
+// the 512MB web process — the source of every timeout, every "this scan
+// has stopped responding" banner and every stale download, and once
+// pressed it replaced the full scheduled scan with whatever the trimmed
+// run returned. Deleted rather than hidden: a dead function that starts a
+// crawl is exactly the thing someone re-wires to a button later.
 
 function startPolling() {
   if (!poller) poller = setInterval(refresh, 2000);
@@ -1041,7 +1029,13 @@ function applyHint(changes) {
     const el = document.getElementById(id);
     if (el.type === "checkbox") el.checked = val; else el.value = val;
   }
-  runScan();
+  // Deliberately does NOT start a scan. Removing the Run button while
+  // leaving these chips wired to it would have left the crawl one click
+  // away, just harder to find — the worst of both. The chip sets the
+  // filter and looks for a stored scan matching it; if none exists, the
+  // next scheduled run covers it.
+  lastAsked = null;      // the filters changed, so re-ask even if we just did
+  loadStoredScan(false);
 }
 
 function renderNearBoard(nearRows, hints, nQualified) {
