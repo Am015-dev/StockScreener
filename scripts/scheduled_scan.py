@@ -29,6 +29,7 @@ import backtest
 import db
 import journal
 import screener
+import pandas as _pd
 
 # The presets the site publishes. "balanced" is the shipped default; the
 # others exist because a single strict rule set often returns nothing on a
@@ -179,23 +180,37 @@ def price_book(max_tickers: int = 2000, days: int = 60) -> dict:
     try:
         data = screener._cache.get("ohlc")
         if data is None:
-            return out
+            return {}
         available = set(getattr(data.columns, "levels", [[]])[0])
         ordered = [t for t in (screener._cache.get("universe") or [])
                    if t in available]
         for t in available:            # anything the universe list missed
             if t not in ordered:
                 ordered.append(t)
+        # ONE calendar, shared by every series. The previous version took
+        # each ticker's own last 60 non-null closes, so column position
+        # meant a different day for a stock that did not trade every day
+        # the frame covers — and the consumer correlated by position. A
+        # London listing skipping three UK holidays was enough to turn a
+        # correlation of 1.00 into 0.49. Here the index is fixed first and
+        # every ticker is sampled against it, nulls included, so position
+        # IS the date by construction.
+        idx = data.index[-days:]
         for t in ordered[:max_tickers]:
             try:
-                closes = data[t]["Close"].dropna()
-                if len(closes) >= days:
-                    out[t] = [round(float(x), 2) for x in closes.iloc[-days:]]
+                closes = data[t]["Close"].reindex(idx)
+                if int(closes.notna().sum()) < days // 2:
+                    continue           # too gappy on this calendar to publish
+                out[t] = [None if _pd.isna(x) else round(float(x), 2)
+                          for x in closes]
             except Exception:
                 continue
     except Exception:
-        pass
-    return out
+        return {}
+    if not out:
+        return {}
+    return {"dates": [str(getattr(d, "date", lambda: d)()) for d in idx],
+            "series": out}
 
 
 def _assert_publishable(name: str, p: dict) -> None:
@@ -350,8 +365,8 @@ def main() -> int:
             if book:
                 (out / "prices.json").write_text(json.dumps(book))
                 kb = (out / "prices.json").stat().st_size / 1024
-                print(f"published price book: {len(book)} tickers x 60 closes "
-                      f"({kb:.0f} KB)")
+                print(f"published price book: {len(book['series'])} tickers x "
+                      f"{len(book['dates'])} shared dates ({kb:.0f} KB)")
         except Exception as e:
             print(f"price book skipped: {type(e).__name__}: {e}", file=sys.stderr)
 
@@ -374,7 +389,8 @@ def main() -> int:
 
     (out / "index.json").write_text(json.dumps({
         "generated_at": time.time(), "presets": index, "failures": failures,
-        "price_book": {"n": len(book), "days": 60} if book else None,
+        "price_book": ({"n": len(book["series"]), "days": 60}
+                       if book else None),
         "vol_book": {"n": len(vols)} if vols else None,
     }, default=str))
 

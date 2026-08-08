@@ -32,6 +32,25 @@ import pretrade
 import screener
 
 app = Flask(__name__)
+# /tmp is RAM-backed on the free instance, so an unbounded POST body is
+# charged straight against the 512MB ceiling. The largest legitimate body
+# is a portfolio CSV, already capped at 2MB by its own handler.
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
+
+
+@app.template_filter("num")
+def _num(value, places: int = 2, dash: str = "—", sign: bool = False):
+    """Format a number, or show a dash — never take the page down.
+
+    `'%.2f'|format(None)` raises TypeError, and Jinja lets that escape as
+    a 500. The whole product is one page, so a single null in one row of
+    one table is total unavailability. Every number the templates print
+    goes through here: a missing figure is a missing figure, and says so.
+    """
+    try:
+        return ("%+.*f" if sign else "%.*f") % (int(places), float(value))
+    except (TypeError, ValueError):
+        return dash
 
 
 @app.after_request
@@ -93,6 +112,7 @@ _state = {
     "last_progress_ts": None,  # when the running scan last said anything
     "published_preset": None,  # which scheduled-scan preset is on screen
     "capped_universe": None,   # a page scan was trimmed from this many stocks
+    "generation": 0,           # bumped on cancel; retires an abandoned worker
 }
 
 
@@ -447,7 +467,17 @@ except Exception:
     pass
 
 
-def _progress(msg):
+# A cancelled scan keeps running — the thread is deliberately not killed.
+# Every write it makes afterwards has to be discarded, or its rows and the
+# next scan's filters end up in _state together and /status reports the
+# pair as a finished result.
+def _stale(gen) -> bool:
+    return gen is not None and gen != _state.get("generation", 0)
+
+
+def _progress(msg, gen=None):
+    if _stale(gen):
+        return
     for line in str(msg).splitlines():
         if line.strip():
             _state["log"].append(line)
@@ -457,8 +487,10 @@ def _progress(msg):
         _state["log"][:] = _state["log"][-500:]
 
 
-def _on_partial(rows, scanned, total, pending=None):
+def _on_partial(rows, scanned, total, pending=None, gen=None):
     """Stream qualified AND pending-verification picks while the scan runs."""
+    if _stale(gen):
+        return
     recs = sorted(rows, key=lambda r: r.get("score", 0), reverse=True)
     _state["results"] = recs
     _state["top_picks"] = recs[:TOP_N]
@@ -470,9 +502,16 @@ def _on_partial(rows, scanned, total, pending=None):
 
 
 def _run_scan(params):
+    gen = _state.get("generation", 0)
     try:
-        result = screener.run_screener(params, progress=_progress,
-                                       on_partial=_on_partial)
+        result = screener.run_screener(
+            params,
+            progress=lambda m: _progress(m, gen),
+            on_partial=lambda *a, **k: _on_partial(*a, gen=gen, **k))
+        if _stale(gen):
+            # cancelled while this was still downloading; its results
+            # belong to a page nobody is looking at any more
+            return
         df = result["df"]
         rejections = result["rejections"]
 
@@ -771,7 +810,8 @@ def _price_book(fetch: bool = False) -> dict:
     t0 = time.time()
     data = _published_get("prices.json") or {}
     _book.update(data=data, ts=time.time())
-    print(f"[warm] price book fetched: {len(data)} tickers in "
+    print(f"[warm] price book fetched: "
+          f"{len(pretrade._series_of(data))} tickers in "
           f"{time.time() - t0:.1f}s", flush=True)
     return data
 
@@ -822,6 +862,14 @@ def check_trade():
     if not ticker:
         return jsonify({"ok": False, "error": "no ticker given"}), 400
     holdings = body.get("holdings") or []
+    # the shipped page sends objects, but a hand-edited localStorage or an
+    # API client can send bare tickers, and pretrade did h.get(...) on them
+    if isinstance(holdings, dict):
+        holdings = [{"ticker": k, "shares": v} for k, v in holdings.items()]
+    if isinstance(holdings, list):
+        holdings = [{"ticker": h} if isinstance(h, str) else h
+                    for h in holdings if h]
+        holdings = [h for h in holdings if isinstance(h, dict)]
     if isinstance(holdings, str):
         holdings = [{"ticker": t.strip()} for t in holdings.replace(",", " ").split()
                     if t.strip()]
@@ -854,7 +902,7 @@ def check_trade():
                     and row.get("RR") else None),
         friction_pct=(row or {}).get("friction_pct"))
     res["ok"] = True
-    res["book_size"] = len(book)
+    res["book_size"] = len(pretrade._series_of(book))
     res["ms"] = round((time.time() - _t_start) * 1000)
     res["in_todays_scan"] = row is not None
     return jsonify(res)
@@ -916,7 +964,12 @@ def _cik_for(ticker: str) -> int | None:
                 data={row[ti].upper(): int(row[ci]) for row in d.get("data", [])},
                 ts=time.time())
         except Exception:
-            _cik_map.update(data=_cik_map["data"] or {}, ts=time.time())
+            # Do NOT stamp ts on failure. Doing so cached an empty map for
+            # the full seven days, and every credit report then answered
+            # "not a US filer" — for Apple — until the process restarted.
+            # A miss must be retried, not frozen.
+            if _cik_map["data"]:
+                _cik_map.update(ts=time.time())
     return (_cik_map["data"] or {}).get(ticker.upper())
 
 
@@ -982,8 +1035,11 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
 
     row = next((r for r in (_state.get("results") or [])
                 if (r.get("ticker") or "").upper() == ticker), None)
-    book = _price_book()
-    closes = (row or {}).get("spark") or book.get(ticker)
+    book = pretrade._series_of(_price_book())
+    # the published series carry nulls on days the stock did not trade, so
+    # the closes handed to the model must have them stripped
+    closes = ((row or {}).get("spark")
+              or [c for c in (book.get(ticker) or []) if c])
     mktcap = (row or {}).get("mktcap_b")
     equity = float(mktcap) * 1e9 if mktcap else None
     shares = {}
@@ -1215,6 +1271,26 @@ def _crumb_hunter():
         time.sleep(150 + random.random() * 120)
 
 
+def _calendar_refresher():
+    """Rebuild the earnings calendar before its cache expires.
+
+    The warmer below ran ONCE at boot while the cached calendar expires
+    after six hours, and nothing else rebuilds it — scans run in CI, not
+    here. So any instance alive longer than six hours answered every
+    pre-trade check with "the calendar is still loading, try again in a
+    minute", permanently, and the message told the reader to wait for
+    something that was never coming.
+    """
+    while True:
+        time.sleep(max(600.0, screener.EARN_CAL_TTL * 0.75))
+        try:
+            cal, ok = screener._earnings_calendar()
+            print(f"[warm] earnings calendar refreshed: {len(cal)} companies, "
+                  f"{'complete' if ok else 'INCOMPLETE'}", flush=True)
+        except Exception as e:
+            print(f"[warm] earnings calendar refresh failed: {e}", flush=True)
+
+
 def _warm_check_data():
     """Build the earnings calendar and pull the price book off the request
     path entirely.
@@ -1233,7 +1309,8 @@ def _warm_check_data():
         print(f"[warm] earnings calendar failed: {e}", flush=True)
     try:
         book = _price_book(fetch=True)
-        print(f"[warm] price book: {len(book)} tickers", flush=True)
+        print(f"[warm] price book: {len(pretrade._series_of(book))} tickers",
+              flush=True)
     except Exception as e:
         print(f"[warm] price book failed: {e}", flush=True)
     try:
@@ -1290,6 +1367,7 @@ def _warm_credit():
 if not os.environ.get("SKIP_WARM"):
     threading.Thread(target=_warm_check_data, daemon=True).start()
     threading.Thread(target=_book_refresher, daemon=True).start()
+    threading.Thread(target=_calendar_refresher, daemon=True).start()
     threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 
@@ -1334,8 +1412,15 @@ def cancel():
                             f"progress — it was most likely stuck waiting on "
                             f"Yahoo. Press Run to try again.")
         _state["log"].append(_state["error"])
-    # fall back to whatever we can legitimately show instead of nothing
-    restored = _load_published(force=True) or _load_snapshot()
+        # The abandoned worker is still alive and still writing to _state.
+        # Retiring its generation makes every later write from it a no-op,
+        # so a scan started right after cancelling cannot interleave its
+        # partial rows with the old scan's filters — which is what /status
+        # was reporting as a finished result.
+        _state["generation"] = _state.get("generation", 0) + 1
+    # Reloading the published board here means a reader trying to escape a
+    # hang waits on two network fetches to do it. The poller picks it up.
+    restored = _load_snapshot()
     return jsonify({"ok": True, "restored_previous": bool(restored)})
 
 
@@ -1388,17 +1473,22 @@ def _send_alert(text: str) -> list[str]:
 def alert():
     """Scheduled entry point (GitHub Actions cron): rerun the saved filter
     profile and push the verified top picks to the configured channels."""
-    with _lock:
-        if _state["status"] == "running" or _state["bt_status"] == "running":
-            return jsonify({"ok": False, "message": "busy"}), 409
-        _state["status"] = "running"
-    params = {}
+    # This used to run a full scan inline, in the request thread, with
+    # universe_max=1000 whenever the saved profile was missing — which is
+    # after every deploy, because /tmp is wiped. That is four times the
+    # cap the page scan enforces to avoid being reaped on a 512MB
+    # instance, on an unauthenticated GET any crawler can hit, holding one
+    # of eight threads for minutes.
+    #
+    # Scans have not run here since they moved to CI. The alert's job is
+    # to push what was published, so it reads the published board and
+    # never scans.
+    if _state["status"] == "running":
+        return jsonify({"ok": False, "message": "busy"}), 409
     try:
-        with open(ALERT_PROFILE) as f:
-            params = json.load(f)
+        _load_published()
     except Exception:
         pass
-    _run_scan(params)
     res = _state["results"] or []
     pend = _state["pending"] or []
     lines = [f"📈 Dip Finder — {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}"]

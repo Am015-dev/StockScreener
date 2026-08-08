@@ -56,44 +56,104 @@ MIN_OVERLAP = 40
 SAME_TRADE = 0.70
 
 
-def returns_frame(series_by_ticker: dict, days: int = CORR_DAYS) -> pd.DataFrame:
+def returns_frame(series_by_ticker: dict, days: int = CORR_DAYS,
+                  dates: list | None = None) -> pd.DataFrame:
     """Daily percentage returns, one column per ticker, most recent `days`.
 
-    Accepts anything indexable — a pandas Series of closes, or the plain
-    list the published payload carries as `spark`.
+    `dates` is REQUIRED to compare more than one ticker, and that is the
+    whole point of this function. The first version dropped each ticker's
+    index and lined the columns up by position, which is only correct when
+    every stock traded on exactly the same days. It does not take much to
+    break: a London listing sits out three UK bank holidays the NYSE
+    traded, and one price path listed twice then correlates at 0.49
+    instead of 1.00 — the book reports 1.76 independent bets where it
+    holds one. Worse, two series of different lengths get lined up end to
+    start, and two IDENTICAL series score -0.006, so the check tells a
+    reader that a stock they already own is "a genuinely new bet".
+
+    Aligning on dates is therefore not a refinement, it is the difference
+    between the number meaning something and meaning nothing. Without
+    them a single column is still returned (its own history is unambiguous)
+    but a multi-ticker frame is refused, and every caller here treats an
+    empty frame as "could not be measured" rather than as "independent".
     """
     cols = {}
     for t, closes in (series_by_ticker or {}).items():
         if closes is None:
             continue
-        s = pd.Series(list(closes), dtype="float64").dropna()
+        vals = list(closes)
+        if dates is not None:
+            if len(vals) != len(dates):
+                continue                  # not on the shared calendar: unusable
+            s = pd.Series(vals, index=pd.Index(dates), dtype="float64")
+        else:
+            s = pd.Series(vals, dtype="float64")
+        s = s[s > 0].dropna()
         if len(s) < MIN_OVERLAP + 1:
             continue
         s = s.iloc[-(days + 1):]
         r = s.pct_change().dropna()
         if len(r) >= MIN_OVERLAP and float(r.std()) > 0:
-            cols[t] = r.reset_index(drop=True)
+            cols[t] = r if dates is not None else r.reset_index(drop=True)
     if not cols:
         return pd.DataFrame()
+    if dates is None and len(cols) > 1:
+        return pd.DataFrame()             # see above: position is not a date
     return pd.DataFrame(cols)
 
 
-def correlation(series_by_ticker: dict, days: int = CORR_DAYS) -> pd.DataFrame:
+def _common(rf: pd.DataFrame) -> pd.DataFrame:
+    """Rows every column shares, dropping the sparsest column if need be.
+
+    Correlating on a union of dates and letting pandas fill the gaps
+    pairwise gives a matrix whose entries were each measured over a
+    different sample, which is not a matrix anyone should take eigenvalues
+    of. This trims to a genuinely common calendar instead, and gives up a
+    ticker rather than the whole answer when one has too little in common
+    with the rest.
+    """
+    if rf.empty:
+        return rf
+    work = rf.copy()
+    while work.shape[1] >= 2:
+        common = work.dropna(axis=0, how="any")
+        if len(common) >= MIN_OVERLAP:
+            return common
+        worst = work.isna().sum().idxmax()
+        if int(work.isna().sum().max()) == 0:
+            return pd.DataFrame()         # short everywhere, not gappy anywhere
+        work = work.drop(columns=[worst])
+    return pd.DataFrame()
+
+
+def correlation(series_by_ticker: dict, days: int = CORR_DAYS,
+                dates: list | None = None) -> pd.DataFrame:
     """Pairwise correlation of daily returns. Empty frame if unknowable."""
-    rf = returns_frame(series_by_ticker, days)
-    if rf.shape[1] < 2:
+    rf = _common(returns_frame(series_by_ticker, days, dates))
+    if rf.shape[1] < 2 or len(rf) < MIN_OVERLAP:
         return pd.DataFrame()
     return rf.corr()
 
 
 def effective_bets(corr: pd.DataFrame) -> float | None:
-    """Meucci's effective number of bets.
+    """Meucci's effective number of bets, over the names held.
 
     The correlation matrix's eigenvalues describe how many genuinely
-    distinct directions the book is exposed to. Their normalised spectrum
-    is a probability distribution; its perplexity — exp(entropy) — is the
-    count of independent bets. N uncorrelated assets give N. N copies of
-    one asset give 1.
+    distinct directions this SET OF STOCKS is exposed to. Their normalised
+    spectrum is a probability distribution; its perplexity — exp(entropy)
+    — is the count of independent bets. N uncorrelated assets give N. N
+    copies of one asset give 1.
+
+    Deliberately NOT weighted by position size. Meucci's measure can be
+    computed against a weight vector, but the principal-components form
+    behaves counterintuitively for exactly the book a reader would worry
+    about: four names in two correlated pairs score 2.31 when 99% of the
+    money sits in one of them and 1.04 when the four are held evenly. A
+    number that rises as a book concentrates is worse than no number.
+
+    So this answers "how many distinct directions are the stocks I hold
+    exposed to", every holding counted once, and the caller says so rather
+    than describing it as a fact about the reader's money.
 
     Returns None when there is not enough data to say, because "we could
     not measure the concentration" and "there is no concentration" must

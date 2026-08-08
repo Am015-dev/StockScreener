@@ -112,11 +112,21 @@ def distance_to_default(asset_value: float, asset_vol: float,
 
 def default_point(current_liabilities: float | None,
                   total_liabilities: float | None) -> float | None:
-    """ST + 0.5*LT, refusing to guess when a component is missing."""
+    """ST + 0.5*LT, refusing to guess when a component is missing.
+
+    Total below current is not a company with negative long-term debt, it
+    is two figures that do not belong to the same balance sheet — the
+    signature of a filer whose `Liabilities` tag stopped years before its
+    `LiabilitiesCurrent` tag did. Clamping it to zero turned that
+    contradiction into a confident, wrong default point, which is the
+    fail-open this module exists to prevent. It is refused instead.
+    """
     if current_liabilities is None or total_liabilities is None:
         return None
-    long_term = max(0.0, total_liabilities - current_liabilities)
-    dp = current_liabilities + LONG_TERM_WEIGHT * long_term
+    if total_liabilities < current_liabilities:
+        return None
+    dp = current_liabilities + LONG_TERM_WEIGHT * (
+        total_liabilities - current_liabilities)
     return dp if dp > 0 else None
 
 
@@ -230,48 +240,93 @@ def percentile(dd: float, peers: list[float]) -> int | None:
 _FORMS = ("10-K", "10-Q", "20-F", "40-F")
 
 
-def _latest(facts: dict, tag: str) -> dict | None:
-    """Most recent reported value for a us-gaap tag, from a companyfacts dict."""
+# The market capitalisation is in dollars, so every figure it is measured
+# against has to be. XBRL keys each tag's values by unit, and merging
+# those units picks whichever currency happens to carry the later date:
+# Enbridge files in CAD, and Toyota's yen rows outrank its dollar ones, so
+# a 31.4 trillion JPY liability was being weighed against a USD market
+# value. Only USD is read, and a filer who reports in anything else is
+# refused rather than silently converted at an implied rate of 1.
+UNIT = "USD"
+
+# A balance sheet this old does not describe the company whose shares are
+# being priced today. Same reasoning as the share count, and the same
+# consequence for getting it wrong: T-Mobile last tagged `Liabilities` in
+# 2013, and reading that against a 2026 market capitalisation put its
+# debts at 9% of the business instead of 27%.
+FILING_MAX_AGE_DAYS = 430
+
+
+def _latest(facts: dict, tag: str, today: str | None = None) -> dict | None:
+    """Most recent USD value for a us-gaap tag, from a companyfacts dict."""
     node = (facts.get("facts", {}).get("us-gaap", {}) or {}).get(tag)
     if not node:
         return None
+    today = today or date.today().isoformat()
     best = None
-    for rows in (node.get("units") or {}).values():
+    for unit, rows in ((node.get("units") or {}).items()):
+        if unit != UNIT:
+            continue                      # see UNIT above
         for r in rows:
             if r.get("form") in _FORMS and r.get("val") is not None and r.get("end"):
+                age = _days_old(r["end"], today)
+                if age is not None and age > FILING_MAX_AGE_DAYS:
+                    continue
                 if best is None or r["end"] > best["end"]:
                     best = r
     return best
 
 
-def balance_sheet(facts: dict) -> dict:
-    """Current and total liabilities, however this filer chose to tag them."""
+def balance_sheet(facts: dict, today: str | None = None) -> dict:
+    """Current and total liabilities, as of ONE date, in ONE currency.
+
+    Both halves must come from the same period end. They did not before,
+    and the consequences were not subtle: T-Mobile's current liabilities
+    from 2026-06-30 were combined with a total from 2013-03-31, and the
+    report described a company carrying 9% market leverage when the
+    contemporaneous figure is 27%. Hewlett Packard Enterprise moved a
+    whole band, from "watch it" to "comfortable", the same way.
+
+    So a mismatched pair is not patched up — the direct route is dropped
+    and the accounting identity is tried instead, and if that cannot be
+    formed at a single date either, the report refuses.
+    """
     out = {"current_liabilities": None, "total_liabilities": None,
            "as_of": None, "source": None}
-    cur = _latest(facts, "LiabilitiesCurrent")
-    if cur:
-        out["current_liabilities"] = float(cur["val"])
-        out["as_of"] = cur["end"]
+    cur = _latest(facts, "LiabilitiesCurrent", today)
+    tot = _latest(facts, "Liabilities", today)
 
-    tot = _latest(facts, "Liabilities")
-    if tot:
-        out["total_liabilities"] = float(tot["val"])
-        out["as_of"] = out["as_of"] or tot["end"]
-        out["source"] = "Liabilities"
+    if cur and tot and cur["end"] == tot["end"]:
+        out.update(current_liabilities=float(cur["val"]),
+                   total_liabilities=float(tot["val"]),
+                   as_of=cur["end"], source="Liabilities")
         return out
 
     # assets = liabilities + equity, so liabilities = assets - equity
-    lse = _latest(facts, "LiabilitiesAndStockholdersEquity")
-    eq = (_latest(facts, "StockholdersEquity")
+    lse = _latest(facts, "LiabilitiesAndStockholdersEquity", today)
+    eq = (_latest(facts, "StockholdersEquity", today)
           or _latest(facts,
                      "StockholdersEquityIncludingPortionAttributableTo"
-                     "NoncontrollingInterest"))
+                     "NoncontrollingInterest", today))
     if lse and eq and lse["end"] == eq["end"]:
         total = float(lse["val"]) - float(eq["val"])
-        if total > 0:
-            out["total_liabilities"] = total
-            out["as_of"] = lse["end"]
-            out["source"] = "assets minus equity"
+        if total > 0 and cur and cur["end"] == lse["end"]:
+            out.update(current_liabilities=float(cur["val"]),
+                       total_liabilities=total, as_of=lse["end"],
+                       source="assets minus equity")
+            return out
+
+    # Nothing lines up. Whatever was found is reported for disclosure, but
+    # a total from a different period end is NOT returned as the total —
+    # leaving it in the field the model reads is exactly how the two got
+    # combined in the first place.
+    if cur:
+        out["current_liabilities"] = float(cur["val"])
+        out["as_of"] = cur["end"]
+    if tot:
+        out["total_as_of"] = tot["end"]
+        out["total_unusable"] = float(tot["val"])
+        out["mismatched"] = bool(cur and cur["end"] != tot["end"])
     return out
 
 
@@ -358,7 +413,12 @@ def fetch_balance_sheet(cik: int, get_json) -> dict:
     out["tags_fetched"] = fetched
     out["tags_failed"] = failed
     out["source_endpoint"] = "companyconcept"
-    if out["total_liabilities"] is not None and out["current_liabilities"] is not None:
+    # "both halves present" is not the bar — they have to describe the
+    # same balance sheet. A mismatched pair from the cheap endpoint is a
+    # reason to pay for the full one, which may carry a matching date.
+    if (out["total_liabilities"] is not None
+            and out["current_liabilities"] is not None
+            and out.get("source")):
         return out
 
     try:

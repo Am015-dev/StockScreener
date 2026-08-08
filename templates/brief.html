@@ -106,14 +106,16 @@
       {% if b.action %}
       <p class="lead" style="margin-bottom:.7rem">Closest to the setup today:
         <span class="tk">{{ b.action.ticker }}</span> at
-        ${{ '%.2f'|format(b.action.price) }}.</p>
-      <p>Stop <b>${{ '%.2f'|format(b.action.stop) }}</b> — risks
-        <span class="loss">€{{ '%.2f'|format(b.action.risk_eur) }}</span> on
+        ${{ b.action.price|num }}.</p>
+      <p>Stop <b>${{ b.action.stop|num }}</b> — risks
+        <span class="loss">€{{ b.action.risk_eur|num }}</span> on
         {{ b.action.shares }} shares.
-        Target <b>${{ '%.2f'|format(b.action.target) }}</b> — pays
-        <span class="gain">€{{ '%.2f'|format(b.action.reward_eur) }}</span>.</p>
+        Target <b>${{ b.action.target|num }}</b> — pays
+        <span class="gain">€{{ b.action.reward_eur|num }}</span>.</p>
       <p>{% if b.action.earnings_clear %}<span class="ok">No earnings due for 45 days.</span>
-        {% else %}<span class="warn">Earnings in {{ b.action.earnings }}.</span>{% endif %}
+        {% elif b.action.earnings %}<span class="warn">Earnings in {{ b.action.earnings }}.</span>
+        {% else %}<span class="warn">Earnings date not verified — check it yourself
+          before buying.</span>{% endif %}
         {{ b.action.why|capitalize }}.</p>
       {% else %}
       <p class="lead" style="margin-bottom:.7rem">Nothing to do today.</p>
@@ -150,11 +152,11 @@
           {% for w in b.watchlist %}
             <tr data-ticker="{{ w.ticker }}">
               <td><b>{{ w.ticker }}</b><span class="nm2">{{ w.name }}</span></td>
-              <td class="r">{{ '%.2f'|format(w.price) }}</td>
+              <td class="r">{{ w.price|num }}</td>
               <td class="r">{% if w.support_dist is not none %}+{{ w.support_dist }}%{% else %}—{% endif %}</td>
-              <td class="r">{{ '%.2f'|format(w.stop) }}</td>
-              <td class="r">{{ '%.2f'|format(w.target) }}</td>
-              <td class="r">{{ '%.0f'|format(w.rsi) }}</td>
+              <td class="r">{{ w.stop|num }}</td>
+              <td class="r">{{ w.target|num }}</td>
+              <td class="r">{{ w.rsi|num(0) }}</td>
               <td>{{ w.earnings or '—' }}</td>
             </tr>
           {% endfor %}
@@ -174,7 +176,7 @@
         <p class="tiny" style="margin-top:.9rem"><b>Track record:</b>
           {% if b.record and b.record.n %}{{ b.record.win_rate }}% of {{ b.record.n }}
           resolved picks hit target first, averaging
-          {{ '%+.2f'|format(b.record.avg_r) }}R.{% elif b.record and b.record.logged %}
+          {{ b.record.avg_r|num(2, sign=True) }}R.{% elif b.record and b.record.logged %}
           {{ b.record.logged }} logged, none resolved yet.{% else %}nothing logged yet.{% endif %}
           A permutation test found the pattern performed <em>worse</em> than a coin flip
           managed the same way — it is a filter, not a signal.
@@ -229,15 +231,27 @@ function markOverlaps(h) {
         '<span class="ownflag nm2" style="color:var(--amber)">you already hold this</span>');
   });
 }
+function skipped() {
+  // storage access throws outright in private browsing and in embeds with
+  // third-party storage blocked. Unguarded, that exception escaped before
+  // anything was revealed and left a completely white page — both the gate
+  // and the main content ship with display:none.
+  try { return !!sessionStorage.getItem("dipfinder_skipped"); }
+  catch (e) { return false; }
+}
 function paintHoldings() {
   const h = loadHoldings();
   const gate = document.getElementById("ownGate");
   const main = document.getElementById("main");
   const bar = document.getElementById("ownBar");
-  const answered = (h && h.length) || sessionStorage.getItem("dipfinder_skipped");
+  const answered = (h && h.length) || skipped();
   // the question and its answers are never on screen together
   gate.style.display = answered ? "none" : "block";
   main.style.display = answered ? "block" : "none";
+  // "skip" used to be a one-way door: the bar carrying the only route back
+  // to the gate was hidden whenever there were no holdings, so the overlap
+  // check — the thing this page says a free screener cannot do — became
+  // unreachable for the rest of the session.
   if (h && h.length) {
     bar.style.display = "block";
     document.getElementById("ownSummary").textContent =
@@ -247,6 +261,10 @@ function paintHoldings() {
     const f = document.getElementById("ckHold");
     if (f) f.value = h.map(x => x.ticker).join(" ");
     markOverlaps(h);
+  } else if (answered) {
+    bar.style.display = "block";
+    document.getElementById("ownSummary").textContent =
+      "No holdings saved — the overlap check is off · ";
   } else {
     bar.style.display = "none";
   }
@@ -268,13 +286,14 @@ document.getElementById("ownSave").addEventListener("click", () => {
   saveHoldings(list, `Saved ${list.length} position(s).`);
 });
 document.getElementById("ownSkip").addEventListener("click", () => {
-  sessionStorage.setItem("dipfinder_skipped", "1"); paintHoldings();
+  try { sessionStorage.setItem("dipfinder_skipped", "1"); } catch (e) {}
+  paintHoldings();
 });
 document.getElementById("ownEdit").addEventListener("click", () => {
   const h = loadHoldings() || [];
   document.getElementById("ownText").value =
     h.map(x => [x.ticker, x.shares, x.cost].filter(v => v != null).join(", ")).join("\n");
-  sessionStorage.removeItem("dipfinder_skipped");
+  try { sessionStorage.removeItem("dipfinder_skipped"); } catch (e) {}
   document.getElementById("ownGate").style.display = "block";
   document.getElementById("ownBar").style.display = "none";
   document.getElementById("ownText").focus();
@@ -282,10 +301,19 @@ document.getElementById("ownEdit").addEventListener("click", () => {
 document.getElementById("ownCsv").addEventListener("change", async ev => {
   const file = ev.target.files[0];
   const n = document.getElementById("ownNote");
+  // Clearing the input is what makes re-picking the SAME file fire another
+  // change event. Without it, a reader whose upload failed could select
+  // the identical file again and nothing at all would happen.
+  ev.target.value = "";
   if (!file) return;
   n.style.color = "var(--ink-2)"; n.textContent = "Reading " + file.name + "…";
+  // and a hung upload must not leave "Reading …" on screen forever, the
+  // way it would with no timeout on the fetch
+  const uctl = new AbortController();
+  const ubail = setTimeout(() => uctl.abort(), 25000);
   try {
-    const r = await fetch("/parse_portfolio", {method: "POST", body: await file.text()});
+    const r = await fetch("/parse_portfolio", {method: "POST",
+      signal: uctl.signal, body: await file.text()});
     const d = await r.json();
     if (!d.ok) { n.textContent = d.error || "could not read that file";
                  n.style.color = "var(--amber)"; return; }
@@ -296,7 +324,12 @@ document.getElementById("ownCsv").addEventListener("change", async ev => {
     document.getElementById("ownText").value =
       list.map(x => [x.ticker, x.shares, x.cost].filter(v => v != null).join(", ")).join("\n");
     saveHoldings(list, `Read ${list.length} position(s) from ${file.name}.`);
-  } catch (e) { n.textContent = "Could not read that file."; n.style.color = "var(--amber)"; }
+  } catch (e) {
+    n.textContent = e && e.name === "AbortError"
+      ? "That file took too long to read. Try pasting the positions instead."
+      : "Could not read that file.";
+    n.style.color = "var(--amber)";
+  } finally { clearTimeout(ubail); }
 });
 
 // ---- the check ----
@@ -312,7 +345,15 @@ const CREDIT_LEVEL = {"very far from trouble": "ok", "comfortable": "ok",
                       "watch it": "note", "close to the edge": "warn",
                       "in distress on this measure": "block"};
 
-function paintCredit(d) {
+// Every check gets a number, and a late response only paints if it is
+// still the current one. The credit lookup can take sixteen seconds while
+// the check itself returns in one, so a reader who checks AAA, sees the
+// findings, then checks BBB, would otherwise get AAA's credit standing
+// painted under BBB's headline — with nothing on screen to say so.
+let ckRun = 0;
+
+function paintCredit(d, run) {
+  if (run !== ckRun) return;
   const el = document.getElementById("ckCredit");
   if (!el) return;
   if (!d || !d.ok) {
@@ -359,11 +400,12 @@ function paintCredit(d) {
     `defaults, which is the part that is not free.</span></p>`;
 }
 
-document.getElementById("ckGo").addEventListener("click", async () => {
+async function runCheck() {
   const t = document.getElementById("ckTicker").value.trim();
   const out = document.getElementById("ckOut");
   const btn = document.getElementById("ckGo");
   if (!t) { out.innerHTML = '<p class="tiny">Type a ticker first.</p>'; return; }
+  const run = ++ckRun;
   // A spinner that says only "Checking…" is indistinguishable from a hang,
   // and this endpoint could take three minutes on a cold cache. Count up,
   // disable the button so it cannot be pressed again, and give up loudly
@@ -377,9 +419,10 @@ document.getElementById("ckGo").addEventListener("click", async () => {
     if (!el) return;
     const s = Math.round((Date.now() - t0) / 1000);
     el.textContent = s + "s";
-    if (s === 4) document.getElementById("ckWait").insertAdjacentHTML("beforeend",
-      '<br><span style="color:var(--ink-3)">First check after a restart builds the ' +
-      'earnings calendar — this one is slower than the rest.</span>');
+    if (s >= 4 && !document.getElementById("ckSlow"))
+      document.getElementById("ckWait").insertAdjacentHTML("beforeend",
+        '<br><span id="ckSlow" style="color:var(--ink-3)">First check after a ' +
+        'restart builds the earnings calendar — this one is slower than the rest.</span>');
   }, 250);
   const ctl = new AbortController();
   const bail = setTimeout(() => ctl.abort(), 25000);
@@ -418,7 +461,7 @@ document.getElementById("ckGo").addEventListener("click", async () => {
     out.innerHTML = (html || '<p class="tiny">Nothing to report.</p>') +
       '<div id="ckCredit"><p class="tiny" style="color:var(--ink-3)">' +
       'Reading its filed balance sheet…</p></div>';
-    paintCredit(await credit);
+    paintCredit(await credit, run);
   } catch (e) {
     done();
     out.innerHTML = e && e.name === "AbortError"
@@ -426,7 +469,21 @@ document.getElementById("ckGo").addEventListener("click", async () => {
         'data after a restart — try again in a minute.</p>'
       : '<p class="tiny">Could not reach the checker.</p>';
   }
+}
+
+document.getElementById("ckGo").addEventListener("click", runCheck);
+// Enter in the ticker field did nothing: the input is not inside a form,
+// so there was no implicit submit, and on a phone the keyboard's Go key
+// was inert too.
+document.getElementById("ckTicker").addEventListener("keydown", ev => {
+  if (ev.key === "Enter") { ev.preventDefault(); runCheck(); }
 });
 
-paintHoldings();
+try {
+  paintHoldings();
+} catch (e) {
+  // last resort: show the page rather than nothing at all
+  document.getElementById("main").style.display = "block";
+  document.getElementById("ownGate").style.display = "block";
+}
 </script>

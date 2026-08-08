@@ -196,7 +196,16 @@ def staleness(results_ts: float, now_utc: _dt.datetime | None = None) -> dict:
     m = state(now)
     scan_dt = _dt.datetime.fromtimestamp(results_ts, _dt.timezone.utc)
     scan_et = scan_dt - _dt.timedelta(hours=_eastern_offset(scan_dt.date()))
+    # A scan run BEFORE the opening bell can only hold the previous
+    # close, but previous_session() maps a trading day to itself, so a
+    # premarket Monday scan was dated Monday and still claimed to be zero
+    # sessions old after Monday had traded and closed. A scan run during
+    # the session is a different matter: those are that session's live
+    # prices, so only the pre-open case is rolled back.
     scan_session = previous_session(scan_et.date())
+    if (scan_session == scan_et.date()
+            and (scan_et.hour * 60 + scan_et.minute) < OPEN_H * 60 + OPEN_M):
+        scan_session = previous_session(scan_et.date() - _dt.timedelta(days=1))
 
     if m["state"] == "unknown":
         return {"sessions": None, "stale": True, "phrase": "age unknown",
@@ -212,7 +221,13 @@ def staleness(results_ts: float, now_utc: _dt.datetime | None = None) -> dict:
 
     sessions = sessions_between(scan_session, ref)
     if sessions <= 0:
-        phrase = ("from the current session" if m["is_open"]
+        # "the current session" has to mean the scan's prices came from the
+        # session trading right now — not merely that some session is open
+        # while the reader looks. Friday's closes read on Monday morning
+        # were being described as live.
+        live = m["is_open"] and scan_session == previous_session(now_et.date()) \
+            and is_session(now_et.date()) and scan_session == now_et.date()
+        phrase = ("from the current session" if live
                   else f"from the last close ({scan_session.strftime('%A')})")
     elif sessions == 1:
         phrase = "one session old"

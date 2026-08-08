@@ -47,11 +47,11 @@ def _money(x, cur="$"):
 def _why_sentence(row: dict) -> str:
     """The setup in one sentence a non-trader can check."""
     bits = []
-    price, support = row.get("price"), row.get("support")
+    price, support = _f(row.get("price")), _f(row.get("support"))
     if price and support:
         bits.append(f"pulled back to {((price / support) - 1) * 100:.1f}% above a "
                     f"price level buyers defended before")
-    vr = row.get("vol_ratio")
+    vr = _f(row.get("vol_ratio"))
     if vr is not None:
         bits.append("on quiet selling volume" if vr < 1.0
                     else f"on heavier volume than usual ({vr:.1f}×)")
@@ -59,6 +59,27 @@ def _why_sentence(row: dict) -> str:
     if an:
         bits.append(f"analysts rate it {an}")
     return ", ".join(bits) if bits else "setup details unavailable"
+
+
+def _f(x):
+    """A number, or None. Rows reach here from a CSV, a published payload
+    and a browser-mirrored snapshot, so a field can be a string, a NaN or
+    absent — and build() promises never to raise."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return None if v != v else v          # NaN
+
+
+def _pct_above(price, support):
+    """How far above support a price sits, or None if either is unusable."""
+    try:
+        if not price or not support:
+            return None
+        return round((float(price) / float(support) - 1) * 100, 1)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
 
 
 def build(state: dict, market: dict | None = None,
@@ -81,19 +102,19 @@ def build(state: dict, market: dict | None = None,
     pick = results[0] if results else None
     action = None
     if pick:
-        shares = pick.get("shares") or 0
-        price = pick.get("price") or 0
-        stop = pick.get("stop")
-        target = pick.get("resistance")
-        risk = pick.get("risk_EUR")
-        rr = pick.get("RR")
+        shares = _f(pick.get("shares")) or 0
+        price = _f(pick.get("price")) or 0
+        stop = _f(pick.get("stop"))
+        target = _f(pick.get("resistance"))
+        risk = _f(pick.get("risk_EUR"))
+        rr = _f(pick.get("RR"))
         reward = round(risk * rr, 2) if (risk is not None and rr) else None
         # R is units of planned risk. It is the natural unit for a trader
         # and meaningless to everyone else, and the card never defined it —
         # "+0.229R" was the single most novel number on the page and also
         # the least readable. Multiplying by the euro risk turns it into
         # the only unit that needs no explanation.
-        er, mpc = pick.get("edge_r"), pick.get("mpc_r")
+        er, mpc = _f(pick.get("edge_r")), _f(pick.get("mpc_r"))
         edge_eur = round(er * risk, 2) if (er is not None and risk) else None
         adds_eur = round(mpc * risk, 2) if (mpc is not None and risk) else None
         action = {
@@ -113,9 +134,9 @@ def build(state: dict, market: dict | None = None,
             "edge_eur": edge_eur,
             "edge_n": pick.get("edge_n"),
             "adds_eur": adds_eur,
-            "friction_pct": pick.get("friction_pct"),
-            "friction_eur": (round(reward * pick["friction_pct"] / 100, 2)
-                             if reward and pick.get("friction_pct") else None),
+            "friction_pct": _f(pick.get("friction_pct")),
+            "friction_eur": (round(reward * _f(pick.get("friction_pct")) / 100, 2)
+                             if reward and _f(pick.get("friction_pct")) else None),
             "sector": pick.get("sector"),
         }
         # The card states an entry, a stop and a euro risk as plain facts,
@@ -124,7 +145,8 @@ def build(state: dict, market: dict | None = None,
         # a half-described trade is worse than no card: it reads as
         # complete. Withhold it the same way an unverifiable pick is
         # withheld, rather than rendering "None" or failing the whole page.
-        if stop is None or risk is None or not price:
+        if (stop is None or risk is None or not price
+                or target is None or reward is None):
             action = None
 
     # Blocked, grouped by the rule that stopped them — never a bare count.
@@ -137,9 +159,9 @@ def build(state: dict, market: dict | None = None,
 
     # Everything else that qualified but is not today's single action.
     also = [{"ticker": r.get("ticker"), "name": r.get("name"),
-             "adds_eur": (round(r["mpc_r"] * r["risk_EUR"], 2)
-                          if r.get("mpc_r") is not None and r.get("risk_EUR")
-                          else None)}
+             "adds_eur": (round(_f(r.get("mpc_r")) * _f(r.get("risk_EUR")), 2)
+                          if _f(r.get("mpc_r")) is not None
+                          and _f(r.get("risk_EUR")) else None)}
             for r in results[1:6]]
 
     # The single most useful thing the concentration work knows, said as
@@ -188,10 +210,12 @@ def build(state: dict, market: dict | None = None,
         "n_qualified": len(results),
         "watchlist": [
             {"ticker": r.get("ticker"), "name": r.get("name"),
-             "price": r.get("price"), "stop": r.get("stop"),
-             "target": r.get("resistance"), "rsi": r.get("RSI"),
-             "support_dist": (round((r["price"] / r["support"] - 1) * 100, 1)
-                              if r.get("support") else None),
+             "price": _f(r.get("price")), "stop": _f(r.get("stop")),
+             "target": _f(r.get("resistance")), "rsi": _f(r.get("RSI")),
+             # both halves, not just the divisor: a row carrying a support
+             # level and no price took the whole page down with a KeyError,
+             # and a restored browser snapshot is enough to produce one
+             "support_dist": _pct_above(r.get("price"), r.get("support")),
              "earnings": r.get("earnings_in"),
              "analyst": r.get("analyst")}
             for r in results[:8]],
