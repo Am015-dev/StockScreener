@@ -157,6 +157,89 @@ def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
     return out
 
 
+def credit_book(tickers, prices: dict, vols: dict, max_names: int = 40) -> dict:
+    """Distance to Default for the published board, computed HERE.
+
+    The web instance cannot do this. The SEC rate-limits by IP and it is
+    currently refusing the Render host outright — every call times out,
+    while the same request from another address answers in 0.3 seconds.
+    That is the same reason the scan itself moved to a runner: Yahoo
+    throttles per IP and a runner gets a fresh one. The rule was already
+    written down for prices; it applies to filings for exactly the same
+    reason, and the instance was quietly breaking it on every request.
+
+    So the reports are built once, here, and published. The site then
+    serves a credit standing with no outbound call at all — which also
+    means the peer ranking exists for the first reader instead of after
+    twenty-five of them.
+    """
+    import credit
+    out: dict = {}
+    try:
+        cik_of = _sec_ciks()
+    except Exception as e:
+        print(f"credit book: no CIK map ({type(e).__name__}) — skipped",
+              file=sys.stderr)
+        return out
+
+    series = (prices or {}).get("series") or {}
+    misses = 0
+    for t in list(tickers)[:max_names]:
+        cik = cik_of.get(t.upper())
+        closes = [c for c in (series.get(t) or []) if c]
+        if not cik or not closes:
+            continue
+        try:
+            bs = credit.fetch_balance_sheet(cik, _sec_get)
+            sh = credit.shares_outstanding(cik, _sec_get)
+            equity = sh["shares"] * float(closes[-1]) if sh.get("shares") else None
+            v = (vols or {}).get(t) or {}
+            rep = credit.report(t, equity, closes,
+                                bs["current_liabilities"], bs["total_liabilities"],
+                                as_of=bs.get("as_of"),
+                                vol=v.get("vol"), vol_obs=v.get("obs"))
+            rep["source"] = bs.get("source")
+            rep["shares_as_of"] = sh.get("as_of")
+            rep["shares_tag"] = sh.get("tag")
+            if rep.get("dd") is not None:
+                out[t] = rep
+                misses = 0
+            else:
+                misses += 1
+        except Exception:
+            misses += 1
+        if misses >= 5:
+            print(f"credit book: the SEC refused {misses} in a row after "
+                  f"{len(out)} — stopping", file=sys.stderr)
+            break
+        time.sleep(0.15)          # SEC asks for 10/second
+
+    # the ranking is the one figure a paid model has no edge on, and it
+    # only means something across the whole set — so it is computed once,
+    # here, over every name that resolved
+    dds = [r["dd"] for r in out.values()]
+    for t, r in out.items():
+        peers = [d for d in dds if d is not r["dd"]]
+        r["peers_n"] = len(peers)
+        r["percentile"] = credit.percentile(r["dd"], peers)
+    return out
+
+
+def _sec_get(url: str, timeout: float = 20):
+    import requests
+    r = requests.get(url, headers={"User-Agent": screener.SEC_UA}, timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError(f"SEC {r.status_code}")
+    return r.json()
+
+
+def _sec_ciks() -> dict:
+    d = _sec_get(screener.SEC_TICKERS_URL, timeout=25)
+    fields = [f.lower() for f in d.get("fields", [])]
+    ti, ci = fields.index("ticker"), fields.index("cik")
+    return {row[ti].upper(): int(row[ci]) for row in d.get("data", [])}
+
+
 def price_book(max_tickers: int = 2000, days: int = 60) -> dict:
     """Last `days` closes per ticker, from the frame the scan already
     downloaded.
@@ -387,11 +470,36 @@ def main() -> int:
             print(f"volatility book skipped: {type(e).__name__}: {e}",
                   file=sys.stderr)
 
+    # Credit standings for the board, built here because the SEC refuses
+    # the web instance's address outright.
+    creds = {}
+    if index and book:
+        try:
+            board = []
+            for pre in index:
+                try:
+                    payload = json.loads((out / f"{pre['preset']}.json").read_text())
+                except Exception:
+                    continue
+                for r in (payload.get("results") or []):
+                    t = (r.get("ticker") or "").upper()
+                    if t and t not in board:
+                        board.append(t)
+            creds = credit_book(board, book, vols)
+            if creds:
+                (out / "credit.json").write_text(json.dumps(creds))
+                kb = (out / "credit.json").stat().st_size / 1024
+                print(f"published credit book: {len(creds)} of {len(board)} "
+                      f"board names measured ({kb:.0f} KB)")
+        except Exception as e:
+            print(f"credit book skipped: {type(e).__name__}: {e}", file=sys.stderr)
+
     (out / "index.json").write_text(json.dumps({
         "generated_at": time.time(), "presets": index, "failures": failures,
         "price_book": ({"n": len(book["series"]), "days": 60}
                        if book else None),
         "vol_book": {"n": len(vols)} if vols else None,
+        "credit_book": {"n": len(creds)} if creds else None,
     }, default=str))
 
     if not index:

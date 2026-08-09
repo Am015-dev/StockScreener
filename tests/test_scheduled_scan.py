@@ -301,3 +301,71 @@ assert _per < 120, f"{_per:.0f} bytes per ticker would be 180KB at 1,500 names"
 print(f"{_per:.0f} bytes per ticker — about {_per * 1500 / 1024:.0f}KB for a full scan")
 
 print("\nVOLATILITY BOOK PINNED")
+
+
+# ---- the credit book: built here, because the SEC refuses the web host ----
+# Measured: every SEC call from the Render instance times out, while the
+# same request from another address answers in 0.3s. The scan already runs
+# on a runner with a fresh IP for exactly this reason with Yahoo, so the
+# filings are read here too and the standing is published.
+_cb_calls = []
+
+
+def _fake_sec_get(url, timeout=20):
+    _cb_calls.append(url)
+    if "company_tickers" in url:
+        return {"fields": ["cik", "name", "ticker", "exchange"],
+                "data": [[1, "Alpha", "AAA", "NYSE"], [2, "Beta", "BBB", "NYSE"]]}
+    cik = int(url.split("CIK")[1][:10])
+    lev = 0.3 if cik == 1 else 1.4          # Beta is far more levered
+    if url.endswith("Liabilities.json"):
+        return {"units": {"USD": [{"form": "10-Q", "end": "2026-06-30",
+                                   "val": lev * 1e11}]}}
+    if url.endswith("LiabilitiesCurrent.json"):
+        return {"units": {"USD": [{"form": "10-Q", "end": "2026-06-30",
+                                   "val": lev * 0.4e11}]}}
+    if url.endswith("EntityCommonStockSharesOutstanding.json"):
+        return {"units": {"shares": [{"form": "10-Q", "end": "2026-07-20",
+                                      "val": 1e9}]}}
+    return {"units": {}}
+
+
+scheduled_scan._sec_get = _fake_sec_get
+_cb_prices = {"dates": DATES if False else [f"d{i}" for i in range(60)],
+              "series": {"AAA": [100.0] * 60, "BBB": [100.0] * 60}}
+_cb_vols = {"AAA": {"vol": 0.25, "obs": 900}, "BBB": {"vol": 0.25, "obs": 900}}
+_cb = scheduled_scan.credit_book(["AAA", "BBB"], _cb_prices, _cb_vols)
+
+assert set(_cb) == {"AAA", "BBB"}, _cb
+assert _cb["AAA"]["dd"] > _cb["BBB"]["dd"], \
+    f"the less levered company must sit further from default: {_cb}"
+assert all(r["vol_source"] == "published" for r in _cb.values()), _cb
+assert _cb["AAA"]["percentile"] is not None or len(_cb) < 5
+print(f"credit book measured both names off filings: AAA {_cb['AAA']['dd']}, "
+      f"BBB {_cb['BBB']['dd']}")
+
+# a company with no published prices cannot be valued, and is skipped
+# rather than reported without a market value
+_no_price = scheduled_scan.credit_book(
+    ["AAA", "ZZZ"], {"dates": _cb_prices["dates"],
+                     "series": {"AAA": _cb_prices["series"]["AAA"]}}, _cb_vols)
+assert set(_no_price) == {"AAA"}, _no_price
+print("a name with no published prices is skipped, not valued without one")
+
+
+# and a SEC that refuses must stop the walk rather than grind through it
+def _refusing(url, timeout=20):
+    if "company_tickers" in url:
+        return _fake_sec_get(url)
+    raise TimeoutError("SEC refused")
+
+
+scheduled_scan._sec_get = _refusing
+_many = [f"T{i}" for i in range(30)]
+_prices_many = {"dates": _cb_prices["dates"],
+                "series": {t: [100.0] * 60 for t in _many}}
+_out = scheduled_scan.credit_book(_many, _prices_many, {})
+assert _out == {}, _out
+print("a refusing SEC stops the credit book instead of hammering it")
+
+print("\nCREDIT BOOK PINNED")
