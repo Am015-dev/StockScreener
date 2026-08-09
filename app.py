@@ -843,6 +843,29 @@ def _vol_book(fetch: bool = False) -> dict:
     return data
 
 
+_creds = {"ts": 0.0, "data": None}
+
+
+def _credit_book(fetch: bool = False) -> dict:
+    """Credit standings computed by the scan and published.
+
+    The SEC rate-limits by IP and refuses this host outright — every call
+    times out here while the same request from another address answers in
+    0.3 seconds. Computing these on a runner and reading the result is the
+    same move the scan itself made for Yahoo, for the same reason, and it
+    means a reader gets a credit standing with no outbound call and a peer
+    ranking that already exists.
+    """
+    if _creds["data"] is not None and time.time() - _creds["ts"] < BOOK_TTL:
+        return _creds["data"]
+    if not fetch:
+        return _creds["data"] or {}
+    data = _published_get("credit.json") or {}
+    _creds.update(data=data, ts=time.time())
+    print(f"[warm] credit book: {len(data)} companies", flush=True)
+    return data
+
+
 def _book_refresher():
     """Keep the books warm without ever making a request wait for them."""
     while True:
@@ -854,6 +877,10 @@ def _book_refresher():
             _vol_book(fetch=True)
         except Exception as e:
             print(f"[warm] volatility book refresh failed: {e}", flush=True)
+        try:
+            _credit_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] credit book refresh failed: {e}", flush=True)
         time.sleep(max(300.0, BOOK_TTL * 0.9))
 
 
@@ -1072,6 +1099,12 @@ def _with_peers(rep: dict) -> dict:
     if rep.get("dd") is None:
         return rep
     me = (rep.get("ticker") or "").upper()
+    published = _credit_book() or {}
+    if len(published) >= 5:
+        peers = [r["dd"] for t2, r in published.items()
+                 if t2.upper() != me and r.get("dd") is not None]
+        return dict(rep, peers_n=len(peers),
+                    percentile=credit.percentile(rep["dd"], peers))
     peers = []
     for other in (_state.get("results") or []):
         t2 = (other.get("ticker") or "").upper()
@@ -1094,6 +1127,14 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     strangers to have looked up five other companies first and would be
     absent almost every time it was asked for.
     """
+    # Published first: computed on a runner the SEC will actually talk to,
+    # so this path makes no outbound call and cannot time out.
+    pub = (_credit_book() or {}).get(ticker)
+    if pub and pub.get("dd") is not None:
+        # ranked here rather than trusting the ranking the scan stored, so
+        # a name added to the book later is ranked against the current set
+        return _with_peers(dict(pub, ok=True, cached=True, from_scan=True))
+
     key = f"credit:{ticker}"
     hit, cached = cache_store.fetch(key, CREDIT_TTL)
     if hit and isinstance(cached, dict):
@@ -1420,12 +1461,13 @@ def _warm_check_data():
     except Exception as e:
         print(f"[warm] price book failed: {e}", flush=True)
     try:
-        # before the credit warmer, so the board is measured on the real
-        # volatility rather than on 60 closes and then cached for a day
         _vol_book(fetch=True)
     except Exception as e:
         print(f"[warm] volatility book failed: {e}", flush=True)
-    _warm_credit()
+    try:
+        _credit_book(fetch=True)
+    except Exception as e:
+        print(f"[warm] credit book failed: {e}", flush=True)
 
 
 def _warm_credit():

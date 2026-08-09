@@ -263,3 +263,52 @@ print("an unreadable ticker list says so; a ticker genuinely absent from a "
       "readable one is reported as not a US filer")
 
 print("\nALL CREDIT-ENDPOINT TESTS PASSED")
+
+
+# ---- the published credit book answers without touching the SEC ----
+# The SEC rate-limits by IP and refuses the web host outright: every call
+# from it times out, while the same request from another address answers
+# in 0.3 seconds. So the reports are computed on the runner that already
+# does the scan and published, exactly as the price and volatility books
+# are. A reader must get a standing with no outbound call at all.
+A._sec_json = lambda url, timeout=15: (_ for _ in ()).throw(
+    AssertionError(f"the published book must be served without calling {url}"))
+A._cik_for = lambda t, timeout=8.0: (_ for _ in ()).throw(
+    AssertionError("the published book must not need a CIK lookup"))
+
+PUBLISHED_CREDIT = {
+    f"P{i:02d}": {"ticker": f"P{i:02d}", "dd": round(2.0 + i * 0.7, 2),
+                  "band": "watch it" if i < 3 else "comfortable",
+                  "market_leverage": 0.5 - i * 0.03, "as_of": PERIOD,
+                  "vol_source": "published", "vol_obs": 250, "vol_thin": False,
+                  "missing": []}
+    for i in range(8)}
+A._credit_book = lambda fetch=False: PUBLISHED_CREDIT
+
+got = client.post("/credit", json={"ticker": "P05"}).get_json()
+assert got["dd"] == PUBLISHED_CREDIT["P05"]["dd"], got
+assert got["from_scan"] is True and got["ok"] is True
+print("a published credit standing is served with zero SEC calls")
+
+# and it must be RANKED against the published set, not against whatever
+# happens to be cached — that ranking is the report's only free edge
+assert got["peers_n"] == len(PUBLISHED_CREDIT) - 1, got["peers_n"]
+assert got["percentile"] is not None
+top = client.post("/credit", json={"ticker": "P07"}).get_json()
+bottom = client.post("/credit", json={"ticker": "P00"}).get_json()
+assert top["percentile"] == 100 and bottom["percentile"] == 0, \
+    (top["percentile"], bottom["percentile"])
+print(f"ranked against all {len(PUBLISHED_CREDIT)} published names: "
+      f"strongest {top['percentile']}%, weakest {bottom['percentile']}%")
+
+# a company the scan did not measure still falls through to a live lookup,
+# rather than being reported as unmeasurable
+A._credit_book = lambda fetch=False: {}
+A._cik_for = lambda t, timeout=8.0: CIK.get((t or "").upper())
+A._sec_json = fake_sec
+A.cache_store.put("credit:AAA", None)
+live = A._credit_for("AAA")
+assert live["dd"] is not None and not live.get("from_scan")
+print("a name the scan did not cover is still measured on demand")
+
+print("\nPUBLISHED CREDIT BOOK PINNED")
