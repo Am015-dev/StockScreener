@@ -311,4 +311,49 @@ live = A._credit_for("AAA")
 assert live["dd"] is not None and not live.get("from_scan")
 print("a name the scan did not cover is still measured on demand")
 
+
+
+# ---- a refusing SEC must cost nothing after the first few tries ----
+# The page fires /credit on every check. With the SEC refusing this host,
+# each one still spent its whole budget rediscovering that, so a dead
+# upstream became sixteen seconds of held worker thread per click and the
+# whole site slowed down. After a run of failures the answer is known.
+A._credit_book = lambda fetch=False: {}
+A._cik_for = lambda t, timeout=8.0: 1
+A._sec_json = lambda url, timeout=15: (_ for _ in ()).throw(
+    TimeoutError("SEC did not answer"))
+A._sec_health.update(fails=0, until=0.0)
+A._price_book = lambda fetch=False: {t: PRICES for t in LEVERAGE}
+
+_slow = 0
+for i in range(A.SEC_BREAK_AFTER):
+    A.cache_store.put(f"credit:BRK{i}", None)
+    _t0 = time.time()
+    A._credit_for(f"BRK{i}", budget_s=4)
+    _slow += 1 if time.time() - _t0 > 0.05 else 0
+
+_t0 = time.time()
+_after = A._credit_for("BRK9", budget_s=4)
+_fast = time.time() - _t0
+assert _fast < 0.05, f"the breaker did not open: {_fast:.2f}s"
+assert "not answering this server" in _after["verdict"], _after["verdict"]
+assert _after["dd"] is None
+print(f"after {A.SEC_BREAK_AFTER} refusals the next call answers in "
+      f"{_fast*1000:.0f}ms instead of burning its budget")
+
+# the published board is unaffected — it needs no SEC at all
+A._credit_book = lambda fetch=False: PUBLISHED_CREDIT
+_still = A._credit_for("P05")
+assert _still["dd"] == PUBLISHED_CREDIT["P05"]["dd"], _still
+print("published standings keep answering while the SEC is shut out")
+
+# and a working SEC clears it
+A._sec_health.update(fails=0, until=0.0)
+A._credit_book = lambda fetch=False: {}
+A._sec_json = fake_sec
+A._cik_for = lambda t, timeout=8.0: CIK.get((t or "").upper())
+A.cache_store.put("credit:BBB", None)
+assert A._credit_for("BBB")["dd"] is not None
+print("a SEC that answers is used normally — the breaker only trips on failure")
+
 print("\nPUBLISHED CREDIT BOOK PINNED")

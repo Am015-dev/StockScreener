@@ -1022,6 +1022,32 @@ def _sec_json(url: str, timeout: float = 15):
     return out["value"]
 
 
+# When the SEC is refusing this address, every /credit call still spent
+# its whole budget discovering that again — and the page fires one on
+# every check, so a dead upstream turned into sixteen seconds of held
+# worker thread per click and the whole site went slow. After a run of
+# failures the answer is known; give it immediately and re-test rarely.
+_sec_health = {"fails": 0, "until": 0.0}
+SEC_BREAK_AFTER = 3
+SEC_BREAK_S = float(os.environ.get("SEC_BREAK_S", "600"))
+
+
+def _sec_is_open() -> bool:
+    return time.time() >= _sec_health["until"]
+
+
+def _sec_note(ok: bool) -> None:
+    if ok:
+        _sec_health.update(fails=0, until=0.0)
+        return
+    _sec_health["fails"] += 1
+    if _sec_health["fails"] >= SEC_BREAK_AFTER:
+        _sec_health["until"] = time.time() + SEC_BREAK_S
+        _sec_health["fails"] = 0
+        print(f"[sec] refusing this host — not asking again for "
+              f"{SEC_BREAK_S:.0f}s", flush=True)
+
+
 class Expired(Exception):
     """The report ran out of time before the filings answered."""
 
@@ -1141,6 +1167,8 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
         return _with_peers(cached)
 
     cik = _cik_for(ticker, timeout=min(8.0, budget_s / 2))
+    if cik is None and not (_cik_map["data"] or {}):
+        _sec_note(False)
     if cik is None:
         # "the list does not contain this ticker" and "the list could not
         # be read" are different facts, and only one of them is about the
@@ -1157,6 +1185,12 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
                            "only, so this company's filings are not "
                            "available here.",
                 "missing": ["SEC filings"]}
+    if not _sec_is_open():
+        return {"ok": True, "ticker": ticker, "dd": None,
+                "missing": ["SEC filings"],
+                "verdict": "The SEC is not answering this server at the moment, "
+                           "so companies outside today's published board cannot "
+                           "be measured. Nothing here is about the company."}
     sec = _sec_within(budget_s)
     try:
         bs = credit.fetch_balance_sheet(cik, sec)
@@ -1203,6 +1237,7 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     rep["endpoint"] = bs.get("source_endpoint")
     rep["shares_as_of"] = shares.get("as_of")
     rep["shares_tag"] = shares.get("tag")
+    _sec_note(rep.get("dd") is not None or not sec.expired)
     # a report that ran out of time is not a report about a company that
     # files nothing, and must not be worded as one — or cached as one
     if rep.get("dd") is None and sec.expired:
