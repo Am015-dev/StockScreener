@@ -218,8 +218,11 @@ A._price_book = REAL_PRICE_BOOK
 A._book.update(data={"dates": ["2026-01-01"], "series": {"OLD": [1.0]}},
                ts=time.time())
 assert A._price_book().get("series", {}).get("OLD"), "a fresh book is served"
+# fetch=True is a warmer asking for the CURRENT file. Gating it behind the
+# read TTL meant a book fetched a minute before the scan published could
+# not be replaced for the best part of an hour, with the new file already
+# sitting on the instance's own disk.
 
-A._book["ts"] = time.time() - (A.BOOK_TTL + 60)
 fetched = {"n": 0}
 _real_pub = A._published_get
 
@@ -232,11 +235,12 @@ def _pub(path):
 
 
 A._published_get = _pub
-assert A._price_book(fetch=True)["series"].get("NEW"), "an expired book refetches"
+assert A._price_book(fetch=True)["series"].get("NEW"), \
+    "a warmer's fetch must replace the book, however recently it was read"
 assert fetched["n"] == 1, fetched
 A._published_get = _real_pub
-print(f"the price book expires after {A.BOOK_TTL:.0f}s and is refetched, rather "
-      f"than being frozen for the life of the process")
+print("a warmer's refetch replaces the book immediately, rather than waiting "
+      "out a read-path TTL")
 
 
 # ---- a slow SEC response must be abandoned, not waited out ----

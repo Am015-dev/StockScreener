@@ -799,6 +799,7 @@ def snapshot_load():
 # cannot be done live.
 _book = {"ts": 0.0, "data": None}
 BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
+BOOKS_POLL_S = float(os.environ.get("BOOKS_POLL_S", "300"))
 
 
 def _price_book(fetch: bool = False) -> dict:
@@ -809,8 +810,6 @@ def _price_book(fetch: bool = False) -> dict:
     request that can take ten seconds. The warmer owns the fetch; every
     request reads the result or gets nothing and says so.
     """
-    if _book["data"] is not None and time.time() - _book["ts"] < BOOK_TTL:
-        return _book["data"]
     if not fetch:
         return _book["data"] or {}
     t0 = time.time()
@@ -833,8 +832,6 @@ def _vol_book(fetch: bool = False) -> dict:
     can lean on. This file is one float per ticker computed from years of
     returns, so it is small enough to carry at full length.
     """
-    if _vols["data"] is not None and time.time() - _vols["ts"] < BOOK_TTL:
-        return _vols["data"]
     if not fetch:
         return _vols["data"] or {}
     data = _published_get("vol.json") or {}
@@ -856,8 +853,6 @@ def _credit_book(fetch: bool = False) -> dict:
     means a reader gets a credit standing with no outbound call and a peer
     ranking that already exists.
     """
-    if _creds["data"] is not None and time.time() - _creds["ts"] < BOOK_TTL:
-        return _creds["data"]
     if not fetch:
         return _creds["data"] or {}
     data = _published_get("credit.json") or {}
@@ -881,7 +876,11 @@ def _book_refresher():
             _credit_book(fetch=True)
         except Exception as e:
             print(f"[warm] credit book refresh failed: {e}", flush=True)
-        time.sleep(max(300.0, BOOK_TTL * 0.9))
+        # The books are local file reads on this deployment, so refreshing
+        # them is nearly free — and the scan publishes hourly, so an
+        # instance that only looked once an hour could sit half an hour
+        # behind data already sitting on its own disk.
+        time.sleep(BOOKS_POLL_S)
 
 
 @app.route("/check", methods=["POST"])
