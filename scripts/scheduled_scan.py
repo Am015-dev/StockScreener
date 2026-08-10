@@ -157,34 +157,58 @@ def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
     return out
 
 
-def credit_book(tickers, prices: dict, vols: dict, max_names: int = 40) -> dict:
-    """Distance to Default for the published board, computed HERE.
+# A published standing is only as fresh as the price inside it — the
+# distance is a market value against a balance sheet — so an entry more
+# than a couple of days old is not worth serving.
+CREDIT_MAX_AGE_S = 2 * 86400
+
+
+def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
+                max_names: int = 120, budget_s: float = 420.0,
+                now: float | None = None) -> dict:
+    """Distance to Default, computed HERE and accumulated across runs.
 
     The web instance cannot do this. The SEC rate-limits by IP and it is
-    currently refusing the Render host outright — every call times out,
+    refusing the Render host outright — every call from it times out,
     while the same request from another address answers in 0.3 seconds.
     That is the same reason the scan itself moved to a runner: Yahoo
     throttles per IP and a runner gets a fresh one. The rule was already
-    written down for prices; it applies to filings for exactly the same
-    reason, and the instance was quietly breaking it on every request.
+    written down for prices; it applies to filings for the same reason,
+    and the site was quietly breaking it on every request.
 
-    So the reports are built once, here, and published. The site then
-    serves a credit standing with no outbound call at all — which also
-    means the peer ranking exists for the first reader instead of after
-    twenty-five of them.
+    Measuring the whole liquid universe in one run would take a quarter of
+    an hour of SEC calls, so each run refreshes what it can inside a
+    budget — today's board first, then whatever has gone longest without
+    being measured — and merges the rest forward from the last published
+    book. Coverage grows; no single run is expensive; and nothing older
+    than CREDIT_MAX_AGE_S is carried, because the price inside it has
+    moved on.
     """
     import credit
+    now = now or time.time()
     out: dict = {}
+    for t, r in (prev or {}).items():
+        if now - float(r.get("built") or 0) <= CREDIT_MAX_AGE_S:
+            out[t] = r
+
     try:
         cik_of = _sec_ciks()
     except Exception as e:
-        print(f"credit book: no CIK map ({type(e).__name__}) — skipped",
-              file=sys.stderr)
+        print(f"credit book: no CIK map ({type(e).__name__}) — keeping "
+              f"{len(out)} carried forward", file=sys.stderr)
         return out
 
     series = (prices or {}).get("series") or {}
-    misses = 0
-    for t in list(tickers)[:max_names]:
+    board = [t.upper() for t in tickers]
+    # the board first, then the least recently measured, then names never
+    # measured at all — so coverage widens while nothing goes stale
+    rest = [t for t in series if t.upper() not in board]
+    rest.sort(key=lambda t: float((out.get(t) or {}).get("built") or 0))
+    t0, misses, done = time.time(), 0, 0
+
+    for t in board + rest:
+        if done >= max_names or time.time() - t0 > budget_s:
+            break
         cik = cik_of.get(t.upper())
         closes = [c for c in (series.get(t) or []) if c]
         if not cik or not closes:
@@ -201,27 +225,32 @@ def credit_book(tickers, prices: dict, vols: dict, max_names: int = 40) -> dict:
             rep["source"] = bs.get("source")
             rep["shares_as_of"] = sh.get("as_of")
             rep["shares_tag"] = sh.get("tag")
+            rep["built"] = now
             if rep.get("dd") is not None:
                 out[t] = rep
                 misses = 0
             else:
                 misses += 1
+            done += 1
         except Exception:
             misses += 1
         if misses >= 5:
             print(f"credit book: the SEC refused {misses} in a row after "
-                  f"{len(out)} — stopping", file=sys.stderr)
+                  f"{done} — stopping", file=sys.stderr)
             break
-        time.sleep(0.15)          # SEC asks for 10/second
+        time.sleep(0.12)          # SEC asks for 10/second
 
-    # the ranking is the one figure a paid model has no edge on, and it
-    # only means something across the whole set — so it is computed once,
-    # here, over every name that resolved
-    dds = [r["dd"] for r in out.values()]
-    for t, r in out.items():
-        peers = [d for d in dds if d is not r["dd"]]
-        r["peers_n"] = len(peers)
-        r["percentile"] = credit.percentile(r["dd"], peers)
+    # the ranking only means something across the whole set, so it is
+    # recomputed over everything carried plus everything measured
+    dds = sorted(r["dd"] for r in out.values() if r.get("dd") is not None)
+    for r in out.values():
+        if r.get("dd") is None:
+            continue
+        below = sum(1 for d in dds if d < r["dd"])
+        r["peers_n"] = len(dds) - 1
+        r["percentile"] = (int(round(100.0 * below / (len(dds) - 1)))
+                           if len(dds) >= 6 else None)
+    print(f"credit book: measured {done} this run, {len(out)} carried in total")
     return out
 
 
@@ -485,7 +514,12 @@ def main() -> int:
                     t = (r.get("ticker") or "").upper()
                     if t and t not in board:
                         board.append(t)
-            creds = credit_book(board, book, vols)
+            prev = {}
+            try:
+                prev = json.loads(Path("/tmp/prev_credit.json").read_text())
+            except Exception:
+                pass
+            creds = credit_book(board, book, vols, prev=prev)
             if creds:
                 (out / "credit.json").write_text(json.dumps(creds))
                 kb = (out / "credit.json").stat().st_size / 1024

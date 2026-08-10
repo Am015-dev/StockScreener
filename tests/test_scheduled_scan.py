@@ -334,13 +334,13 @@ scheduled_scan._sec_get = _fake_sec_get
 _cb_prices = {"dates": DATES if False else [f"d{i}" for i in range(60)],
               "series": {"AAA": [100.0] * 60, "BBB": [100.0] * 60}}
 _cb_vols = {"AAA": {"vol": 0.25, "obs": 900}, "BBB": {"vol": 0.25, "obs": 900}}
-_cb = scheduled_scan.credit_book(["AAA", "BBB"], _cb_prices, _cb_vols)
+_cb = scheduled_scan.credit_book(["AAA", "BBB"], _cb_prices, _cb_vols, now=1_000_000)
 
 assert set(_cb) == {"AAA", "BBB"}, _cb
 assert _cb["AAA"]["dd"] > _cb["BBB"]["dd"], \
     f"the less levered company must sit further from default: {_cb}"
 assert all(r["vol_source"] == "published" for r in _cb.values()), _cb
-assert _cb["AAA"]["percentile"] is not None or len(_cb) < 5
+assert all(r["built"] == 1_000_000 for r in _cb.values()), _cb
 print(f"credit book measured both names off filings: AAA {_cb['AAA']['dd']}, "
       f"BBB {_cb['BBB']['dd']}")
 
@@ -348,9 +348,61 @@ print(f"credit book measured both names off filings: AAA {_cb['AAA']['dd']}, "
 # rather than reported without a market value
 _no_price = scheduled_scan.credit_book(
     ["AAA", "ZZZ"], {"dates": _cb_prices["dates"],
-                     "series": {"AAA": _cb_prices["series"]["AAA"]}}, _cb_vols)
+                     "series": {"AAA": _cb_prices["series"]["AAA"]}}, _cb_vols,
+    now=1_000_000)
 assert set(_no_price) == {"AAA"}, _no_price
 print("a name with no published prices is skipped, not valued without one")
+
+# ---- the book accumulates across runs, and drops what has gone stale ----
+# One run cannot measure the whole liquid universe — that is a quarter of
+# an hour of SEC calls. So each run refreshes what fits in its budget and
+# carries the rest forward. What it must NOT carry is a standing whose
+# price has moved on: the distance is a market value against a balance
+# sheet, so a week-old entry is a week-old market capitalisation.
+_prev = {"OLD": {"ticker": "OLD", "dd": 4.0, "built": 1_000_000 - 10 * 86400},
+         "KEPT": {"ticker": "KEPT", "dd": 6.0, "built": 1_000_000 - 3600}}
+_merged = scheduled_scan.credit_book(["AAA"], _cb_prices, _cb_vols,
+                                     prev=_prev, now=1_000_000)
+assert "KEPT" in _merged, "a recent standing must be carried forward"
+assert "OLD" not in _merged, \
+    "a standing older than the freshness limit carries a stale market value"
+assert "AAA" in _merged, "this run's measurements must still land"
+print(f"the book carries {len(_merged)} forward: recent entries kept, entries "
+      f"older than {scheduled_scan.CREDIT_MAX_AGE_S // 86400} days dropped")
+
+# the least recently measured go first, so coverage rotates instead of
+# re-measuring the same names every hour
+_wide_prices = {"dates": _cb_prices["dates"],
+                "series": {t: [100.0] * 60 for t in ("AAA", "BBB")}}
+_stale_first = scheduled_scan.credit_book(
+    [], _wide_prices, _cb_vols,
+    prev={"BBB": {"ticker": "BBB", "dd": 1.0, "built": 1_000_000 - 7200},
+          "AAA": {"ticker": "AAA", "dd": 1.0, "built": 1_000_000 - 60}},
+    max_names=1, now=1_000_000)
+assert _stale_first["BBB"]["built"] == 1_000_000, \
+    "the longest-unmeasured name must be the one refreshed"
+assert _stale_first["AAA"]["built"] == 1_000_000 - 60, "the fresh one is left"
+print("each run refreshes whatever has gone longest without measuring")
+
+# a budget the run cannot exceed, whatever the SEC does
+_slow_calls = {"n": 0}
+
+
+def _slow_sec(url, timeout=20):
+    _slow_calls["n"] += 1
+    if "company_tickers" in url:
+        return _fake_sec_get(url)
+    time.sleep(0.2)
+    return _fake_sec_get(url)
+
+
+import time
+scheduled_scan._sec_get = _slow_sec
+_t0 = time.time()
+scheduled_scan.credit_book(["AAA", "BBB"], _cb_prices, _cb_vols,
+                           budget_s=0.5, now=1_000_000)
+assert time.time() - _t0 < 8, f"the budget was not honoured ({time.time()-_t0:.1f}s)"
+print("a slow SEC cannot push the run past its budget")
 
 
 # and a SEC that refuses must stop the walk rather than grind through it
@@ -364,7 +416,7 @@ scheduled_scan._sec_get = _refusing
 _many = [f"T{i}" for i in range(30)]
 _prices_many = {"dates": _cb_prices["dates"],
                 "series": {t: [100.0] * 60 for t in _many}}
-_out = scheduled_scan.credit_book(_many, _prices_many, {})
+_out = scheduled_scan.credit_book(_many, _prices_many, {}, now=1_000_000)
 assert _out == {}, _out
 print("a refusing SEC stops the credit book instead of hammering it")
 

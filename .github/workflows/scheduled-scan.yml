@@ -63,6 +63,12 @@ jobs:
           if git show origin/screener-data:state/market.db > /tmp/market.db 2>/dev/null; then
             echo "restored market database"
           fi
+          # The credit book accumulates: each run refreshes what it can
+          # inside its budget and carries the rest forward, so coverage
+          # grows past what one run of SEC calls could ever reach.
+          if git show origin/screener-data:credit.json > /tmp/prev_credit.json 2>/dev/null; then
+            echo "restored $(python -c "import json;print(len(json.load(open('/tmp/prev_credit.json'))))" 2>/dev/null || echo '?') credit standings"
+          fi
 
       - name: Run the preset scans
         env:
