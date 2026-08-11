@@ -147,6 +147,51 @@
       <div id="ckOut" style="margin-top:.9rem"></div>
     </div>
 
+    <div class="card">
+      <p style="margin:0 0 .5rem"><b>Can this company pay its debts?</b></p>
+      <p class="tiny" style="margin:0 0 .8rem">A full report on any company:
+        how far it sits from the point where what it owes comes due against too
+        little to pay it, how that has moved, and what is driving it. Read from
+        the company's own filings — nothing surveyed, nothing bought.</p>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <input id="crTicker" placeholder="Ticker" autocomplete="off"
+          style="flex:1 1 8rem;padding:.55rem .7rem;border:1px solid var(--line);
+                 border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem">
+        <button id="crGo" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
+          background:none;color:var(--accent);font-size:.95rem;cursor:pointer">Open the report</button>
+      </div>
+      {% if b.credit_index %}
+      <div style="display:flex;gap:1.6rem;flex-wrap:wrap;margin-top:1rem">
+        <div style="flex:1 1 11rem">
+          <p class="tiny" style="margin:0 0 .35rem;text-transform:uppercase;
+             letter-spacing:.07em">Closest to trouble</p>
+          {% for c in b.credit_index.weakest %}
+          <p style="margin:0 0 .2rem;font-size:.92rem"><a href="/credit/{{ c.ticker }}"
+            style="text-decoration:none"><b class="tk">{{ c.ticker }}</b></a>
+            <span class="tiny {{ 'ok' if c.level == 'ok' else 'warn' if c.level == 'warn' else 'loss' }}"
+              >{{ '%.2f'|format(c.dd) }} — {{ c.band }}</span></p>
+          {% endfor %}
+        </div>
+        <div style="flex:1 1 11rem">
+          <p class="tiny" style="margin:0 0 .35rem;text-transform:uppercase;
+             letter-spacing:.07em">Furthest from it</p>
+          {% for c in b.credit_index.strongest %}
+          <p style="margin:0 0 .2rem;font-size:.92rem"><a href="/credit/{{ c.ticker }}"
+            style="text-decoration:none"><b class="tk">{{ c.ticker }}</b></a>
+            <span class="tiny ok">{{ '%.2f'|format(c.dd) }} — {{ c.band }}</span></p>
+          {% endfor %}
+        </div>
+      </div>
+      <p class="tiny" style="margin:.9rem 0 0">{{ b.credit_index.n }} companies measured
+        today; the ranking is between those. Coverage widens with each scan.</p>
+      {% else %}
+      <p class="tiny" style="margin:.9rem 0 0">No company has been measured yet
+        today. Type a ticker above and the report will be worked out on the spot —
+        that path is slower, and it can fail, in which case it says so rather than
+        showing you a number it did not compute.</p>
+      {% endif %}
+    </div>
+
     <details class="card" style="padding:.9rem 1.2rem">
       <summary class="tiny" style="cursor:pointer">Show the working —
         {{ b.n_qualified }} names, {{ b.n_blocked }} blocked, the track record</summary>
@@ -505,6 +550,18 @@ document.getElementById("ckGo").addEventListener("click", runCheck);
 // was inert too.
 document.getElementById("ckTicker").addEventListener("keydown", ev => {
   if (ev.key === "Enter") { ev.preventDefault(); runCheck(); }
+});
+
+// The credit report is a page, not a fetch — no spinner to manage, and
+// the browser's own back button is the way out of it.
+function openCredit() {
+  const t = (document.getElementById("crTicker").value || "").trim().toUpperCase();
+  if (!t) return;
+  location.href = "/credit/" + encodeURIComponent(t);
+}
+document.getElementById("crGo").addEventListener("click", openCredit);
+document.getElementById("crTicker").addEventListener("keydown", ev => {
+  if (ev.key === "Enter") { ev.preventDefault(); openCredit(); }
 });
 
 try {

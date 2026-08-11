@@ -81,3 +81,46 @@ for _r in _rows[1:]:
 print(f"every row has {_head} cells under {_head} headings")
 
 print("\nPAGE ROBUSTNESS PINNED")
+
+
+# ---- the credit report must be reachable from the front page ----
+# It was not. The report rendered, the route answered 200, and the only
+# link to it on the home page was inside <details> — collapsed, so the
+# reader never saw it and told me the report did not exist. This asserts
+# on the page as served, above that collapsed section, because that is
+# where the claim "a reader can find it" is either true or false.
+_BOOK = {f"CR{i}": {"dd": 1.0 + i, "band": "comfortable"} for i in range(6)}
+_saved_cb = A._credit_book
+A._credit_book = lambda fetch=False: _BOOK
+try:
+    A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
+                    top_picks=[GOOD], pending=[], results_ts=time.time(),
+                    status="done")
+    _html = c.get("/").get_data(as_text=True)
+    _above = _html.split("<details")[0]
+    _links = _re.findall(r'href="/credit/([A-Z0-9.\-]+)"', _above)
+    assert _links, "no link to a credit report before the collapsed section"
+    assert len(set(_links)) >= 4, sorted(set(_links))
+    print(f"{len(set(_links))} credit reports are one click away, above the fold")
+
+    # and the lookup box, which is the path for a company that is not on
+    # today's board at all — which is most of them
+    assert 'id="crTicker"' in _above and 'id="crGo"' in _above
+    assert "/credit/" in _html.split("openCredit")[1][:300]
+    print("any company can be looked up by name, not just today's picks")
+finally:
+    A._credit_book = _saved_cb
+
+# with an empty book the card is still there, and still says something
+# true — an absence of measurements must not read as an absence of the
+# feature
+A._credit_book = lambda fetch=False: {}
+try:
+    _html = c.get("/").get_data(as_text=True)
+    assert 'id="crTicker"' in _html.split("<details")[0]
+    assert "No company has been measured yet" in _html
+    print("with nothing measured the way in is still there, and says why it is empty")
+finally:
+    A._credit_book = _saved_cb
+
+print("\nCREDIT REPORT REACHABILITY PINNED")
