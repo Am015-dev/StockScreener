@@ -210,7 +210,6 @@ _published_reads: dict = {}
 # frozen copy shipped with the build" and "serving the live data
 # branch" look identical — and I once deleted the shipped files on
 # the strength of an index that had come from those very files.
-_published_reads: dict = {}
 
 
 def _published_get(path: str):
@@ -244,18 +243,31 @@ def _published_get(path: str):
         return None
 
     import requests as rq
-    headers = {}
+    url = f"{PUBLISHED_BASE}/{path}"
     tok = os.environ.get("PUBLISHED_TOKEN") or os.environ.get("GITHUB_TOKEN")
+
+    # Anonymous FIRST, and the token only as a retry.
+    #
+    # Measured: this exact URL returns 200 with no header and 404 with a
+    # token attached. raw.githubusercontent answers a token it does not
+    # accept with 404, not 401 — so a credential that has expired, or was
+    # scoped to something else, makes a PUBLIC file look deleted. The repo
+    # needed that token while it was private; now it needs the opposite,
+    # and nothing in the response distinguishes "gone" from "your token is
+    # stale" except trying without it.
+    attempts = [("data branch", {})]
     if tok:
-        headers["Authorization"] = f"token {tok}"
-    try:
-        r = rq.get(f"{PUBLISHED_BASE}/{path}", headers=headers, timeout=20)
-        if r.status_code == 200:
-            _published_reads[path] = "data branch"
-            return r.json()
-        why = f"HTTP {r.status_code}"
-    except Exception as e:
-        why = type(e).__name__
+        attempts.append(("data branch (with token)", {"Authorization": f"token {tok}"}))
+    why = "no attempt made"
+    for label, headers in attempts:
+        try:
+            r = rq.get(url, headers=headers, timeout=20)
+            if r.status_code == 200:
+                _published_reads[path] = label
+                return r.json()
+            why = f"HTTP {r.status_code}"
+        except Exception as e:
+            why = type(e).__name__
     return _fallback(why)
 
 
@@ -1686,11 +1698,11 @@ def _warm_credit():
 # The test suite is hermetic — it imports this module and must not reach
 # Nasdaq, the SEC or GitHub to do it.
 if not os.environ.get("SKIP_WARM"):
-    threading.Thread(target=_warm_books, daemon=True).start()
-    threading.Thread(target=_warm_calendar, daemon=True).start()
-    threading.Thread(target=_book_refresher, daemon=True).start()
-    threading.Thread(target=_calendar_refresher, daemon=True).start()
-    threading.Thread(target=_results_refresher, daemon=True).start()
+    threading.Thread(target=_warm_books, name="warm-books", daemon=True).start()
+    threading.Thread(target=_warm_calendar, name="warm-calendar", daemon=True).start()
+    threading.Thread(target=_book_refresher, name="books-refresh", daemon=True).start()
+    threading.Thread(target=_calendar_refresher, name="calendar-refresh", daemon=True).start()
+    threading.Thread(target=_results_refresher, name="results-poll", daemon=True).start()
     threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 
@@ -1796,6 +1808,10 @@ def published_route():
                     "dir_listing": sorted(os.listdir(PUBLISHED_DIR))
                                    if os.path.isdir(PUBLISHED_DIR) else None,
                     "reads": dict(_published_reads),
+                    # which background threads are actually alive. Twice now
+                    # I have inferred "the warmer did not run" from an absence
+                    # and been wrong about why; this is the fact itself.
+                    "threads": sorted(t.name for t in threading.enumerate()),
                     "loaded": {"prices": len(pretrade._series_of(_price_book())),
                                "vol": len(_vol_book()),
                                "credit": len(_credit_book())}})
