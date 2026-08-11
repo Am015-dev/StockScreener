@@ -293,3 +293,36 @@ assert brief._credit_cell({"dd": 1.0, "band": "something new"})["word"] == "meas
 print("every band renders a word, including one this file has not seen")
 
 print("\nBOARD CREDIT COLUMN PINNED")
+
+
+# ---- when the scan stops, the page must say so ----
+# The site served 19-hour-old prices with nothing but the age, and the
+# other page told the reader to "press Run" — a button removed months
+# earlier. The one moment it had something to explain, it gave an
+# instruction that could not be followed.
+pub = {"every_h": 2, "window": "13:00-21:00 UTC on weekdays", "age_h": 19.3,
+       "overdue": True,
+       "note": "The scheduled scan publishes every 2 hours (13:00-21:00 UTC on "
+               "weekdays) and has not published for 19.3 hours. The figures "
+               "below are the last it produced — they are not today's."}
+out = brief.build(STATE, mc.state(), {"stale": True, "sessions": 2,
+                                      "phrase": "2 sessions old"},
+                  publishing=pub)
+assert out["overdue_note"] == pub["note"], out["overdue_note"]
+assert "has not published" in out["overdue_note"]
+print("a stopped scan is explained on the card, not just counted in hours")
+
+# a weekend is not a fault, and must not be described as one
+weekend = brief.build(STATE, mc.state(),
+                      {"stale": False, "sessions": 0,
+                       "phrase": "from the last close (Friday)"},
+                      publishing={"overdue": False, "note": None})
+assert weekend["overdue_note"] is None
+assert weekend["stale"] is False
+print("a weekend reads as the market being shut, not as the scan being broken")
+
+# and with no publishing information at all it says nothing rather than guessing
+assert brief.build(STATE)["overdue_note"] is None
+print("with nothing known about publishing, no claim is made either way")
+
+print("\nPUBLISHING EXPLANATION PINNED")

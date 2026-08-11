@@ -647,7 +647,10 @@ def index():
     except Exception:
         m, f = None, None
     return render_template(
-        "brief.html", b=brief.build(_state, m, f, credit=_credit_book()))
+        "brief.html",
+        b=brief.build(_state, m, f, credit=_credit_book(),
+                      publishing=(_publishing_state(float(_state["results_ts"]), f)
+                                  if _state.get("results_ts") else None)))
 
 
 @app.route("/full")
@@ -1644,6 +1647,35 @@ if not os.environ.get("SKIP_WARM"):
 STALL_AFTER_S = float(os.environ.get("STALL_AFTER_S", "300"))
 
 
+# The scan publishes every two hours while US markets are open, on
+# weekdays. When it stops — an exhausted Actions quota, a broken job — the
+# site keeps serving the last thing it published, which is correct. What
+# was NOT correct was saying nothing about why, or telling the reader to
+# "press Run" for a button that was removed months ago.
+SCAN_EVERY_H = float(os.environ.get("SCAN_EVERY_H", "2"))
+SCAN_WINDOW = "13:00-21:00 UTC on weekdays"
+
+
+def _publishing_state(results_ts: float, fresh: dict | None) -> dict:
+    """Is the scheduled scan still publishing, and if not, say so.
+
+    Overdue means BOTH that more time has passed than the schedule allows
+    AND that a trading session has happened since — otherwise a weekend
+    would read as a fault, which it is not.
+    """
+    age_h = max(0.0, (time.time() - results_ts) / 3600.0)
+    sessions = (fresh or {}).get("sessions")
+    traded_since = bool(sessions) and sessions >= 1
+    overdue = age_h > SCAN_EVERY_H * 1.5 and traded_since
+    return {"every_h": SCAN_EVERY_H, "window": SCAN_WINDOW,
+            "age_h": round(age_h, 1), "overdue": overdue,
+            "note": (f"The scheduled scan publishes every {SCAN_EVERY_H:g} hours "
+                     f"({SCAN_WINDOW}) and has not published for "
+                     f"{age_h:.1f} hours. The figures below are the last it "
+                     f"produced — they are not today's."
+                     if overdue else None)}
+
+
 @app.route("/status")
 def status():
     st = dict(_state)
@@ -1659,6 +1691,8 @@ def status():
         st["market"] = market_clock.state()
         if st.get("results_ts"):
             st["freshness"] = market_clock.staleness(float(st["results_ts"]))
+            st["publishing"] = _publishing_state(float(st["results_ts"]),
+                                                 st["freshness"])
     except Exception:
         pass
     return jsonify(st)
