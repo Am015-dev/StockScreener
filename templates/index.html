@@ -860,13 +860,13 @@ async function loadStoredScan(silent) {
       note.textContent = `📂 Loaded the stored scan for these filters ` +
         `(${d.n_results} pick${d.n_results === 1 ? "" : "s"}, ` +
         `${mins < 60 ? mins + " min" : (mins / 60).toFixed(1) + " h"} old). ` +
-        `Press Run to re-scan and update it.`;
+        `The scheduled scan refreshes it; nothing here needs pressing.`;
       refresh();
     } else {
       note.style.color = "var(--amber)";
-      note.textContent = "🔍 These filters have not been scanned yet" +
+      note.textContent = "These filters have not been scanned" +
         (d.n_stored ? ` (${d.n_stored} other filter set${d.n_stored === 1 ? "" : "s"} stored)` : "") +
-        " — press Run to scan them.";
+        " — the scheduled scan covers the published presets only.";
     }
   } catch (e) {}
 }
@@ -1632,13 +1632,24 @@ async function refresh() {
       (s.status === "running" ? " · <span style=\"color:var(--amber)\">scan in progress</span>" : "");
     // "not today" is only a problem if a session has happened since. Over a
     // weekend it is simply the truth about when the market last traded, and
-    // saying "press Run" there sends the reader to re-scan a closed market.
+    // it is simply the truth about when the market last traded.
     const behind = fresh && fresh.sessions != null ? fresh.stale : !today;
     asOf.style.color = behind ? "var(--amber)" : "var(--text)";
     if (s.market && s.market.label && !s.market.is_open)
       asOf.innerHTML += `<div style="font-weight:400;font-size:.85rem;color:var(--ink-2);margin-top:.15rem">` +
         `${esc(s.market.label)}</div>`;
-    if (behind) asOf.innerHTML += ' <span style="color:var(--amber)">— a session has traded since; press Run</span>';
+    // the old text pointed at a button that no longer exists, so
+    // the one moment the page had something to explain, it gave the reader
+    // an instruction they could not follow.
+    if (s.publishing && s.publishing.overdue) {
+      asOf.innerHTML +=
+        `<div style="font-weight:400;font-size:.85rem;color:var(--amber);margin-top:.25rem">` +
+        `${esc(s.publishing.note)}</div>`;
+    } else if (behind) {
+      asOf.innerHTML +=
+        `<div style="font-weight:400;font-size:.85rem;color:var(--amber);margin-top:.25rem">` +
+        `A session has traded since these prices — entry and stop levels have moved.</div>`;
+    }
   } else asOf.style.display = "none";
 
   // ---- how many bets are actually in this list ----

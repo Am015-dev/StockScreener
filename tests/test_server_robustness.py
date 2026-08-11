@@ -375,4 +375,28 @@ A._published_get = _real_pg
 print("a refresh that returns nothing keeps the book it had; one that returns "
       "data replaces it")
 
+
+# ---- overdue means the schedule was missed AND a session traded ----
+import time as _t
+_now = _t.time()
+_late = A._publishing_state(_now - 19.3 * 3600, {"sessions": 2, "stale": True})
+assert _late["overdue"] is True and "has not published" in _late["note"]
+assert "19.3 hours" in _late["note"], _late["note"]
+
+# a weekend: hours have passed, but no session traded — not a fault
+_weekend = A._publishing_state(_now - 60 * 3600, {"sessions": 0, "stale": False})
+assert _weekend["overdue"] is False and _weekend["note"] is None
+
+# and a scan from an hour ago is simply current
+_fresh = A._publishing_state(_now - 3600, {"sessions": 0, "stale": False})
+assert _fresh["overdue"] is False
+print("overdue needs both a missed schedule and a traded session, so a weekend "
+      "never reads as a fault")
+
+# the removed Run button must not be recommended anywhere
+_idx = (ROOT / "templates/index.html").read_text()
+assert "press Run" not in _idx, \
+    "the page still tells the reader to press a button that was removed"
+print("no page tells the reader to press the button that no longer exists")
+
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")

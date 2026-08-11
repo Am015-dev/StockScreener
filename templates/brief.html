@@ -104,7 +104,9 @@
       <p class="tiny" style="margin:0 0 .5rem">{{ b.date or "Undated" }}{% if b.market_label %} ·
         {{ b.market_label }}{% endif %}{% if b.fresh_phrase %} ·
         <span{% if b.stale %} class="warn"{% endif %}>{{ b.fresh_phrase }}</span>{% endif %}</p>
-      {% if b.stale %}
+      {% if b.overdue_note %}
+      <p class="warn" style="margin:0 0 .6rem;font-size:.9rem">{{ b.overdue_note }}</p>
+      {% elif b.stale %}
       <p class="warn" style="margin:0 0 .6rem;font-size:.9rem">These prices are
         {{ b.fresh_phrase }}. Entry and stop levels have moved since — treat the
         numbers below as a starting point to re-check, not as today's levels.</p>

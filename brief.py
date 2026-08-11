@@ -128,7 +128,8 @@ def _credit_cell(rep: dict | None) -> dict | None:
 
 
 def build(state: dict, market: dict | None = None,
-          fresh: dict | None = None, credit: dict | None = None) -> dict:
+          fresh: dict | None = None, credit: dict | None = None,
+          publishing: dict | None = None) -> dict:
     """Turn finished scan state into the card. Never raises."""
     results = list(state.get("results") or [])
     pending = list(state.get("pending") or [])
@@ -252,6 +253,10 @@ def build(state: dict, market: dict | None = None,
         "market_label": (market or {}).get("label"),
         "fresh_phrase": (fresh or {}).get("phrase"),
         "stale": bool((fresh or {}).get("stale")),
+        # when the scan has stopped publishing, the card says which — a
+        # reader looking at old prices deserves the reason, not just the age
+        "overdue_note": ((publishing or {}).get("note")
+                         if (publishing or {}).get("overdue") else None),
         "action": action,
         "n_qualified": len(results),
         "watchlist": [
