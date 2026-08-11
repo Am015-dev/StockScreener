@@ -348,4 +348,31 @@ assert _calls["n"] <= 4, \
 print(f"a refusing SEC stops the warmer after {_calls['n']} attempts, "
       f"not {len(A._state['results'])}")
 
+
+# ---- a failed refresh must not wipe a good book ----
+# Each book did `data = _published_get(...) or {}` and stored the result
+# unconditionally, so the first transient miss replaced a copy holding
+# 1,453 entries with nothing — and the site then served no volatility and
+# no credit standings while the files sat on its own disk.
+A._price_book = REAL_PRICE_BOOK
+A._book.update(data={"dates": ["d"], "series": {"KEEP": [1.0]}}, ts=time.time())
+A._vols.update(data={"KEEP": {"vol": 0.2, "obs": 900}}, ts=time.time())
+A._creds.update(data={"KEEP": {"dd": 4.0, "band": "comfortable"}}, ts=time.time())
+
+_real_pg = A._published_get
+A._published_get = lambda path: None          # every refresh fails
+for _fn in (A._price_book, A._vol_book, A._credit_book):
+    _fn(fetch=True)
+assert A._price_book().get("series", {}).get("KEEP"), "the price book was wiped"
+assert A._vol_book().get("KEEP"), "the volatility book was wiped"
+assert A._credit_book().get("KEEP"), "the credit book was wiped"
+
+A._published_get = lambda path: {"NEW": {"dd": 9.9}} if path == "credit.json" else None
+A._credit_book(fetch=True)
+assert A._credit_book().get("NEW"), "a refresh that DOES return data must replace"
+assert not A._credit_book().get("KEEP")
+A._published_get = _real_pg
+print("a refresh that returns nothing keeps the book it had; one that returns "
+      "data replaces it")
+
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")

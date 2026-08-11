@@ -825,7 +825,15 @@ def _price_book(fetch: bool = False) -> dict:
     if not fetch:
         return _book["data"] or {}
     t0 = time.time()
-    data = _published_get("prices.json") or {}
+    data = _published_get("prices.json")
+    if not data:
+        # A refresh that comes back empty is a failed refresh, not an empty
+        # book. Storing it anyway replaced a good copy with nothing on the
+        # first transient miss — which is how a book that loaded 1,453
+        # entries at boot was serving none of them ten minutes later.
+        print(f"[warm] price book: refresh returned nothing, keeping "
+              f"{len(_book['data'] or {})}", flush=True)
+        return _book["data"] or {}
     _book.update(data=data, ts=time.time())
     print(f"[warm] price book fetched: "
           f"{len(pretrade._series_of(data))} tickers in "
@@ -846,7 +854,15 @@ def _vol_book(fetch: bool = False) -> dict:
     """
     if not fetch:
         return _vols["data"] or {}
-    data = _published_get("vol.json") or {}
+    data = _published_get("vol.json")
+    if not data:
+        # A refresh that comes back empty is a failed refresh, not an empty
+        # book. Storing it anyway replaced a good copy with nothing on the
+        # first transient miss — which is how a book that loaded 1,453
+        # entries at boot was serving none of them ten minutes later.
+        print(f"[warm] volatility book: refresh returned nothing, keeping "
+              f"{len(_vols['data'] or {})}", flush=True)
+        return _vols["data"] or {}
     _vols.update(data=data, ts=time.time())
     print(f"[warm] volatility book: {len(data)} tickers", flush=True)
     return data
@@ -867,7 +883,15 @@ def _credit_book(fetch: bool = False) -> dict:
     """
     if not fetch:
         return _creds["data"] or {}
-    data = _published_get("credit.json") or {}
+    data = _published_get("credit.json")
+    if not data:
+        # A refresh that comes back empty is a failed refresh, not an empty
+        # book. Storing it anyway replaced a good copy with nothing on the
+        # first transient miss — which is how a book that loaded 1,453
+        # entries at boot was serving none of them ten minutes later.
+        print(f"[warm] credit book: refresh returned nothing, keeping "
+              f"{len(_creds['data'] or {})}", flush=True)
+        return _creds["data"] or {}
     _creds.update(data=data, ts=time.time())
     print(f"[warm] credit book: {len(data)} companies", flush=True)
     return data
