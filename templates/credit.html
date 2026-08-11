@@ -1,0 +1,176 @@
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ t }} — how far from not paying its debts</title>
+<style>
+  :root {
+    --bg:#faf9f7; --card:#fff; --line:#e3e1dc; --ink:#1a1917; --ink-2:#5c5a55;
+    --ink-3:#87857f; --accent:#2a78d6; --green:#157f5b; --amber:#97650a;
+    --red:#c8442c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+      --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+      --amber:#d9a02c; --red:#e5705a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+    --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+    --amber:#d9a02c; --red:#e5705a;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:17px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:44rem; margin:0 auto; padding:2rem 1.15rem 4rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:1.4rem 1.35rem; margin:0 0 1.1rem; }
+  h1 { font-size:1.5rem; margin:0 0 .1rem; letter-spacing:-.015em; }
+  h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.09em;
+       color:var(--ink-3); margin:0 0 .8rem; font-weight:640; }
+  p { margin:0 0 .8rem; } p:last-child { margin-bottom:0; }
+  .lead { font-size:1.35rem; line-height:1.35; font-weight:640; margin:0 0 .8rem;
+          letter-spacing:-.015em; }
+  .big { font-size:2.6rem; font-weight:680; letter-spacing:-.03em; line-height:1;
+         font-variant-numeric:tabular-nums; }
+  .tiny { color:var(--ink-3); font-size:.82rem; line-height:1.55; }
+  .muted { color:var(--ink-2); font-size:.92rem; }
+  .ok { color:var(--green); } .warn { color:var(--amber); } .bad { color:var(--red); }
+  a { color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:.92rem;
+          font-variant-numeric:tabular-nums; }
+  th, td { padding:.45rem .3rem; border-bottom:1px solid var(--line); text-align:left; }
+  th { font-size:.7rem; text-transform:uppercase; letter-spacing:.07em;
+       color:var(--ink-3); font-weight:640; }
+  td.r, th.r { text-align:right; }
+  .me { font-weight:680; }
+  .scroll { overflow-x:auto; }
+</style>
+
+<div class="wrap">
+  <p class="tiny" style="margin:0 0 1rem"><a href="/">← Today's brief</a></p>
+
+  {% if r.dd is none %}
+  <div class="card">
+    <h1>{{ t }}</h1>
+    <p class="lead" style="margin-top:.6rem">Not measured.</p>
+    <p class="muted">{{ r.verdict or "This company could not be assessed." }}</p>
+    <p class="tiny">Nothing on this page is a statement about the company. A
+      measurement that could not be made is reported as missing, never as safe.</p>
+  </div>
+  {% else %}
+
+  <div class="card">
+    <h1>{{ t }}</h1>
+    <p class="tiny" style="margin:0 0 1rem">How far this company sits from the point
+      where what it owes comes due against too little to pay it</p>
+    <p class="big {{ 'ok' if r.dd >= 4 else 'warn' if r.dd >= 2.5 else 'bad' }}">
+      {{ '%.2f'|format(r.dd) }}</p>
+    <p class="lead" style="margin:.3rem 0 .8rem">standard deviations — {{ r.band }}</p>
+    {% if r.percentile is not none %}
+    <p class="muted">Against the {{ r.peers_n }} other companies measured today it sits
+      at the {{ 'stronger' if r.percentile >= 50 else 'weaker' }} end: safer than
+      <b>{{ r.percentile }}%</b> of them.</p>
+    {% endif %}
+    <p class="tiny">A distance, not a probability. The commercial version of this
+      report converts the distance into a percentage chance of default using a
+      database of companies that actually defaulted, built over decades. That
+      database is the part that is not free, and the textbook substitute is wrong in
+      a specific direction — it returns 0.000000% for companies that do sometimes
+      default. So no percentage is quoted here.</p>
+  </div>
+
+  {% if hist and hist|length > 5 %}
+  <div class="card">
+    <h2>Where it has been</h2>
+    {% set lo = hist|min %}{% set hi = hist|max %}
+    {% set span = (hi - lo) if (hi - lo) > 0.0001 else 1 %}
+    <svg viewBox="0 0 600 150" width="100%" height="150" role="img"
+         aria-label="Distance to default over the last {{ hist|length }} trading days,
+                     from {{ '%.2f'|format(hist[0]) }} to {{ '%.2f'|format(hist[-1]) }}"
+         style="display:block">
+      <polyline fill="none" stroke="{{ '#157f5b' if hist[-1] >= hist[0] else '#c8442c' }}"
+        stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+        points="{% for d in hist %}{{ (loop.index0 / (hist|length - 1) * 596 + 2)|round(1) }},{{ (142 - (d - lo) / span * 130)|round(1) }} {% endfor %}" />
+      <line x1="0" y1="146" x2="600" y2="146" stroke="{{ '#e3e1dc' }}" stroke-width="1"/>
+    </svg>
+    <p class="tiny" style="margin-top:.5rem">
+      {{ '%.2f'|format(hist[0]) }} → {{ '%.2f'|format(hist[-1]) }} over the last
+      {{ hist|length }} trading days
+      {%- if dates %} ({{ dates[0] }} to {{ dates[-1] }}){% endif %} —
+      {%- if hist[-1] > hist[0] + 0.05 %} <span class="ok">moving away from trouble</span>
+      {%- elif hist[-1] < hist[0] - 0.05 %} <span class="warn">moving towards it</span>
+      {%- else %} little changed{% endif %}.
+    </p>
+    <p class="tiny"><b>Read this carefully:</b> the balance sheet is held constant
+      across the window — it is the one filed to {{ r.as_of }}. So this shows how the
+      market re-rated a fixed set of debts, not how the debts themselves changed. It
+      moves with the share price, because that is what moves daily.</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>What is driving it</h2>
+    <div class="scroll"><table>
+      <tr><td>What the market says the whole company is worth</td>
+          <td class="r">{{ '%.1f'|format(r.equity / 1e9) }}bn</td></tr>
+      <tr><td>What it owes, weighted for when it comes due
+              <span class="tiny">(all short-term, half of long-term)</span></td>
+          <td class="r">{{ '%.1f'|format(r.default_point / 1e9) }}bn</td></tr>
+      <tr><td>Debts as a share of the market's valuation</td>
+          <td class="r">{{ (r.market_leverage * 100)|round(1) }}%</td></tr>
+      <tr><td>How much the business's value swings in a year</td>
+          <td class="r">{{ (r.asset_vol * 100)|round(1) }}%</td></tr>
+      <tr><td>How much the shares swing in a year</td>
+          <td class="r">{{ (r.equity_vol * 100)|round(1) }}%</td></tr>
+    </table></div>
+    <p class="tiny" style="margin-top:.7rem">Two things move this number: how much a
+      company owes against what it is worth, and how violently that worth moves. A
+      company with modest debts can still sit close to trouble if its value swings
+      hard, and that is why leverage alone is not the answer.</p>
+  </div>
+
+  {% if near %}
+  <div class="card">
+    <h2>Nearest companies measured</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Company</th><th class="r">Distance</th><th>Standing</th></tr></thead>
+      <tbody>
+      {% for p in near %}
+        <tr{% if p.ticker == t %} class="me"{% endif %}>
+          <td><a href="/credit/{{ p.ticker }}">{{ p.ticker }}</a></td>
+          <td class="r">{{ '%.2f'|format(p.dd) }}</td>
+          <td>{{ p.band }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="tiny" style="margin-top:.7rem">A ranking needs no calibration, which is
+      why it is the part of this report that loses nothing by being free. {{ n_measured }}
+      companies are measured today; coverage widens with each scan.</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Where the figures came from</h2>
+    <div class="scroll"><table>
+      <tr><td>Balance sheet</td><td class="r">filed to {{ r.as_of }}</td></tr>
+      {% if r.source %}<tr><td>Read as</td><td class="r">{{ r.source }}</td></tr>{% endif %}
+      <tr><td>Share count</td>
+          <td class="r">{% if r.shares_as_of %}reported {{ r.shares_as_of }}{% else %}—{% endif %}</td></tr>
+      {% if r.shares_tag and 'WeightedAverage' in r.shares_tag %}
+      <tr><td colspan="2" class="tiny">This company stopped publishing a cover-page
+          share count, so a quarterly average is used instead.</td></tr>
+      {% endif %}
+      <tr><td>Volatility</td>
+          <td class="r">{{ r.vol_obs }} days of returns</td></tr>
+    </table></div>
+    <p class="tiny" style="margin-top:.7rem">Every figure above is from the company's
+      own filings with the SEC and its published share price. Nothing is estimated,
+      surveyed or bought.</p>
+  </div>
+  {% endif %}
+
+  <p class="tiny" style="text-align:center;margin-top:1.5rem">
+    Research only — not advice, and not a rating.
+    <a href="/limits">What this cannot tell you</a>.</p>
+</div>

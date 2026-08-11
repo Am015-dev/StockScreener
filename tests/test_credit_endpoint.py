@@ -356,4 +356,47 @@ A.cache_store.put("credit:BBB", None)
 assert A._credit_for("BBB")["dd"] is not None
 print("a SEC that answers is used normally — the breaker only trips on failure")
 
+
+# ---- the report page: a document, not a one-line verdict ----
+# The ask was for something like the Moody's EDF report. A finding inside
+# another feature is not that. The page must carry the metric, how it
+# moved, what drives it, who it sits next to, and where every figure came
+# from — and must never carry a default probability.
+A._credit_book = lambda fetch=False: PUBLISHED_CREDIT
+_prices = {"dates": [f"2026-06-{d:02d}" for d in range(1, 29)] +
+                    [f"2026-07-{d:02d}" for d in range(1, 33)],
+           "series": {"P05": [round(100 * (1 - 0.3 * i / 60), 2) for i in range(60)]}}
+A._price_book = lambda fetch=False: _prices
+PUBLISHED_CREDIT["P05"].update(shares=1e9, default_point=4e10, equity_vol=0.30,
+                               equity=1e11, asset_vol=0.22, market_leverage=0.35,
+                               as_of="2026-06-28", vol_obs=1180,
+                               shares_as_of="2026-07-18", source="Liabilities")
+page = client.get("/credit/P05")
+assert page.status_code == 200, page.status_code
+html = page.get_data(as_text=True)
+
+for want in ("P05", "standard deviations", "Where it has been",
+             "What is driving it", "Nearest companies measured",
+             "Where the figures came from", "<polyline"):
+    assert want in html, f"the report is missing: {want}"
+# the honest limit has to be ON the page, not in a docstring
+assert "no percentage is quoted" in html
+assert "0.000000%" in html, "the reason no probability is given must be concrete"
+# and the held-constant caveat, because the line moves with price alone
+assert "balance sheet is held constant" in html
+print("the report carries the metric, the history, the drivers, the peers "
+      "and the provenance")
+
+# a company it cannot measure gets a page that says so and claims nothing
+A._credit_book = lambda fetch=False: {}
+A._cik_for = lambda t, timeout=8.0: None
+A._cik_map.update(data={"AAPL": 320193}, ts=time.time())
+blank = client.get("/credit/NOPE").get_data(as_text=True)
+assert "Not measured" in blank
+assert "never as safe" in blank, \
+    "an unmeasured company must be told apart from a safe one, on the page"
+for banned in ("<polyline", "standard deviations —"):
+    assert banned not in blank, f"an unmeasured company must not render {banned}"
+print("an unmeasured company gets a page that states it, with no chart and no band")
+
 print("\nPUBLISHED CREDIT BOOK PINNED")

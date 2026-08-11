@@ -1292,6 +1292,44 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     return _with_peers(rep)
 
 
+@app.route("/credit/<ticker>")
+def credit_page(ticker: str):
+    """The full report for one company.
+
+    The paid version of this is a document: the metric, how it moved, what
+    is driving it, where the company sits against its peers, and what the
+    figures were read from. A one-line verdict inside another feature is
+    not that, and the ask was for the report.
+
+    Everything here comes from what the scan already published, so the
+    page costs no outbound call.
+    """
+    t = (ticker or "").strip().upper()
+    rep = _credit_for(t) if t else {}
+    closes = [c for c in ((pretrade._series_of(_price_book()) or {}).get(t) or [])
+              if c]
+    dates = (_price_book() or {}).get("dates") or []
+    hist = None
+    if rep.get("dd") is not None:
+        hist = credit.history(closes, rep.get("shares"),
+                              rep.get("default_point"), rep.get("equity_vol"))
+    # nearest neighbours, so "65th percentile" has faces attached to it
+    book = _credit_book() or {}
+    peers = sorted(((r.get("dd"), k) for k, r in book.items()
+                    if r.get("dd") is not None and k != t))
+    near = []
+    if rep.get("dd") is not None:
+        # the company itself belongs in its own comparison — a ranking with
+        # no anchor is a list of strangers
+        rows = sorted(peers + [(rep["dd"], t)])
+        i = next(j for j, (_, k) in enumerate(rows) if k == t)
+        near = [{"ticker": k, "dd": d, "band": credit.band(d)}
+                for d, k in rows[max(0, i - 2):i + 3]]
+    return render_template("credit.html", r=rep, t=t, hist=hist, near=near,
+                           dates=dates[-len(hist):] if hist else [],
+                           n_measured=len(peers) + 1)
+
+
 @app.route("/credit", methods=["POST"])
 def credit_report():
     """How far a company is from not being able to pay its debts.
