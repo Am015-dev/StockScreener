@@ -458,4 +458,51 @@ assert "_results_refresher" in _i3.getsource(A).split(
     'if not os.environ.get("SKIP_WARM")')[-1], "the poller is never started"
 print("a new scan reaches a warm instance by polling, not by restarting it")
 
+
+# ---- the books must not queue behind the earnings calendar ----
+# The calendar is ~32 sequential Nasdaq requests at 15 seconds each, and
+# it ran first in the same thread. When Nasdaq was slow it held that
+# thread for minutes, and the price book, the volatility book and the
+# credit standings all waited behind it — so a reader got a board with no
+# credit column and no overlap measurement while all three files sat one
+# HTTP GET away.
+import inspect as _i4
+
+assert hasattr(A, "_warm_books") and hasattr(A, "_warm_calendar"), \
+    "the slow warm and the fast warm must be separable"
+_books_src = _i4.getsource(A._warm_books)
+assert "_earnings_calendar" not in _books_src, \
+    "the books must not wait on the calendar"
+_started = _i4.getsource(A).split('if not os.environ.get("SKIP_WARM")')[-1]
+for _fn in ("_warm_books", "_warm_calendar"):
+    assert _fn in _started, f"{_fn} is defined but never started"
+# and they must be started as SEPARATE threads, not chained
+assert _started.count("threading.Thread(target=_warm_books") == 1
+assert _started.count("threading.Thread(target=_warm_calendar") == 1
+
+# a calendar that never returns must not stop the books loading
+_slow = {"n": 0}
+
+
+def _never(*a, **k):
+    _slow["n"] += 1
+    _t.sleep(30)
+    return ({}, False)
+
+
+import time as _t
+_real_cal2 = screener._earnings_calendar
+screener._earnings_calendar = _never
+A._book.update(data=None, ts=0.0)
+A._published_get = lambda path: ({"dates": ["d"], "series": {"X": [1.0]}}
+                                 if path == "prices.json" else {})
+_t0 = _t.time()
+A._warm_books()
+assert _t.time() - _t0 < 5, "the books waited on something"
+assert A._price_book().get("series", {}).get("X"), "the price book did not load"
+assert _slow["n"] == 0, "_warm_books called the calendar"
+screener._earnings_calendar = _real_cal2
+print("the books load without touching the calendar, so a slow Nasdaq cannot "
+      "empty the page")
+
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")

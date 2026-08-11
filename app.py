@@ -1599,36 +1599,36 @@ def _calendar_refresher():
             print(f"[warm] earnings calendar refresh failed: {e}", flush=True)
 
 
-def _warm_check_data():
-    """Build the earnings calendar and pull the price book off the request
-    path entirely.
+def _warm_books():
+    """The three published files the page cannot render without.
 
-    Both are cheap to serve and expensive to create: the calendar is ~32
-    sequential Nasdaq requests, the price book a ~600KB fetch. Doing either
-    lazily inside /check meant the first person to press the button waited
-    minutes with a spinner and no explanation, and every one after them
-    waited 176ms. Warming here makes the first click the same as the
-    hundredth."""
+    Deliberately NOT in the same thread as the earnings calendar. The
+    calendar is ~32 sequential Nasdaq requests at 15 seconds each, so when
+    Nasdaq is slow it can hold that thread for eight minutes — and it ran
+    FIRST, so the price book, the volatility book and the credit
+    standings all waited behind it. A reader in that window got a board
+    with no credit column, no overlap measurement and no explanation,
+    while all three files sat one HTTP GET away.
+
+    Each of these is a single fetch. They have no business queueing behind
+    anything.
+    """
+    for label, fn in (("price book", _price_book), ("volatility book", _vol_book),
+                      ("credit book", _credit_book)):
+        try:
+            fn(fetch=True)
+        except Exception as e:
+            print(f"[warm] {label} failed: {e}", flush=True)
+
+
+def _warm_calendar():
+    """The earnings calendar, on its own thread because it is the slow one."""
     try:
         cal, ok = screener._earnings_calendar()
         print(f"[warm] earnings calendar: {len(cal)} companies, "
               f"{'complete' if ok else 'INCOMPLETE'}", flush=True)
     except Exception as e:
         print(f"[warm] earnings calendar failed: {e}", flush=True)
-    try:
-        book = _price_book(fetch=True)
-        print(f"[warm] price book: {len(pretrade._series_of(book))} tickers",
-              flush=True)
-    except Exception as e:
-        print(f"[warm] price book failed: {e}", flush=True)
-    try:
-        _vol_book(fetch=True)
-    except Exception as e:
-        print(f"[warm] volatility book failed: {e}", flush=True)
-    try:
-        _credit_book(fetch=True)
-    except Exception as e:
-        print(f"[warm] credit book failed: {e}", flush=True)
 
 
 def _warm_credit():
@@ -1686,7 +1686,8 @@ def _warm_credit():
 # The test suite is hermetic — it imports this module and must not reach
 # Nasdaq, the SEC or GitHub to do it.
 if not os.environ.get("SKIP_WARM"):
-    threading.Thread(target=_warm_check_data, daemon=True).start()
+    threading.Thread(target=_warm_books, daemon=True).start()
+    threading.Thread(target=_warm_calendar, daemon=True).start()
     threading.Thread(target=_book_refresher, daemon=True).start()
     threading.Thread(target=_calendar_refresher, daemon=True).start()
     threading.Thread(target=_results_refresher, daemon=True).start()
