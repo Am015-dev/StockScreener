@@ -326,3 +326,51 @@ assert brief.build(STATE)["overdue_note"] is None
 print("with nothing known about publishing, no claim is made either way")
 
 print("\nPUBLISHING EXPLANATION PINNED")
+
+
+# ---- the report has to be reachable ----
+# The credit report was built, deployed and working, and the reader said
+# "I do not see any Moodys like report anywhere". They were right: the
+# only link to it was one word in one cell of a table inside a <details>
+# that is collapsed by default. Working and findable are different
+# properties and only one of them had a test.
+BOOK = {"AAA": {"dd": 1.2, "band": "close to the edge"},
+        "BBB": {"dd": 2.9, "band": "watch it"},
+        "CCC": {"dd": 5.4, "band": "comfortable"},
+        "DDD": {"dd": 9.1, "band": "very far from trouble"},
+        "EEE": {"dd": 11.0, "band": "very far from trouble"},
+        "FFF": {"dd": None, "band": None},
+        "GGG": {"verdict": "not measured"}}
+
+d = brief.credit_directory(BOOK, n=2)
+assert d["n"] == 5, d["n"]                       # the two unmeasured are not counted
+assert [c["ticker"] for c in d["weakest"]] == ["AAA", "BBB"], d["weakest"]
+assert [c["ticker"] for c in d["strongest"]] == ["EEE", "DDD"], d["strongest"]
+assert d["weakest"][0]["band"] == "close to the edge"
+print("the directory names both ends of the ranking, and counts only what was measured")
+
+# an unmeasured company must never appear in a list a reader reads as
+# "these are the safe ones" — the whole project turns on that distinction
+for c in d["weakest"] + d["strongest"]:
+    assert isinstance(c["dd"], (int, float)), c
+    assert BOOK[c["ticker"]]["dd"] is not None
+print("nothing unmeasured is listed at either end")
+
+# with almost nothing measured, "the companies closest to trouble" is a
+# statement about coverage, not about companies, so it is not made
+assert brief.credit_directory({"AAA": {"dd": 1.0, "band": "x"}}) is None
+assert brief.credit_directory({}) is None
+assert brief.credit_directory(None) is None
+print("too thin a book produces no ranking rather than a misleading one")
+
+# and it survives the shapes a published file can actually arrive in
+assert brief.credit_directory({"AAA": None, "BBB": "junk", "CCC": {"dd": "nope"},
+                               "DDD": {"dd": 3.0}, "EEE": {"dd": 4.0}}) is None
+print("junk rows in the published book do not raise and do not count")
+
+out = brief.build(STATE, mc.state(), credit=BOOK)
+assert out["credit_index"] and out["credit_index"]["n"] == 5
+assert brief.build(STATE, mc.state())["credit_index"] is None
+print("the card carries the directory, and says nothing when there is nothing to say")
+
+print("\nCREDIT REPORT REACHABILITY PINNED")

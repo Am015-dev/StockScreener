@@ -127,6 +127,39 @@ def _credit_cell(rep: dict | None) -> dict | None:
                       else "warn" if band == "watch it" else "bad")}
 
 
+def credit_directory(credit: dict | None, n: int = 5) -> dict | None:
+    """The measured companies, as something a reader can actually click.
+
+    The report was built and then could not be found. Its only link from
+    the front page was one word in one cell of a table inside a section
+    that is collapsed by default — so a reader who had never thought to
+    type a ticker into a box had no way to learn a report existed at all.
+    Everything downstream of that is invisible work.
+
+    The two ends of the ranking are what goes here. A ranking needs no
+    calibration, which is the whole reason this measure survives being
+    free; and the middle of it is the least informative place to stand, so
+    the names worth naming are the ones at the edges.
+    """
+    rows = [(r["dd"], t, r) for t, r in (credit or {}).items()
+            if isinstance(r, dict) and isinstance(r.get("dd"), (int, float))]
+    if len(rows) < 4:
+        # fewer than that and "the four closest to trouble" is just "the
+        # four we measured", which says something about coverage and
+        # nothing about the companies
+        return None
+    rows.sort(key=lambda x: x[0])
+
+    def entry(dd, t, r):
+        cell = _credit_cell(r) or {}
+        return {"ticker": t, "dd": round(dd, 2), "band": r.get("band"),
+                "word": cell.get("word"), "level": cell.get("level")}
+
+    return {"n": len(rows),
+            "weakest": [entry(*row) for row in rows[:n]],
+            "strongest": [entry(*row) for row in rows[::-1][:n]]}
+
+
 def build(state: dict, market: dict | None = None,
           fresh: dict | None = None, credit: dict | None = None,
           publishing: dict | None = None) -> dict:
@@ -282,6 +315,11 @@ def build(state: dict, market: dict | None = None,
         "record": record,
         # The bar the strategy has to clear before any of this is tradeable.
         # It is on the card, not buried, because it is currently failing.
+        # The way into the credit reports. Not derived from the board —
+        # the board is eight names and the book is a hundred, and a reader
+        # asking "how solvent is the thing I already own" is not asking
+        # about today's pullback candidates.
+        "credit_index": credit_directory(credit),
         "bar": {"profit_factor": port.get("profit_factor"), "passes": tradeable},
         "concentration": state.get("concentration") or {},
     }
