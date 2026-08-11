@@ -196,6 +196,11 @@ PUBLISHED_BASE = os.environ.get(
     "PUBLISHED_BASE",
     "https://raw.githubusercontent.com/Am015-dev/StockScreener/screener-data")
 PUBLISHED_TTL = float(os.environ.get("PUBLISHED_TTL", "900"))   # re-check every 15 min
+# The longest a single published file may take before the fetch is
+# abandoned and the shipped copy answers instead. Generous, because the
+# price book is 650KB over a free instance's egress; bounded, because a
+# fetch with no ceiling is how a book stays empty forever.
+PUBLISHED_FETCH_S = float(os.environ.get("PUBLISHED_FETCH_S", "75"))
 _published = {"ts": 0.0, "index": None}
 
 
@@ -260,14 +265,37 @@ def _published_get(path: str):
         attempts.append(("data branch (with token)", {"Authorization": f"token {tok}"}))
     why = "no attempt made"
     for label, headers in attempts:
-        try:
-            r = rq.get(url, headers=headers, timeout=20)
-            if r.status_code == 200:
-                _published_reads[path] = label
-                return r.json()
-            why = f"HTTP {r.status_code}"
-        except Exception as e:
-            why = type(e).__name__
+        got = {"done": threading.Event()}
+
+        def _fetch(headers=headers, got=got):
+            try:
+                r = rq.get(url, headers=headers, timeout=20)
+                got["code"] = r.status_code
+                if r.status_code == 200:
+                    got["value"] = r.json()
+            except Exception as e:                          # noqa: BLE001
+                got["error"] = type(e).__name__
+            finally:
+                got["done"].set()
+
+        # A TOTAL bound, which requests does not give you: its timeout is
+        # the gap between bytes, so a body that trickles in never trips it
+        # at all. The price book is 650KB, and a fetch of it that never
+        # returns leaves this book — and the credit standings and the
+        # overlap measurement that read it — empty for the life of the
+        # process, with nothing anywhere saying why. Watched exactly that
+        # happen on the live instance: the warmer thread alive, running,
+        # and two minutes into a single GET.
+        threading.Thread(target=_fetch, name=f"get-{path}", daemon=True).start()
+        if not got["done"].wait(PUBLISHED_FETCH_S):
+            # the thread is abandoned, not killed — it will finish into a
+            # dict nobody reads, and the next refresh tries again
+            why = f"no answer within {PUBLISHED_FETCH_S:.0f}s"
+            continue
+        if "value" in got:
+            _published_reads[path] = label
+            return got["value"]
+        why = got.get("error") or f"HTTP {got.get('code')}"
     return _fallback(why)
 
 

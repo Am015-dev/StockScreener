@@ -647,3 +647,59 @@ finally:
         os.environ["SKIP_WARM"] = _saved_skip
 
 print("\nWARMER SUPERVISION PINNED")
+
+
+# ---- a published file that never arrives must not empty the site ----
+# Watched on the live instance: the warm-books thread alive and running,
+# three minutes into a single GET for the 650KB price book, with no read
+# recorded either way — so the price book, the volatility book and the
+# credit standings were all empty and every credit report on the site
+# said "not measured". requests' timeout is the gap between bytes, not a
+# total, so a body that trickles never trips it.
+import requests as _rq_mod
+
+_saved_get = _rq_mod.get
+_saved_reads = dict(A._published_reads)
+_saved_fetch_s = A.PUBLISHED_FETCH_S
+_hung = threading.Event()
+try:
+    def _never_returns(url, **kw):
+        _hung.wait(30)          # far longer than the bound below
+        raise AssertionError("this response must never be used")
+
+    _rq_mod.get = _never_returns
+    A.PUBLISHED_FETCH_S = 0.5
+    A._published_reads.clear()
+
+    _t0 = time.time()
+    _got = A._published_get("prices.json")
+    _spent = time.time() - _t0
+    assert _spent < 5, f"the fetch was not bounded ({_spent:.1f}s)"
+    print(f"a fetch that never answers is abandoned in {_spent:.1f}s, not waited on")
+
+    # and it says so, rather than looking like an empty file
+    _why = A._published_reads.get("prices.json") or ""
+    assert "no answer within" in _why, _why
+    print(f"and it reports why: {_why!r}")
+
+    # the shipped copy answers in its place, so the page keeps its data
+    import json as _json
+    os.makedirs(A.PUBLISHED_DIR, exist_ok=True)
+    with open(os.path.join(A.PUBLISHED_DIR, "prices.json"), "w") as _f:
+        _json.dump({"dates": ["d1"], "series": {"SHIP": [1.0]}}, _f)
+    A._published_reads.clear()
+    _got = A._published_get("prices.json")
+    assert _got and "SHIP" in (_got.get("series") or {}), _got
+    assert "shipped copy" in A._published_reads.get("prices.json", "")
+    print("the copy shipped with the build answers instead, and is labelled as such")
+finally:
+    _hung.set()
+    _rq_mod.get = _saved_get
+    A.PUBLISHED_FETCH_S = _saved_fetch_s
+    A._published_reads.clear(); A._published_reads.update(_saved_reads)
+    try:
+        os.remove(os.path.join(A.PUBLISHED_DIR, "prices.json"))
+    except OSError:
+        pass
+
+print("\nBOUNDED PUBLISHED FETCH PINNED")
