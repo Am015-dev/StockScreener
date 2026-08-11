@@ -199,6 +199,13 @@ PUBLISHED_TTL = float(os.environ.get("PUBLISHED_TTL", "900"))   # re-check every
 _published = {"ts": 0.0, "index": None}
 
 
+# Where each published file last came from, and why it did not. Without
+# this, "the book is empty" is indistinguishable from "the file is
+# missing" and from "the copy on disk will not parse" — and I spent an
+# hour guessing between them instead of looking.
+_published_reads: dict = {}
+
+
 def _published_get(path: str):
     """A published file: from the copy shipped with this build if present,
     otherwise over the network. The local copy needs no token and survives
@@ -207,9 +214,11 @@ def _published_get(path: str):
     try:
         if os.path.exists(local):
             with open(local) as f:
+                _published_reads[path] = "shipped copy"
                 return json.load(f)
-    except Exception:
-        pass
+        _published_reads[path] = "no shipped copy"
+    except Exception as e:
+        _published_reads[path] = f"shipped copy unreadable: {type(e).__name__}"
     import requests as rq
     headers = {}
     tok = os.environ.get("PUBLISHED_TOKEN") or os.environ.get("GITHUB_TOKEN")
@@ -218,9 +227,11 @@ def _published_get(path: str):
     try:
         r = rq.get(f"{PUBLISHED_BASE}/{path}", headers=headers, timeout=20)
         if r.status_code == 200:
+            _published_reads[path] = "data branch"
             return r.json()
-    except Exception:
-        pass
+        _published_reads[path] += f", network HTTP {r.status_code}"
+    except Exception as e:
+        _published_reads[path] += f", network {type(e).__name__}"
     return None
 
 
@@ -1632,7 +1643,14 @@ def published_route():
     """What the scheduled scan has published, and how old it is."""
     idx = _published_index()
     return jsonify({"base": PUBLISHED_BASE, "index": idx,
-                    "using": _state.get("published_preset")})
+                    "using": _state.get("published_preset"),
+                    "dir": PUBLISHED_DIR,
+                    "dir_listing": sorted(os.listdir(PUBLISHED_DIR))
+                                   if os.path.isdir(PUBLISHED_DIR) else None,
+                    "reads": dict(_published_reads),
+                    "loaded": {"prices": len(pretrade._series_of(_price_book())),
+                               "vol": len(_vol_book()),
+                               "credit": len(_credit_book())}})
 
 
 @app.route("/published/refresh", methods=["POST"])
