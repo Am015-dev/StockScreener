@@ -59,4 +59,25 @@ if bad:
     for b in bad[:12]: print("   ", b)
     sys.exit(1)
 print("the home page rendered every one of them")
+
+# ---- the table's columns must line up with its header ----
+# Adding the credit column replaced the RSI cell instead of sitting beside
+# it, so every row was one short and every value after RSI displayed under
+# the wrong heading. Nothing else in the suite would have noticed.
+import re as _re
+
+A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
+                top_picks=[GOOD], pending=[], results_ts=time.time(),
+                status="done")
+_html = c.get("/").get_data(as_text=True)
+_tbl = _re.search(r'<table class="wl".*?</table>', _html, _re.S)
+assert _tbl, "the watchlist table did not render"
+_rows = _re.findall(r"<tr[^>]*>(.*?)</tr>", _tbl.group(0), _re.S)
+_head = len(_re.findall(r"<th", _rows[0]))
+assert _head >= 7, _head
+for _r in _rows[1:]:
+    _n = len(_re.findall(r"<td", _r))
+    assert _n == _head, f"{_n} cells under {_head} headings — the columns are shifted"
+print(f"every row has {_head} cells under {_head} headings")
+
 print("\nPAGE ROBUSTNESS PINNED")

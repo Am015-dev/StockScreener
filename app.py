@@ -635,7 +635,8 @@ def index():
              if _state.get("results_ts") else None)
     except Exception:
         m, f = None, None
-    return render_template("brief.html", b=brief.build(_state, m, f))
+    return render_template(
+        "brief.html", b=brief.build(_state, m, f, credit=_credit_book()))
 
 
 @app.route("/full")
