@@ -21,8 +21,16 @@ name: Scheduled scan
 
 on:
   schedule:
-    # Every hour while US markets are open (13:00-21:00 UTC), weekdays.
-    - cron: "5 13-21 * * 1-5"
+    # Every two hours while US markets are open, weekdays.
+    #
+    # It was hourly. On a PRIVATE repository Actions minutes are metered —
+    # 2,000/month on the free plan — and a five-minute scan nine times a
+    # weekday is about 1,000 of them before CI runs at all. The quota ran
+    # out and every scan since has died in seven seconds with no logs,
+    # which is what a run that never started looks like. Halving the
+    # cadence roughly halves that; making the repository PUBLIC removes
+    # the meter entirely and is the real fix.
+    - cron: "5 13-21/2 * * 1-5"
   workflow_dispatch:
     inputs:
       universe_max:
