@@ -31,8 +31,16 @@
 name: ci
 
 on:
+  # Not every push. Working branches get pushed a dozen times an hour
+  # while something is being fixed, and on a private repository each of
+  # those runs bills against the same 2,000 minutes the scheduled scan
+  # needs. The deploy branch and pull requests are what have to be green.
   push:
+    branches:
+      - claude/pullback-uptrend-screener-vvlzeb
+      - main
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
