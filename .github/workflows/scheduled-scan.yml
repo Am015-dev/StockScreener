@@ -21,16 +21,19 @@ name: Scheduled scan
 
 on:
   schedule:
-    # Every two hours while US markets are open, weekdays.
+    # Hourly while US markets are open, weekdays.
     #
-    # It was hourly. On a PRIVATE repository Actions minutes are metered —
-    # 2,000/month on the free plan — and a five-minute scan nine times a
-    # weekday is about 1,000 of them before CI runs at all. The quota ran
-    # out and every scan since has died in seven seconds with no logs,
-    # which is what a run that never started looks like. Halving the
-    # cadence roughly halves that; making the repository PUBLIC removes
-    # the meter entirely and is the real fix.
-    - cron: "5 13-21/2 * * 1-5"
+    # This was halved to every two hours when the quota ran out: on a
+    # PRIVATE repository Actions minutes are metered, 2,000/month, and a
+    # five-minute scan nine times a weekday is about 1,000 of them before
+    # CI runs at all. Every scan then died in seven seconds with no logs,
+    # which is what a run that never started looks like.
+    #
+    # The repository is public now, so scheduled workflows are unmetered
+    # and the real fix is in place. Back to hourly — and the scan no
+    # longer triggers a redeploy, so an hourly scan no longer means an
+    # hourly restart of the website.
+    - cron: "5 13-21 * * 1-5"
   workflow_dispatch:
     inputs:
       universe_max:
@@ -122,47 +125,24 @@ jobs:
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
             HEAD:screener-data
 
-      - name: Ship results into the deployed build
-        if: env.UPSTREAM_UNAVAILABLE != '1'
-        continue-on-error: true
-        run: |
-          # Stash the results OUTSIDE the work tree first: the checkout below
-          # replaces the work tree, which would delete the very files being
-          # shipped.
-          stash=$(mktemp -d)
-          cp published/*.json "$stash"/ || { echo "nothing to ship"; exit 0; }
-          # And REMOVE them: the deploy branch now tracks these same paths,
-          # so git refuses a checkout that would overwrite untracked files.
-          # Copying alone is not enough — that is what failed the last run.
-          rm -f published/*.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          BRANCH=claude/pullback-uptrend-screener-vvlzeb
-          git fetch origin "$BRANCH" --depth=1
-          git checkout -q -B ship "origin/$BRANCH"
-          mkdir -p published
-          cp "$stash"/*.json published/
-          git add -f published/*.json
-          if git diff --cached --quiet; then
-            echo "results unchanged — nothing to ship"
-          else
-            git commit -q -m "Published scan $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push -q "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-              HEAD:"$BRANCH"
-            echo "shipped $(ls published/*.json | wc -l) result files"
-          fi
-          # Return the tree to exactly how the scan left it. Checking out
-          # another branch and back DELETES these files, because they are
-          # tracked on the deploy branch but not here — which is what broke
-          # the Summary step that reads them next.
-          git checkout -q -
-          mkdir -p published
-          cp "$stash"/*.json published/
-          echo "restored $(ls published/*.json | wc -l) result files to the work tree"
+      # There WAS a step here that also committed the results into the
+      # deployed branch. It is gone. Committing to that branch makes Render
+      # redeploy, and a redeploy wipes the instance's memory — so every
+      # hour the site threw away the earnings calendar, the price book and
+      # the credit standings it had just been given, and served "still
+      # loading" while it fetched them all again.
+      #
+      # It existed because the repository was private and the data branch
+      # could not be read without a token. It is public now, and the
+      # instance reads the branch directly — verified on the live service,
+      # which reports each file as coming from the data branch.
+      #
+      # The published/*.json files already committed to the deploy branch
+      # are deliberately LEFT there. They go stale, and that is fine: they
+      # are only ever read when the network read fails, and deleting them
+      # is exactly what caused a twelve-minute outage the last time this
+      # was cleaned up on an inference rather than a measurement.
 
-      # Reporting must never fail the job: the scan and the publish have
-      # already happened by this point, and losing a seven-minute run to a
-      # missing summary file is what happened before this guard existed.
       - name: Summary
         if: always()
         continue-on-error: true
