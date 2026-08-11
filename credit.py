@@ -216,6 +216,43 @@ def report(ticker: str, equity: float | None, closes,
     return out
 
 
+def history(closes, shares: float | None, default_point: float | None,
+            vol: float | None, rf: float = 0.0375) -> list | None:
+    """Distance to Default on each of the given days.
+
+    The commercial report's most-read page is the metric over time — a
+    company at 4.0 and falling is a different story from one at 4.0 and
+    rising, and a single figure cannot tell them apart.
+
+    It is computable from what is already free: the share count and the
+    balance sheet are fixed between filings, so the distance moves with
+    the market value of equity, which moves with the closing price. Each
+    day is re-solved from that day's market capitalisation.
+
+    The balance sheet is HELD CONSTANT across the window — it is the one
+    filed at the end of it — so this shows how the market re-rated a fixed
+    set of debts, not how the debts changed. The report has to say that
+    where the reader can see it; the number would be misread otherwise.
+    """
+    if not closes or not shares or not default_point or not vol or vol <= 0:
+        return None
+    out = []
+    for c in closes:
+        try:
+            price = float(c)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+        solved = solve_merton(shares * price, default_point, vol, rf)
+        if solved is None:
+            continue
+        d = distance_to_default(solved[0], solved[1], default_point, rf)
+        if d is not None:
+            out.append(round(d, 3))
+    return out or None
+
+
 def percentile(dd: float, peers: list[float]) -> int | None:
     """Where a Distance to Default sits among its peers.
 

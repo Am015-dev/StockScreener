@@ -223,6 +223,7 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
                                 as_of=bs.get("as_of"),
                                 vol=v.get("vol"), vol_obs=v.get("obs"))
             rep["source"] = bs.get("source")
+            rep["shares"] = sh.get("shares")
             rep["shares_as_of"] = sh.get("as_of")
             rep["shares_tag"] = sh.get("tag")
             rep["built"] = now

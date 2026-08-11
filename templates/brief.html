@@ -163,10 +163,10 @@
               <td class="r">{{ w.stop|num }}</td>
               <td class="r">{{ w.target|num }}</td>
               <td class="r">{{ w.rsi|num(0) }}</td>
-              <td>{% if w.credit %}<span class="{{ 'ok' if w.credit.level == 'ok'
+              <td>{% if w.credit %}<a href="/credit/{{ w.ticker }}" style="text-decoration:none"><span class="{{ 'ok' if w.credit.level == 'ok'
                   else 'warn' if w.credit.level == 'warn' else 'loss' }}"
                   title="{{ w.credit.band }} — {{ w.credit.dd }} standard deviations
-                         from its default point">{{ w.credit.word }}</span>{% else %}—{% endif %}</td>
+                         from its default point">{{ w.credit.word }}</span></a>{% else %}—{% endif %}</td>
               <td>{{ w.earnings or '—' }}</td>
             </tr>
           {% endfor %}
@@ -418,7 +418,8 @@ function paintCredit(d, run) {
       `its balance sheet filed to ${esc(d.as_of || "an unknown date")}.`;
 
   el.innerHTML = `<p style="margin:0 0 .6rem"><b style="color:${COLOR[lvl]}">` +
-    `${ICON[lvl]} Credit standing: ${esc(d.band)}</b><br>` +
+    `${ICON[lvl]} Credit standing: ${esc(d.band)}</b> ` +
+    `<a class="tiny" href="/credit/${encodeURIComponent(d.ticker || "")}">full report →</a><br>` +
     `<span class="tiny">${esc(lead)} ${esc(extra.join(" "))} ${esc(precise)} ` +
     `No chance-of-default percentage is given — that needs a database of ` +
     `companies that actually defaulted, which is the part nobody gives away.` +

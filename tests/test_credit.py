@@ -455,3 +455,42 @@ print(f"a filing older than {credit.FILING_MAX_AGE_DAYS} days is refused, "
       f"the same as a stale share count")
 
 print("\nBALANCE-SHEET INTEGRITY PINNED")
+
+
+# ---- the distance over time, which is what makes it a report ----
+# A company at 4.0 and falling is a different story from one at 4.0 and
+# rising, and a single figure cannot tell them apart. The share count and
+# the balance sheet are fixed between filings, so the distance moves with
+# the market value of equity — computable from prices already published.
+flat = [100.0] * 60
+falling = [round(100 * (1 - 0.5 * i / 60), 2) for i in range(60)]
+rising = [round(100 * (1 + 0.5 * i / 60), 2) for i in range(60)]
+
+h_flat = credit.history(flat, shares=1e9, default_point=4e10, vol=0.30)
+h_down = credit.history(falling, shares=1e9, default_point=4e10, vol=0.30)
+h_up = credit.history(rising, shares=1e9, default_point=4e10, vol=0.30)
+assert len(h_flat) == 60 and len(h_down) == 60
+assert max(h_flat) - min(h_flat) < 1e-6, "a flat price cannot move the distance"
+assert h_down[-1] < h_down[0] - 0.3, (h_down[0], h_down[-1])
+assert h_up[-1] > h_up[0] + 0.3, (h_up[0], h_up[-1])
+print(f"distance follows the price: halving takes {h_down[0]:.2f} to "
+      f"{h_down[-1]:.2f}, a 50% rise takes {h_up[0]:.2f} to {h_up[-1]:.2f}")
+
+# the last point of the history must agree with the headline figure
+dp = credit.default_point(4e10 * 0.4, 4e10 * 1.0)
+full = credit.report("X", 1e9 * flat[-1], flat, 4e10 * 0.4, 4e10 * 1.0, vol=0.30)
+tail = credit.history(flat, 1e9, full["default_point"], 0.30)[-1]
+assert abs(tail - full["dd"]) < 0.01, (tail, full["dd"])
+print(f"the last point of the line is the headline number: {tail:.2f} vs "
+      f"{full['dd']:.2f}")
+
+# and it refuses rather than drawing a line from nothing
+for bad in (dict(closes=[], shares=1e9, default_point=4e10, vol=0.3),
+            dict(closes=flat, shares=None, default_point=4e10, vol=0.3),
+            dict(closes=flat, shares=1e9, default_point=None, vol=0.3),
+            dict(closes=flat, shares=1e9, default_point=4e10, vol=0.0)):
+    assert credit.history(bad["closes"], bad["shares"], bad["default_point"],
+                          bad["vol"]) is None, bad
+print("a history that cannot be computed is None, never a flat line at zero")
+
+print("\nDISTANCE HISTORY PINNED")
