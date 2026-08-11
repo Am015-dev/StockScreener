@@ -684,7 +684,7 @@ def index():
         m, f = None, None
     return render_template(
         "brief.html",
-        b=brief.build(_state, m, f, credit=_credit_book(),
+        b=brief.build(_state, m, f, credit=_credit_view(),
                       publishing=(_publishing_state(float(_state["results_ts"]), f)
                                   if _state.get("results_ts") else None)))
 
@@ -935,6 +935,42 @@ def _credit_book(fetch: bool = False) -> dict:
     _creds.update(data=data, ts=time.time())
     print(f"[warm] credit book: {len(data)} companies", flush=True)
     return data
+
+
+_credit_view_memo = {"key": None, "data": {}}
+
+
+def _credit_view() -> dict:
+    """The published book, re-solved against the latest close.
+
+    An entry is a filing plus a price, and only the price moves daily.
+    Restating it here is arithmetic on data already in memory, and it is
+    what lets the scheduled run stop re-measuring companies it measured
+    yesterday just to pick up a newer price — which is the whole reason
+    coverage had stalled at 97 names.
+
+    A name that cannot be restated keeps its stored figure. Falling back
+    to what was published is honest; showing nothing because a price is
+    missing would lose a measurement that was genuinely made.
+    """
+    book = _credit_book()
+    if not book:
+        return {}
+    key = (_creds["ts"], _book["ts"])
+    if _credit_view_memo["key"] == key:
+        return _credit_view_memo["data"]
+    series = pretrade._series_of(_price_book()) or {}
+    out = {}
+    for t, rep in book.items():
+        if not isinstance(rep, dict):
+            continue
+        closes = [c for c in (series.get(t) or []) if c]
+        out[t] = (credit.restate(rep, closes[-1]) if closes else None) or rep
+    n_re = sum(1 for r in out.values() if r.get("restated"))
+    _credit_view_memo.update(key=key, data=out)
+    print(f"[credit] restated {n_re} of {len(out)} against the latest close",
+          flush=True)
+    return out
 
 
 def _results_refresher():
@@ -1225,7 +1261,7 @@ def _with_peers(rep: dict) -> dict:
     if rep.get("dd") is None:
         return rep
     me = (rep.get("ticker") or "").upper()
-    published = _credit_book() or {}
+    published = _credit_view() or {}
     if len(published) >= 5:
         peers = [r["dd"] for t2, r in published.items()
                  if t2.upper() != me and r.get("dd") is not None]
@@ -1255,7 +1291,7 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     """
     # Published first: computed on a runner the SEC will actually talk to,
     # so this path makes no outbound call and cannot time out.
-    pub = (_credit_book() or {}).get(ticker)
+    pub = (_credit_view() or {}).get(ticker)
     if pub and pub.get("dd") is not None:
         # ranked here rather than trusting the ranking the scan stored, so
         # a name added to the book later is ranked against the current set
@@ -1379,7 +1415,7 @@ def credit_page(ticker: str):
         hist = credit.history(closes, rep.get("shares"),
                               rep.get("default_point"), rep.get("equity_vol"))
     # nearest neighbours, so "65th percentile" has faces attached to it
-    book = _credit_book() or {}
+    book = _credit_view() or {}
     peers = sorted(((r.get("dd"), k) for k, r in book.items()
                     if r.get("dd") is not None and k != t))
     near = []
@@ -1392,6 +1428,13 @@ def credit_page(ticker: str):
                 for d, k in rows[max(0, i - 2):i + 3]]
     return render_template("credit.html", r=rep, t=t, hist=hist, near=near,
                            dates=dates[-len(hist):] if hist else [],
+                           # the filing date and the price date are different
+                           # facts and the report has to carry both: the
+                           # distance is a quarterly balance sheet solved
+                           # against a daily close, and a reader who is told
+                           # only the first will read the number as older
+                           # than it is
+                           priced_on=(dates[-1] if dates and closes else None),
                            n_measured=len(peers) + 1)
 
 
@@ -1695,15 +1738,87 @@ def _warm_credit():
           f"{time.time() - t0:.0f}s", flush=True)
 
 
+_WARMERS = (("warm-books", lambda: _warm_books()),
+            ("warm-calendar", lambda: _warm_calendar()),
+            ("books-refresh", lambda: _book_refresher()),
+            ("calendar-refresh", lambda: _calendar_refresher()),
+            ("results-poll", lambda: _results_refresher()),
+            ("crumb-hunter", lambda: _crumb_hunter()))
+_warm_lock = threading.Lock()
+_warm_done: set = set()          # returned normally; nothing left to do
+_warm_failed: dict = {}          # name -> when it last raised
+WARM_RETRY_S = 60.0
+
+
+def _ensure_warm() -> list:
+    """Start any warmer that is neither running nor finished, and say which.
+
+    Starting these once at import is not enough, and the live instance
+    proved it: /published reported MainThread and a gunicorn worker
+    thread and nothing else, while the books those threads fill sat
+    empty and every credit report on the site read "not measured".
+
+    Two ways that happens and neither is hypothetical. A warmer that
+    raises above its own try block exits, and takes its book with it for
+    the life of the process — silently, because a dead thread makes no
+    noise. And a server started with --preload imports this module in the
+    master, starts these threads there, then forks: the worker inherits
+    the module's data and none of its threads. Which of the two it was
+    does not change the fix.
+
+    Finished is not the same as dead. Two of these warm once and return;
+    the rest loop forever. Rather than label each one, a warmer that
+    returns normally is recorded as done and never restarted, and one
+    that raises is not — which gets both cases right without the list and
+    the labels having to agree.
+    """
+    if os.environ.get("SKIP_WARM"):
+        return []
+    started, now = [], time.time()
+    with _warm_lock:
+        alive = {t.name for t in threading.enumerate() if t.is_alive()}
+        for name, fn in _WARMERS:
+            if name in alive or name in _warm_done:
+                continue
+            # one that fails instantly must not be restarted by every
+            # request in a loop for as long as the failure lasts. Gated on
+            # having FAILED, not on having been tried, so a thread that
+            # was never started here — the fork case — starts at once.
+            if now - _warm_failed.get(name, 0.0) < WARM_RETRY_S:
+                continue
+
+            def _guarded(fn=fn, name=name):
+                try:
+                    fn()
+                except BaseException as e:                  # noqa: BLE001
+                    # A thread dying quietly is how a book stays empty
+                    # forever. Say so; a later request restarts it.
+                    _warm_failed[name] = time.time()
+                    print(f"[warm] {name} died: {type(e).__name__}: {e}",
+                          flush=True)
+                else:
+                    _warm_done.add(name)
+
+            threading.Thread(target=_guarded, name=name, daemon=True).start()
+            started.append(name)
+    if started:
+        print(f"[warm] started {', '.join(started)}", flush=True)
+    return started
+
+
 # The test suite is hermetic — it imports this module and must not reach
 # Nasdaq, the SEC or GitHub to do it.
-if not os.environ.get("SKIP_WARM"):
-    threading.Thread(target=_warm_books, name="warm-books", daemon=True).start()
-    threading.Thread(target=_warm_calendar, name="warm-calendar", daemon=True).start()
-    threading.Thread(target=_book_refresher, name="books-refresh", daemon=True).start()
-    threading.Thread(target=_calendar_refresher, name="calendar-refresh", daemon=True).start()
-    threading.Thread(target=_results_refresher, name="results-poll", daemon=True).start()
-    threading.Thread(target=_crumb_hunter, daemon=True).start()
+_ensure_warm()
+
+
+@app.before_request
+def _warm_guard():
+    """Every request checks the warmers are alive. This is the only thing
+    standing between one dead thread and a page with no data on it."""
+    try:
+        _ensure_warm()
+    except Exception as e:                                  # noqa: BLE001
+        print(f"[warm] guard failed: {type(e).__name__}: {e}", flush=True)
 
 
 # A scan that has said nothing for this long is not working, whatever its
@@ -1812,6 +1927,8 @@ def published_route():
                     # I have inferred "the warmer did not run" from an absence
                     # and been wrong about why; this is the fact itself.
                     "threads": sorted(t.name for t in threading.enumerate()),
+                    "warmers": {"done": sorted(_warm_done),
+                                "failed": sorted(_warm_failed)},
                     "loaded": {"prices": len(pretrade._series_of(_price_book())),
                                "vol": len(_vol_book()),
                                "credit": len(_credit_book())}})

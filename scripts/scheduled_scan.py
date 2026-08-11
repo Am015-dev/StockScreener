@@ -157,10 +157,21 @@ def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
     return out
 
 
-# A published standing is only as fresh as the price inside it — the
-# distance is a market value against a balance sheet — so an entry more
-# than a couple of days old is not worth serving.
-CREDIT_MAX_AGE_S = 2 * 86400
+# How long a MEASUREMENT is worth carrying. This used to be two days,
+# because the distance is a market value against a balance sheet and the
+# market value went stale. The site now re-solves each entry against the
+# latest close on read (credit.restate), so the only perishable part left
+# is the filing itself — which is quarterly. Ten days keeps the book wide
+# while still forcing every name through a fresh filing check well inside
+# a reporting cycle.
+CREDIT_MAX_AGE_S = 10 * 86400
+
+# And how long before a name is worth spending an SEC call on again. The
+# run used to re-measure the whole board every time to refresh a price it
+# already had; that consumed the entire budget, so `rest` — every company
+# not on today's board — was never reached and coverage sat at 97 names
+# for days. Nothing in a filing changes in 20 hours.
+CREDIT_REFRESH_S = 20 * 3600
 
 
 def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
@@ -177,12 +188,17 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
     and the site was quietly breaking it on every request.
 
     Measuring the whole liquid universe in one run would take a quarter of
-    an hour of SEC calls, so each run refreshes what it can inside a
+    an hour of SEC calls, so each run measures what it can inside a
     budget — today's board first, then whatever has gone longest without
     being measured — and merges the rest forward from the last published
-    book. Coverage grows; no single run is expensive; and nothing older
-    than CREDIT_MAX_AGE_S is carried, because the price inside it has
-    moved on.
+    book.
+
+    It has to SKIP what it already has, or it never gets past the board.
+    That was the bug: every run re-measured the same ~97 names to pick up
+    a newer share price, spent the whole budget on it, and coverage never
+    grew — so a reader asking about company number 98 was told it could
+    not be measured, for days, while the runner had the SEC budget to do
+    it and was spending it on Apple again.
     """
     import credit
     now = now or time.time()
@@ -209,6 +225,11 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
     for t in board + rest:
         if done >= max_names or time.time() - t0 > budget_s:
             break
+        # already measured recently: the filing has not changed, and the
+        # price it is served with is re-solved on read, so an SEC call
+        # here would buy nothing and cost a company never measured at all
+        if now - float((out.get(t) or {}).get("built") or 0) < CREDIT_REFRESH_S:
+            continue
         cik = cik_of.get(t.upper())
         closes = [c for c in (series.get(t) or []) if c]
         if not cik or not closes:

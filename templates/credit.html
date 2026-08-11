@@ -154,6 +154,9 @@
     <h2>Where the figures came from</h2>
     <div class="scroll"><table>
       <tr><td>Balance sheet</td><td class="r">filed to {{ r.as_of }}</td></tr>
+      {% if priced_on %}
+      <tr><td>Share price</td><td class="r">close of {{ priced_on }}</td></tr>
+      {% endif %}
       {% if r.source %}<tr><td>Read as</td><td class="r">{{ r.source }}</td></tr>{% endif %}
       <tr><td>Share count</td>
           <td class="r">{% if r.shares_as_of %}reported {{ r.shares_as_of }}{% else %}—{% endif %}</td></tr>
