@@ -1928,7 +1928,13 @@ def published_route():
                     # and been wrong about why; this is the fact itself.
                     "threads": sorted(t.name for t in threading.enumerate()),
                     "warmers": {"done": sorted(_warm_done),
-                                "failed": sorted(_warm_failed)},
+                                "failed": sorted(_warm_failed),
+                                # if this is set in the deployment
+                                # environment the warmers are disabled and
+                                # every book stays empty by design — worth
+                                # one line here rather than another round
+                                # of inferring it from an absence
+                                "suppressed": bool(os.environ.get("SKIP_WARM"))},
                     "loaded": {"prices": len(pretrade._series_of(_price_book())),
                                "vol": len(_vol_book()),
                                "credit": len(_credit_book())}})
