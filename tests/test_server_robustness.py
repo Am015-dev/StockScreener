@@ -494,6 +494,7 @@ import time as _t
 _real_cal2 = screener._earnings_calendar
 screener._earnings_calendar = _never
 A._book.update(data=None, ts=0.0)
+_saved_pg = A._published_get
 A._published_get = lambda path: ({"dates": ["d"], "series": {"X": [1.0]}}
                                  if path == "prices.json" else {})
 _t0 = _t.time()
@@ -502,7 +503,69 @@ assert _t.time() - _t0 < 5, "the books waited on something"
 assert A._price_book().get("series", {}).get("X"), "the price book did not load"
 assert _slow["n"] == 0, "_warm_books called the calendar"
 screener._earnings_calendar = _real_cal2
+A._published_get = _saved_pg          # later sections test the real one
 print("the books load without touching the calendar, so a slow Nasdaq cannot "
       "empty the page")
+
+
+# ---- a stale token must not make a public file look deleted ----
+# Measured against the real host: the same URL returns 200 with no header
+# and 404 with a token attached. raw.githubusercontent answers a token it
+# does not accept with 404 rather than 401, so an expired or wrongly
+# scoped credential makes a PUBLIC file indistinguishable from a missing
+# one — and the site sat empty with every file one anonymous GET away.
+import requests as _rq3
+_real3 = _rq3.get
+_seen = []
+
+
+class _R:
+    def __init__(self, code, body=None):
+        self.status_code, self._b = code, body
+
+    def json(self):
+        return self._b
+
+
+def _token_hostile(url, headers=None, timeout=None):
+    _seen.append(bool((headers or {}).get("Authorization")))
+    # 404 whenever a token is presented, 200 when it is not
+    if (headers or {}).get("Authorization"):
+        return _R(404)
+    return _R(200, {"presets": [{"preset": "ANON"}]})
+
+
+os.environ["PUBLISHED_TOKEN"] = "stale-token"
+_rq3.get = _token_hostile
+A.PUBLISHED_DIR = os.path.join(TMP, "empty_pub")
+os.makedirs(A.PUBLISHED_DIR, exist_ok=True)
+A._published_reads.clear()
+got = A._published_get("index.json")
+assert got and got["presets"][0]["preset"] == "ANON", got
+assert _seen and _seen[0] is False, "the anonymous attempt must come first"
+assert A._published_reads["index.json"] == "data branch"
+print("a public file is read anonymously, so a stale token cannot hide it")
+
+# and where the token IS required, it is still tried
+_seen.clear()
+
+
+def _token_required(url, headers=None, timeout=None):
+    _seen.append(bool((headers or {}).get("Authorization")))
+    if (headers or {}).get("Authorization"):
+        return _R(200, {"presets": [{"preset": "AUTHED"}]})
+    return _R(404)
+
+
+_rq3.get = _token_required
+A._published_reads.clear()
+got = A._published_get("index.json")
+assert got["presets"][0]["preset"] == "AUTHED", got
+assert _seen == [False, True], _seen
+assert "with token" in A._published_reads["index.json"]
+print("where the token is genuinely needed it is still used, as a retry")
+
+_rq3.get = _real3
+os.environ.pop("PUBLISHED_TOKEN", None)
 
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")
