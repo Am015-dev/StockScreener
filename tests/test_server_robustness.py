@@ -399,4 +399,63 @@ assert "press Run" not in _idx, \
     "the page still tells the reader to press a button that was removed"
 print("no page tells the reader to press the button that no longer exists")
 
+
+# ---- the data branch is preferred, and which source answered is visible ----
+# A shipped copy is frozen at build time; preferring it meant the site
+# would serve one board forever the moment nothing was committing fresh
+# results. And the two were indistinguishable from outside, which is how I
+# deleted the shipped files on the strength of an index that had come from
+# those very files.
+import requests as _rq2
+_real_get2 = _rq2.get
+_pubdir2 = os.path.join(TMP, "shipped2")
+os.makedirs(_pubdir2, exist_ok=True)
+with open(os.path.join(_pubdir2, "index.json"), "w") as f:
+    f.write('{"presets": [{"preset": "SHIPPED"}]}')
+_real_dir2 = A.PUBLISHED_DIR
+A.PUBLISHED_DIR = _pubdir2
+
+
+class _Resp:
+    status_code = 200
+
+    def json(self):
+        return {"presets": [{"preset": "NETWORK"}]}
+
+
+_rq2.get = lambda *a, **k: _Resp()
+A._published_reads.clear()
+got = A._published_get("index.json")
+assert got["presets"][0]["preset"] == "NETWORK", \
+    "the live data branch must win over a copy frozen into the build"
+assert A._published_reads["index.json"] == "data branch", A._published_reads
+
+
+class _Gone:
+    status_code = 404
+
+    def json(self):
+        raise ValueError
+
+
+_rq2.get = lambda *a, **k: _Gone()
+A._published_reads.clear()
+got = A._published_get("index.json")
+assert got["presets"][0]["preset"] == "SHIPPED", \
+    "with the branch unreachable the shipped copy must still answer"
+assert "shipped copy" in A._published_reads["index.json"]
+assert "404" in A._published_reads["index.json"], A._published_reads
+print("the data branch wins; a shipped copy answers when it cannot, and "
+      "/published names which")
+
+_rq2.get = _real_get2
+A.PUBLISHED_DIR = _real_dir2
+
+# and a warm instance picks up a new scan without being restarted
+import inspect as _i3
+assert hasattr(A, "_results_refresher")
+assert "_results_refresher" in _i3.getsource(A).split(
+    'if not os.environ.get("SKIP_WARM")')[-1], "the poller is never started"
+print("a new scan reaches a warm instance by polling, not by restarting it")
+
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")

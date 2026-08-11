@@ -206,19 +206,43 @@ _published = {"ts": 0.0, "index": None}
 _published_reads: dict = {}
 
 
+# Where each published file last came from. Without this, "serving a
+# frozen copy shipped with the build" and "serving the live data
+# branch" look identical — and I once deleted the shipped files on
+# the strength of an index that had come from those very files.
+_published_reads: dict = {}
+
+
 def _published_get(path: str):
-    """A published file: from the copy shipped with this build if present,
-    otherwise over the network. The local copy needs no token and survives
-    the disk wipe, so it is tried first."""
+    """A published file: from the data branch, falling back to any copy
+    shipped with this build.
+
+    The network is tried FIRST, which is the opposite of the original
+    order. A shipped copy is frozen at build time, so preferring it meant
+    that the moment the scan stopped committing results into the deployed
+    branch, the site would serve the same board forever with fresher data
+    one request away. Reading the branch directly needs the repository to
+    be public, which it now is.
+
+    Which source answered is recorded, because the two are otherwise
+    indistinguishable from outside — and that is exactly how the shipped
+    files came to be deleted on the strength of an index that had been
+    served by those very files.
+    """
     local = os.path.join(PUBLISHED_DIR, path)
-    try:
-        if os.path.exists(local):
-            with open(local) as f:
-                _published_reads[path] = "shipped copy"
-                return json.load(f)
-        _published_reads[path] = "no shipped copy"
-    except Exception as e:
-        _published_reads[path] = f"shipped copy unreadable: {type(e).__name__}"
+
+    def _fallback(why):
+        try:
+            if os.path.exists(local):
+                with open(local) as f:
+                    data = json.load(f)
+                _published_reads[path] = f"shipped copy ({why})"
+                return data
+            _published_reads[path] = f"unavailable ({why}, no shipped copy)"
+        except Exception as e:
+            _published_reads[path] = f"shipped copy unreadable: {type(e).__name__}"
+        return None
+
     import requests as rq
     headers = {}
     tok = os.environ.get("PUBLISHED_TOKEN") or os.environ.get("GITHUB_TOKEN")
@@ -229,10 +253,10 @@ def _published_get(path: str):
         if r.status_code == 200:
             _published_reads[path] = "data branch"
             return r.json()
-        _published_reads[path] += f", network HTTP {r.status_code}"
+        why = f"HTTP {r.status_code}"
     except Exception as e:
-        _published_reads[path] += f", network {type(e).__name__}"
-    return None
+        why = type(e).__name__
+    return _fallback(why)
 
 
 def _published_index(force: bool = False):
@@ -815,6 +839,7 @@ def snapshot_load():
 _book = {"ts": 0.0, "data": None}
 BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
 BOOKS_POLL_S = float(os.environ.get("BOOKS_POLL_S", "300"))
+RESULTS_POLL_S = float(os.environ.get("RESULTS_POLL_S", "600"))
 
 
 def _price_book(fetch: bool = False) -> dict:
@@ -898,6 +923,31 @@ def _credit_book(fetch: bool = False) -> dict:
     _creds.update(data=data, ts=time.time())
     print(f"[warm] credit book: {len(data)} companies", flush=True)
     return data
+
+
+def _results_refresher():
+    """Adopt each new scan without waiting for a redeploy.
+
+    Results were adopted once, at boot, so the only way a new scan reached
+    the page was the scan job committing into the deployed branch — which
+    made Render redeploy, hourly, wiping the earnings calendar, the price
+    book and the credit standings every time. That is the "still loading,
+    try again in a minute" a reader met on the hour.
+
+    Polling the data branch instead means the scan never touches the
+    build. It needed the repository to be public, because the branch could
+    not be read without a token before.
+    """
+    first = True
+    while True:
+        time.sleep(20 if first else RESULTS_POLL_S)
+        first = False
+        try:
+            if _load_published(force=True):
+                print(f"[poll] adopted a newer scan: "
+                      f"{len(_state.get('results') or [])} picks", flush=True)
+        except Exception as e:
+            print(f"[poll] published results unavailable: {e}", flush=True)
 
 
 def _book_refresher():
@@ -1639,6 +1689,7 @@ if not os.environ.get("SKIP_WARM"):
     threading.Thread(target=_warm_check_data, daemon=True).start()
     threading.Thread(target=_book_refresher, daemon=True).start()
     threading.Thread(target=_calendar_refresher, daemon=True).start()
+    threading.Thread(target=_results_refresher, daemon=True).start()
     threading.Thread(target=_crumb_hunter, daemon=True).start()
 
 
