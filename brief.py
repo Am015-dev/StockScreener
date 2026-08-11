@@ -50,7 +50,7 @@ _SUFFIX_UNIT = {
 }
 
 
-def _unit(ticker: str) -> str:
+def _unit(ticker) -> str:
     """The symbol this listing's prices are quoted in."""
     parts = str(ticker or "").rsplit(".", 1)
     return _SUFFIX_UNIT.get(parts[1].upper(), "$") if len(parts) == 2 else "$"
@@ -100,8 +100,35 @@ def _pct_above(price, support):
         return None
 
 
+# Distance to Default, in the fewest words that still mean something.
+# The board's own rows are the ones a reader is deciding between, so the
+# standing belongs beside them rather than only behind a ticker box.
+_CREDIT_SHORT = {"very far from trouble": "strong",
+                 "comfortable": "ok",
+                 "watch it": "watch",
+                 "close to the edge": "weak",
+                 "in distress on this measure": "distress"}
+
+
+def _credit_cell(rep: dict | None) -> dict | None:
+    """One row's credit standing, or None if it was never measured.
+
+    None means unmeasured, and the template shows a dash for it. It must
+    never render as a reassuring word: an unmeasured company and a company
+    measured as safe are the two things this project spends its effort
+    keeping apart.
+    """
+    if not rep or rep.get("dd") is None:
+        return None
+    band = rep.get("band")
+    return {"word": _CREDIT_SHORT.get(band, "measured"), "band": band,
+            "dd": rep.get("dd"),
+            "level": ("ok" if band in ("very far from trouble", "comfortable")
+                      else "warn" if band == "watch it" else "bad")}
+
+
 def build(state: dict, market: dict | None = None,
-          fresh: dict | None = None) -> dict:
+          fresh: dict | None = None, credit: dict | None = None) -> dict:
     """Turn finished scan state into the card. Never raises."""
     results = list(state.get("results") or [])
     pending = list(state.get("pending") or [])
@@ -237,6 +264,10 @@ def build(state: dict, market: dict | None = None,
              # and a restored browser snapshot is enough to produce one
              "support_dist": _pct_above(r.get("price"), r.get("support")),
              "earnings": r.get("earnings_in"),
+             # str(): a row can arrive from a restored browser snapshot
+             # with a ticker that is a float, and .upper() on one is a 500
+             "credit": _credit_cell((credit or {}).get(
+                 str(r.get("ticker") or "").upper())),
              "analyst": r.get("analyst")}
             for r in results[:8]],
         "also": also,

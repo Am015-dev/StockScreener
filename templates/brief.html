@@ -153,7 +153,7 @@
         <div class="wrap"><table class="wl" id="results-wl">
           <thead><tr><th>Stock</th><th class="r">Price</th><th class="r">Support</th>
             <th class="r">Stop</th><th class="r">Target</th><th class="r">RSI</th>
-            <th>Earnings</th></tr></thead>
+            <th>Debts</th><th>Earnings</th></tr></thead>
           <tbody>
           {% for w in b.watchlist %}
             <tr data-ticker="{{ w.ticker }}">
@@ -163,6 +163,10 @@
               <td class="r">{{ w.stop|num }}</td>
               <td class="r">{{ w.target|num }}</td>
               <td class="r">{{ w.rsi|num(0) }}</td>
+              <td>{% if w.credit %}<span class="{{ 'ok' if w.credit.level == 'ok'
+                  else 'warn' if w.credit.level == 'warn' else 'loss' }}"
+                  title="{{ w.credit.band }} — {{ w.credit.dd }} standard deviations
+                         from its default point">{{ w.credit.word }}</span>{% else %}—{% endif %}</td>
               <td>{{ w.earnings or '—' }}</td>
             </tr>
           {% endfor %}
@@ -178,6 +182,14 @@
           {% for g in b.blocked %}{{ g.n }} — {{ g.reason }}
           ({{ g.tickers|join(', ') }}){% if not loop.last %}; {% endif %}{% endfor %}.
           A check that cannot be completed blocks the pick rather than passing it.</p>
+        {% endif %}
+        {% if b.watchlist %}
+        <p class="tiny" style="margin-top:.9rem"><b>Debts</b> is how far the company
+          sits from the point where what it owes comes due against too little to pay
+          it, read from its own filed balance sheet — <span class="ok">strong</span>,
+          <span class="ok">ok</span>, <span class="warn">watch</span>,
+          <span class="loss">weak</span>. A dash means it has not been measured yet,
+          which is not the same as safe.</p>
         {% endif %}
         <p class="tiny" style="margin-top:.9rem"><b>Track record:</b>
           {% if b.record and b.record.n %}{{ b.record.win_rate }}% of {{ b.record.n }}

@@ -253,3 +253,43 @@ assert "screener" not in _imported2, \
 print("the currency map is local — the card still cannot reach the market")
 
 print("\nCURRENCY PINNED")
+
+
+# ---- the credit standing belongs on the board, not only behind a box ----
+# The scan measures every board name first, so the row a reader is
+# deciding about already has a standing. What must never happen is an
+# unmeasured company reading as a safe one.
+rows = [{"ticker": "AAA", "price": 100.0, "stop": 94.0, "resistance": 118.0,
+         "risk_EUR": 100.0, "RR": 3.0, "shares": 10.0, "support": 96.0},
+        {"ticker": "BBB", "price": 50.0, "stop": 47.0, "resistance": 60.0,
+         "risk_EUR": 100.0, "RR": 3.0, "shares": 10.0, "support": 48.0},
+        {"ticker": "CCC", "price": 20.0, "stop": 19.0, "resistance": 25.0,
+         "risk_EUR": 100.0, "RR": 3.0, "shares": 10.0, "support": 19.5}]
+book = {"AAA": {"dd": 11.2, "band": "very far from trouble"},
+        "BBB": {"dd": 2.9, "band": "watch it"},
+        "CCC": {"dd": None, "band": None}}          # measured, but refused
+out = brief.build({"results": rows}, credit=book)
+cells = {w["ticker"]: w["credit"] for w in out["watchlist"]}
+
+assert cells["AAA"]["word"] == "strong" and cells["AAA"]["level"] == "ok"
+assert cells["BBB"]["word"] == "watch" and cells["BBB"]["level"] == "warn"
+assert cells["CCC"] is None, "a refused measurement must not become a word"
+print(f"board rows carry their standing: AAA {cells['AAA']['word']}, "
+      f"BBB {cells['BBB']['word']}, CCC unmeasured")
+
+# a name the scan has not reached is unmeasured, NOT safe
+missing = brief.build({"results": rows}, credit={})
+assert all(w["credit"] is None for w in missing["watchlist"])
+for w in missing["watchlist"]:
+    assert w["credit"] is None
+print("with no credit book at all, every row reads unmeasured rather than safe")
+
+# and every band maps to something, so a new band never renders blank
+for band in ("very far from trouble", "comfortable", "watch it",
+             "close to the edge", "in distress on this measure"):
+    cell = brief._credit_cell({"dd": 1.0, "band": band})
+    assert cell["word"] and cell["level"] in ("ok", "warn", "bad"), band
+assert brief._credit_cell({"dd": 1.0, "band": "something new"})["word"] == "measured"
+print("every band renders a word, including one this file has not seen")
+
+print("\nBOARD CREDIT COLUMN PINNED")
