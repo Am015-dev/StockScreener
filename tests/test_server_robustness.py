@@ -473,12 +473,14 @@ assert hasattr(A, "_warm_books") and hasattr(A, "_warm_calendar"), \
 _books_src = _i4.getsource(A._warm_books)
 assert "_earnings_calendar" not in _books_src, \
     "the books must not wait on the calendar"
-_started = _i4.getsource(A).split('if not os.environ.get("SKIP_WARM")')[-1]
-for _fn in ("_warm_books", "_warm_calendar"):
-    assert _fn in _started, f"{_fn} is defined but never started"
-# and they must be started as SEPARATE threads, not chained
-assert _started.count("threading.Thread(target=_warm_books") == 1
-assert _started.count("threading.Thread(target=_warm_calendar") == 1
+# each is registered as its own warmer, so each gets its own thread —
+# chaining them is what put the books behind the calendar
+_names = [n for n, _ in A._WARMERS]
+for _fn in ("warm-books", "warm-calendar"):
+    assert _names.count(_fn) == 1, f"{_fn} is not registered exactly once: {_names}"
+_calls = {n: set(f.__code__.co_names) for n, f in A._WARMERS}
+assert _calls["warm-books"] == {"_warm_books"}, _calls["warm-books"]
+assert _calls["warm-calendar"] == {"_warm_calendar"}, _calls["warm-calendar"]
 
 # a calendar that never returns must not stop the books loading
 _slow = {"n": 0}
@@ -569,3 +571,79 @@ _rq3.get = _real3
 os.environ.pop("PUBLISHED_TOKEN", None)
 
 print("\nALL SERVER-ROBUSTNESS TESTS PASSED")
+
+
+# ---- a warmer that is not running must be restarted ----
+# Measured on the live instance: /published reported MainThread and one
+# gunicorn worker thread and NOTHING else, while the price, volatility
+# and credit books were all empty and every credit report on the site
+# said "not measured". Whether the threads died or were started in a
+# master that then forked, starting them once at import was not enough.
+_saved_warmers = A._WARMERS
+_saved_done, _saved_failed = set(A._warm_done), dict(A._warm_failed)
+_saved_skip = os.environ.get("SKIP_WARM")
+try:
+    os.environ.pop("SKIP_WARM", None)
+    A._warm_done.clear(); A._warm_failed.clear()
+
+    _ran = []
+    _stop = threading.Event()
+    A._WARMERS = (("t-forever", lambda: (_ran.append("forever"), _stop.wait())),
+                  ("t-once", lambda: _ran.append("once")),
+                  ("t-broken", lambda: (_ran.append("broken"),
+                                        (_ for _ in ()).throw(RuntimeError("nope")))))
+
+    assert sorted(A._ensure_warm()) == ["t-broken", "t-forever", "t-once"]
+    for _ in range(50):
+        if len(_ran) >= 3: break
+        time.sleep(0.02)
+    assert sorted(_ran) == ["broken", "forever", "once"], _ran
+    print("every warmer that was not running got started")
+
+    # the one still looping is not restarted, the one that finished is not
+    # re-run, and the one that raised is held off rather than restarted by
+    # every request for as long as the failure lasts
+    for _ in range(50):
+        if "t-once" in A._warm_done and "t-broken" in A._warm_failed: break
+        time.sleep(0.02)
+    assert A._ensure_warm() == [], A._ensure_warm()
+    assert "t-once" in A._warm_done and "t-broken" not in A._warm_done
+    assert "t-broken" in A._warm_failed
+    print("a running warmer is left alone, a finished one is not re-run, and a "
+          "failed one is not restarted on every single request")
+
+    # but once the hold-off expires the failed one IS tried again — a
+    # transient failure must not disable a book for the life of the process
+    _retried = []
+    for _ in range(100):
+        # the failed thread may not have exited yet, and a warmer that is
+        # still running must not be started twice — so poll rather than
+        # racing it
+        A._warm_failed["t-broken"] = time.time() - A.WARM_RETRY_S - 1
+        _retried = A._ensure_warm()
+        if _retried:
+            break
+        time.sleep(0.02)
+    assert _retried == ["t-broken"], _retried
+    print("a failure is retried later, not treated as permanent")
+
+    # and the guard is wired to every request, which is the only thing
+    # standing between one dead thread and a page with no data on it
+    A._warm_done.clear(); A._warm_failed.clear(); _ran.clear()
+    _stop.set()
+    c = A.app.test_client()
+    c.get("/published")
+    for _ in range(50):
+        if "once" in _ran: break
+        time.sleep(0.02)
+    assert "once" in _ran, _ran
+    print("a request restarts them, so the site repairs itself without a deploy")
+finally:
+    _stop.set()
+    A._WARMERS = _saved_warmers
+    A._warm_done.clear(); A._warm_done.update(_saved_done)
+    A._warm_failed.clear(); A._warm_failed.update(_saved_failed)
+    if _saved_skip is not None:
+        os.environ["SKIP_WARM"] = _saved_skip
+
+print("\nWARMER SUPERVISION PINNED")

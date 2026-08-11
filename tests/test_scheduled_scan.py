@@ -359,7 +359,7 @@ print("a name with no published prices is skipped, not valued without one")
 # carries the rest forward. What it must NOT carry is a standing whose
 # price has moved on: the distance is a market value against a balance
 # sheet, so a week-old entry is a week-old market capitalisation.
-_prev = {"OLD": {"ticker": "OLD", "dd": 4.0, "built": 1_000_000 - 10 * 86400},
+_prev = {"OLD": {"ticker": "OLD", "dd": 4.0, "built": 1_000_000 - 30 * 86400},
          "KEPT": {"ticker": "KEPT", "dd": 6.0, "built": 1_000_000 - 3600}}
 _merged = scheduled_scan.credit_book(["AAA"], _cb_prices, _cb_vols,
                                      prev=_prev, now=1_000_000)
@@ -376,13 +376,55 @@ _wide_prices = {"dates": _cb_prices["dates"],
                 "series": {t: [100.0] * 60 for t in ("AAA", "BBB")}}
 _stale_first = scheduled_scan.credit_book(
     [], _wide_prices, _cb_vols,
-    prev={"BBB": {"ticker": "BBB", "dd": 1.0, "built": 1_000_000 - 7200},
+    prev={"BBB": {"ticker": "BBB", "dd": 1.0,
+                  "built": 1_000_000 - scheduled_scan.CREDIT_REFRESH_S - 60},
           "AAA": {"ticker": "AAA", "dd": 1.0, "built": 1_000_000 - 60}},
     max_names=1, now=1_000_000)
 assert _stale_first["BBB"]["built"] == 1_000_000, \
     "the longest-unmeasured name must be the one refreshed"
 assert _stale_first["AAA"]["built"] == 1_000_000 - 60, "the fresh one is left"
 print("each run refreshes whatever has gone longest without measuring")
+
+# ---- and a name measured recently must not be measured AGAIN ----
+# This is the bug that froze coverage at 97 companies. Every run walked
+# the board first, re-measured all of it to pick up a newer share price,
+# hit its budget, and never reached a single company it had not already
+# seen. The site now re-solves the stored filing against the latest close
+# on read, so those calls bought nothing at all — they cost the SEC
+# budget that should have gone to company number 98.
+_seen_urls = []
+
+
+def _counting_sec(url, timeout=20):
+    _seen_urls.append(url)
+    return _fake_sec_get(url)
+
+
+scheduled_scan._sec_get = _counting_sec
+_fresh = {"AAA": {"ticker": "AAA", "dd": 1.0, "built": 1_000_000 - 60},
+          "BBB": {"ticker": "BBB", "dd": 1.0, "built": 1_000_000 - 60}}
+_seen_urls.clear()
+_skipped = scheduled_scan.credit_book(["AAA", "BBB"], _cb_prices, _cb_vols,
+                                      prev=_fresh, now=1_000_000)
+_filing_calls = [u for u in _seen_urls if "companyconcept" in u]
+assert not _filing_calls, f"re-read filings it already had: {_filing_calls[:3]}"
+assert _skipped["AAA"]["built"] == 1_000_000 - 60, "the stored entry stands"
+assert set(_skipped) == {"AAA", "BBB"}
+print("a name measured hours ago costs no SEC call at all")
+
+# so the budget goes where it is worth spending: names never measured
+_widen_prices = {"dates": _cb_prices["dates"],
+                 "series": {"AAA": [100.0] * 60, "BBB": [100.0] * 60}}
+_widened = scheduled_scan.credit_book(
+    ["AAA"], _widen_prices, _cb_vols,
+    prev={"AAA": {"ticker": "AAA", "dd": 1.0, "built": 1_000_000 - 60}},
+    max_names=1, now=1_000_000)
+assert _widened["BBB"]["built"] == 1_000_000, \
+    "the one measurement this run could afford went to the name it had, " \
+    "not the one it was missing"
+print("the one call it could afford went to the company it did not have")
+
+scheduled_scan._sec_get = _fake_sec_get
 
 # a budget the run cannot exceed, whatever the SEC does
 _slow_calls = {"n": 0}

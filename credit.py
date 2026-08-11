@@ -253,6 +253,53 @@ def history(closes, shares: float | None, default_point: float | None,
     return out or None
 
 
+def restate(rep: dict | None, price: float | None,
+            rf: float = 0.0375) -> dict | None:
+    """The same balance sheet, re-solved against today's closing price.
+
+    A published standing is only as current as the price it was solved
+    from, and that made the whole book expensive: every scheduled run
+    re-measured the same names to refresh a price it already had, spent
+    its entire SEC budget doing it, and coverage stopped growing at the
+    size of one run — 97 companies, all rebuilt every time, while a
+    reader asking about the 98th got nothing.
+
+    Nothing in a filing changes between quarters. What moves daily is the
+    share price, and re-solving for that costs no network call at all. So
+    the book stores the filing and the distance is restated here, which
+    frees every run's SEC budget to measure companies it has never seen.
+
+    Returns None when it cannot be restated, so a caller falls back to
+    the stored figure rather than showing an invented one.
+    """
+    if not rep or rep.get("dd") is None:
+        return None
+    shares, dp = rep.get("shares"), rep.get("default_point")
+    vol = rep.get("equity_vol")
+    if not shares or not dp or not vol or vol <= 0:
+        return None
+    try:
+        px = float(price)
+    except (TypeError, ValueError):
+        return None
+    if px <= 0:
+        return None
+    equity = shares * px
+    solved = solve_merton(equity, dp, vol, rf)
+    if solved is None:
+        return None
+    dd = distance_to_default(solved[0], solved[1], dp, rf)
+    if dd is None:
+        return None
+    dd = round(dd, 2)
+    return dict(rep, dd=dd, band=band(dd), equity=equity,
+                asset_value=solved[0], asset_vol=round(solved[1], 4),
+                market_leverage=round(dp / equity, 4),
+                verdict=f"{dd} standard deviations from its default point "
+                        f"— {band(dd)}.",
+                restated=True, stored_dd=rep["dd"])
+
+
 def percentile(dd: float, peers: list[float]) -> int | None:
     """Where a Distance to Default sits among its peers.
 

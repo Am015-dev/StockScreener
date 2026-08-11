@@ -494,3 +494,57 @@ for bad in (dict(closes=[], shares=1e9, default_point=4e10, vol=0.3),
 print("a history that cannot be computed is None, never a flat line at zero")
 
 print("\nDISTANCE HISTORY PINNED")
+
+
+# ---- restating a published standing against today's close ----
+# The book stores a filing and a price. Only the price moves daily, and
+# re-solving for it costs nothing — which is what frees the scheduled
+# run from re-measuring the same 97 companies every time to refresh a
+# number it could have computed locally.
+CLOSES = [100.0 * (1.0 + 0.012 * ((i % 7) - 3)) for i in range(120)]
+REP = credit.report("TST", 60e9, CLOSES, 10e9, 30e9, as_of="2026-06-30")
+REP["shares"] = 60e9 / CLOSES[-1]          # the count the 60bn came from
+assert REP["dd"] is not None
+
+same = credit.restate(REP, CLOSES[-1])
+assert abs(same["dd"] - REP["dd"]) < 0.02, (same["dd"], REP["dd"])
+assert same["restated"] is True and same["stored_dd"] == REP["dd"]
+print("restating at the same price reproduces the published distance")
+
+up, down = credit.restate(REP, 150.0), credit.restate(REP, 60.0)
+assert up["dd"] > same["dd"] > down["dd"], (up["dd"], same["dd"], down["dd"])
+assert up["market_leverage"] < same["market_leverage"] < down["market_leverage"]
+assert up["band"] == credit.band(up["dd"])
+assert up["verdict"].startswith(str(up["dd"]))
+print("a higher price moves it away from trouble and a lower one towards it, "
+      "and the words follow the number")
+
+# the balance sheet is NOT touched — that is the whole claim the report
+# makes about this window, and a restatement that silently moved the
+# debts would make the sparkline a lie
+for k in ("default_point", "total_liabilities", "current_liabilities",
+          "as_of", "shares", "equity_vol"):
+    assert up.get(k) == REP.get(k), k
+print("the filing is carried through untouched — only the price moves")
+
+# it must refuse rather than invent: no price, no shares, no measurement
+assert credit.restate(REP, None) is None
+assert credit.restate(REP, 0) is None
+assert credit.restate(REP, -5) is None
+assert credit.restate(REP, "n/a") is None
+assert credit.restate(dict(REP, shares=None), 100.0) is None
+assert credit.restate(dict(REP, dd=None), 100.0) is None
+assert credit.restate(dict(REP, equity_vol=0), 100.0) is None
+assert credit.restate(None, 100.0) is None
+assert credit.restate({}, 100.0) is None
+print("anything it cannot restate returns nothing, so the caller keeps the "
+      "published figure instead of showing an invented one")
+
+# and it agrees with the series the sparkline is drawn from, because they
+# are the same computation and must not drift apart
+h = credit.history([137.0], REP["shares"], REP["default_point"],
+                   REP["equity_vol"])
+assert abs(h[0] - credit.restate(REP, 137.0)["dd"]) < 0.01
+print("the headline and the chart are the same calculation")
+
+print("\nRESTATEMENT PINNED")
