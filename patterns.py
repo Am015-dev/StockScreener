@@ -277,6 +277,15 @@ def test_pattern(series: dict, fn, horizon: int = DEFAULT_HORIZON,
     the same day: what did stocks that were moving THIS much, on THIS
     day, do next? Anything left after that belongs to the shape.
 
+    The comparison pool deliberately still contains the pattern's own
+    hits. The question being answered is "would picking this shape beat
+    picking at random from the stocks I could have picked?", and the
+    stocks you could have picked include the ones the shape flagged. The
+    cost is that a shape covering half the market can never show a large
+    number, because it is largely being compared against itself — that
+    biases towards finding nothing, which is the safe direction to be
+    wrong in.
+
     Returns None when there are too few DAYS to say anything, however
     many stock-days that adds up to.
     """
