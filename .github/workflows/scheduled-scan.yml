@@ -38,7 +38,7 @@ on:
     inputs:
       universe_max:
         description: "How many stocks to scan"
-        default: "1500"
+        default: "1800"
       presets:
         description: "Comma-separated preset names (blank = all)"
         default: ""
@@ -90,7 +90,7 @@ jobs:
           set +e
           python scripts/scheduled_scan.py \
             --out published \
-            --universe-max "${{ github.event.inputs.universe_max || '1500' }}" \
+            --universe-max "${{ github.event.inputs.universe_max || '1800' }}" \
             --presets "${{ github.event.inputs.presets || '' }}"
           code=$?
           set -e

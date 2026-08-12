@@ -46,12 +46,21 @@ import db as market_db
 import universe_static
 
 # ----------------------- PARAMETERS -----------------------
-# All Yahoo sectors except Financial Services (the no-financials rule —
-# enforced again at stage 2 as a safety net for EU strays).
+# Every Yahoo sector, INCLUDING Financial Services. The pattern screen
+# still refuses financial candidates at stage 2 (SECTOR_EXCLUDE below) —
+# that is a strategy rule about one feature. But this list also builds
+# the UNIVERSE, which is the data layer every other feature reads, and
+# excluding the sector here meant JPMorgan, Bank of America, Visa and
+# Mastercard could never exist anywhere on the site: no prices for the
+# overlap check, no verified earnings dates, nothing — for the sector
+# ordinary portfolios hold most of. A reader who held bank stocks was
+# told their whole book "could not be compared". The dead strategy's
+# exclusion had contaminated the data layer.
 ALL_SECTORS = [
     "Technology", "Healthcare", "Industrials", "Consumer Cyclical",
     "Consumer Defensive", "Energy", "Basic Materials",
     "Communication Services", "Utilities", "Real Estate",
+    "Financial Services",
 ]
 EU_REGIONS = ["de", "fr", "ch", "gb", "it", "nl", "dk", "se", "no", "es"]
 SECTOR_EXCLUDE = {"Financial Services"}  # hard rule, not user-tunable
