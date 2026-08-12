@@ -71,6 +71,8 @@ jobs:
         run: python tests/test_brief.py
       - name: Pre-trade check (overlap, earnings, bets before/after)
         run: python tests/test_pretrade.py
+      - name: Polygon adapter (bulk shape, pacing, refusals — offline)
+        run: python tests/test_polygon.py
       - name: Credit model (Merton solve, refusals, no invented probability)
         run: python tests/test_credit.py
       - name: Credit endpoint (peer ranking computed on read, warmer)
