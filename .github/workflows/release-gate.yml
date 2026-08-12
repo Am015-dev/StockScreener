@@ -1,0 +1,40 @@
+# The audit that used to be done by hand, after every deploy, forever.
+#
+# Every serious defect this project shipped was invisible to curl and
+# obvious in a browser: the page that hid itself behind display:none,
+# the JS that painted one ticker's credit standing under another's
+# headline, the "deployed" that was claimed while Render was still
+# building the previous push. This runs on every push to the deploy
+# branch, waits until the site reports it is RUNNING that commit, and
+# then audits the rendered pages in headless Chromium at phone width.
+#
+# A red run here means the live site does not do what the code claims —
+# whatever the commit message says.
+name: Release gate
+
+on:
+  push:
+    branches:
+      - claude/pullback-uptrend-screener-vvlzeb
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-gate
+  cancel-in-progress: true      # only the newest push matters
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright
+      - run: python -m playwright install --with-deps chromium
+      - name: Audit the deployed build
+        run: |
+          python scripts/release_gate.py \
+            --url https://pullback-screener.onrender.com \
+            --commit "${{ github.sha }}"

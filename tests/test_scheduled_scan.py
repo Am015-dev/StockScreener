@@ -510,4 +510,59 @@ print("the refusal is carried forward without asking the SEC again")
 
 scheduled_scan._sic_of = lambda cik: "3711"
 
+
+# ---- a name that cannot be measured is an answer, not a queue poison ----
+# Unrecorded failures kept built=0, sorted to the FRONT of the next run's
+# queue, and once five existed every run re-attempted the same five,
+# tripped the miss-abort, and measured nothing new — coverage froze at
+# one run's worth of names, every timestamp in the live book from a
+# single run. A refusal is now stored with its reason, skipped while
+# fresh like any measurement, and never counted as an SEC failure.
+_dead = {"n": 0}
+
+
+def _sec_dead_quote(url, timeout=20):
+    if "company_tickers" in url:
+        return {"fields": ["cik", "name", "ticker", "exchange"],
+                "data": [[i + 1, f"N{i}", f"DQ{i}", "NYSE"] for i in range(6)]
+                        + [[99, "Good", "GOOD", "NYSE"]]}
+    _dead["n"] += 1
+    cik = int(url.split("CIK")[1][:10])
+    lev = 0.3
+    if url.endswith("Liabilities.json"):
+        return {"units": {"USD": [{"form": "10-Q", "end": "2026-06-30",
+                                   "val": lev * 1e11}]}}
+    if url.endswith("LiabilitiesCurrent.json"):
+        return {"units": {"USD": [{"form": "10-Q", "end": "2026-06-30",
+                                   "val": lev * 0.4e11}]}}
+    if url.endswith("EntityCommonStockSharesOutstanding.json"):
+        return {"units": {"shares": [{"form": "10-Q", "end": "2026-07-20",
+                                      "val": 1e9}]}}
+    return {"units": {}}
+
+
+scheduled_scan._sec_get = _sec_dead_quote
+# six stale quotes (a price that never moves) ahead of one good name
+_stale_series = {f"DQ{i}": [50.0] * 60 for i in range(6)}
+_stale_series["GOOD"] = [100.0 + (i % 9) * 0.7 for i in range(60)]
+_dq_prices = {"dates": [f"d{i}" for i in range(60)], "series": _stale_series}
+_book1 = scheduled_scan.credit_book([f"DQ{i}" for i in range(6)] + ["GOOD"],
+                                    _dq_prices, {}, now=1_000_000)
+assert _book1["GOOD"]["dd"] is not None, \
+    "six unmeasurable names ahead of it must not stop the good one"
+for i in range(6):
+    e = _book1[f"DQ{i}"]
+    assert e["dd"] is None and e["unmeasurable"] and e["verdict"], e
+print("six dead quotes in a row do not abort the run, and each is recorded")
+
+# next run: the recorded refusals are skipped while fresh, costing nothing
+_dead["n"] = 0
+_book2 = scheduled_scan.credit_book(["DQ0", "DQ1", "GOOD"], _dq_prices, {},
+                                    prev=_book1, now=1_000_000 + 3600)
+assert _dead["n"] == 0, f"{_dead['n']} SEC calls spent re-refusing known refusals"
+assert _book2["DQ0"]["unmeasurable"]
+print("a recorded refusal costs no SEC call the next run")
+
+scheduled_scan._sec_get = _fake_sec_get
+
 print("\nCREDIT BOOK PINNED")

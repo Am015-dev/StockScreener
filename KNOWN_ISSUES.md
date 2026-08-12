@@ -93,9 +93,13 @@ rather than taken on trust.
   correct behaviour and a real coverage loss: for a European book, the
   tool currently finds US stocks. Fixing it needs a second calendar
   source.
-- **Universe is ~7,650 US main-market tickers** from the SEC's
-  company_tickers_exchange file, ordered by size, and the scheduled scan
-  takes the largest 1,500. Anything smaller is not looked at.
+- **Universe is US main-market tickers plus ten European markets**, US
+  names from the SEC's company_tickers_exchange file and EU names from
+  per-market screens, ordered by size; the scheduled scan takes the
+  largest 1,500 across both. Anything smaller is not looked at. (An
+  earlier version of this page wrongly called the universe US-only while
+  the blocked list on the front page was visibly full of Paris and
+  London listings.)
 - **Half-day sessions are treated as full sessions.** The freshness
   counter is correct on those days; the closing time is not.
 - **The trading calendar is hard-coded through 24 December 2027.** Past

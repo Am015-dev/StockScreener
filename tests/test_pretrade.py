@@ -244,3 +244,47 @@ assert "moves with something you already hold" in narrow["detail"]
 print("the before and after figures are both shown, and agree with the verdict")
 
 print("\nCOLD-START BEHAVIOUR PINNED")
+
+
+# ---- checking a stock you already hold must say exactly that ----
+# The tool's one promise is "tells you whether a trade you are
+# considering is one you already hold." Holding the identical ticker is
+# the strongest possible yes — and it was the one answer the check could
+# not give: the candidate was dropped from the holdings before the
+# comparison, so holding 40 shares of AAPL and checking AAPL answered
+# "This is something you do not already own".
+BOOK2 = {"dates": [f"d{i}" for i in range(60)],
+         "series": {"AAA": [100 + i * 0.5 + (i % 7) for i in range(60)],
+                    "BBB": [50 + (i % 11) * 0.8 for i in range(60)],
+                    "CCC": [200 - i * 0.3 + (i % 5) for i in range(60)]}}
+
+r = pretrade.check("AAA", [{"ticker": "AAA", "shares": 40, "cost": 180},
+                           {"ticker": "BBB", "shares": 10, "cost": 300}],
+                   BOOK2, {}, cal_complete=True)
+heads = [f["headline"] for f in r["findings"]]
+assert any("already own this exact stock" in h for h in heads), heads
+assert not any("do not already own" in h for h in heads), heads
+assert not any("spreads your money wider" in h for h in heads), heads
+assert r["verdict"] in ("warn", "block")
+detail = next(f["detail"] for f in r["findings"]
+              if "exact stock" in f["headline"])
+assert "40 shares" in detail, detail
+print("holding the checked ticker is named, with the position size")
+
+# holding ONLY the checked ticker: the self-warning is the whole answer,
+# not "No holdings given"
+r2 = pretrade.check("AAA", [{"ticker": "AAA", "shares": 5, "cost": 100}],
+                    BOOK2, {}, cal_complete=True)
+heads2 = [f["headline"] for f in r2["findings"]]
+assert any("already own this exact stock" in h for h in heads2), heads2
+assert not any("No holdings given" in h for h in heads2), heads2
+print("a book that is only the checked ticker is not called 'no holdings'")
+
+# and not holding it still says so, unchanged
+r3 = pretrade.check("AAA", [{"ticker": "BBB", "shares": 10, "cost": 300}],
+                    BOOK2, {}, cal_complete=True)
+heads3 = [f["headline"] for f in r3["findings"]]
+assert not any("exact stock" in h for h in heads3), heads3
+print("not holding it is still reported as before")
+
+print("\nSELF-HOLDING PINNED")

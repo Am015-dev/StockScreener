@@ -17,8 +17,9 @@ it:
    mis-measured.
 3. **A pattern screen, kept as a research record.** The pullback entry
    signal was falsified by a permutation test on both shipped rule sets
-   (coin-flip entry through identical exit code did as well or better,
-   p = 0.50 and p = 0.41 — see [STRATEGY.md](STRATEGY.md) and `/limits`).
+   (statistically indistinguishable from coin-flip entry through identical
+   exit code, p = 0.50 and p = 0.41 — see [STRATEGY.md](STRATEGY.md) and
+   `/limits`).
    **The site recommends no trades.** The screen survives as a factual
    watchlist — liquid stocks near defended price levels with verified
    earnings dates — to feed the pre-trade check.

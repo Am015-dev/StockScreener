@@ -137,24 +137,37 @@ def usable_volatility(vol: float | None, closes=None) -> str | None:
     return None
 
 
-def equity_volatility(closes) -> float | None:
-    """Annualised volatility of daily log returns. None if unmeasurable.
+def measured_volatility(closes) -> tuple[float | None, str | None]:
+    """(annualised volatility, None) — or (None, the reason it is refused).
 
-    "Unmeasurable" now includes measurable-but-meaningless: see VOL_MAX
-    and FLAT_DAY_MAX. Returning a number here that is arithmetic about a
-    stale quote puts it on a page under the word "distress".
+    The reason travels with the refusal because the two failure modes
+    mean opposite things to a reader: "not enough history" is a young
+    listing, "the quote does not trade" is a dead one, and the report
+    used to blame the first for the second.
     """
     c = [float(x) for x in (closes or []) if x and float(x) > 0]
     if len(c) < MIN_OBS + 1:
-        return None
+        return None, f"share-price history ({MIN_OBS}+ days)"
     rets = [math.log(c[i] / c[i - 1]) for i in range(1, len(c))]
     n = len(rets)
     mean = sum(rets) / n
     var = sum((r - mean) ** 2 for r in rets) / (n - 1)
     sd = math.sqrt(var) * math.sqrt(252.0)
     if sd <= 1e-6:
-        return None
-    return None if usable_volatility(sd, c) else sd
+        return None, "a flat price series, which is a data problem, not a riskless stock"
+    bad = usable_volatility(sd, c)
+    return (None, bad) if bad else (sd, None)
+
+
+def equity_volatility(closes) -> float | None:
+    """Annualised volatility of daily log returns. None if unmeasurable.
+
+    "Unmeasurable" includes measurable-but-meaningless: see VOL_MAX and
+    FLAT_DAY_MAX. Returning a number here that is arithmetic about a
+    stale quote puts it on a page under the word "distress".
+    """
+    vol, _ = measured_volatility(closes)
+    return vol
 
 
 def solve_merton(equity: float, default_point: float, equity_vol: float,
@@ -278,8 +291,16 @@ def report(ticker: str, equity: float | None, closes,
             out["vol_refused"] = bad
             return out
     else:
-        vol = equity_volatility(closes)
+        vol, why_not = measured_volatility(closes)
         vol_obs = None
+        if vol is None and why_not and "history" not in why_not:
+            # refused, not absent — the history is there, the quote is not
+            # a price. Blaming "not enough history" for a stale quote sent
+            # readers a reason about the wrong thing.
+            out["missing"].append("a usable volatility")
+            out["vol_refused"] = why_not
+            out["verdict"] = f"Cannot assess — {why_not}."
+            return out
     if vol is None:
         out["missing"].append(f"share-price history ({MIN_OBS}+ days)")
     dp = default_point(current_liabilities, total_liabilities)
@@ -359,21 +380,26 @@ def history(closes, shares: float | None, default_point: float | None,
     """
     if not closes or not shares or not default_point or not vol or vol <= 0:
         return None
+    # One output element per input close, None where a day could not be
+    # solved — NEVER silently shorter. The page pairs this list with a
+    # list of dates, and a silent skip shifted every date after it: the
+    # sparkline claimed "56 trading days to 2026-08-12" for a ticker
+    # whose 56th value belonged to a different day entirely.
     out = []
     for c in closes:
         try:
             price = float(c)
         except (TypeError, ValueError):
+            out.append(None)
             continue
         if price <= 0:
+            out.append(None)
             continue
         solved = solve_merton(shares * price, default_point, vol, rf)
-        if solved is None:
-            continue
-        d = distance_to_default(solved[0], solved[1], default_point, rf)
-        if d is not None:
-            out.append(round(d, 3))
-    return out or None
+        d = (distance_to_default(solved[0], solved[1], default_point, rf)
+             if solved else None)
+        out.append(round(d, 3) if d is not None else None)
+    return out if any(v is not None for v in out) else None
 
 
 # A volatility to hold the model at when asking "would this company still

@@ -111,8 +111,9 @@
          not a redesign. The headline used to name a ticker with a stop
          and a target — a decision, presented as one. The permutation
          test falsified the entry signal behind it on BOTH shipped rule
-         sets (balanced p = 0.50, wide-net p = 0.41): coin-flip entry
-         through identical exit code did as well or better. What remains
+         sets (balanced p = 0.50, wide-net p = 0.41): the signal was
+         statistically indistinguishable from coin-flip entry through
+         identical exit code. What remains
          above the fold is what survived testing: the pre-trade check
          and the credit report. -->
     <div class="card act">
@@ -191,14 +192,16 @@
 
     <details class="card" style="padding:.9rem 1.2rem">
       <summary class="tiny" style="cursor:pointer">The pattern screen —
-        {{ b.n_qualified }} names, {{ b.n_blocked }} blocked, and why it makes
-        no recommendation</summary>
+        {{ b.n_qualified }} names{% if b.watchlist and b.n_qualified > b.watchlist|length %}
+        (top {{ b.watchlist|length }} shown){% endif %}, {{ b.n_blocked }} blocked,
+        and why it makes no recommendation</summary>
       <div style="margin-top:1rem">
         <p class="warn" style="margin:0 0 .9rem;font-size:.9rem"><b>This list is not
           a recommendation, and that is a tested result, not a legal footnote.</b>
           The entry pattern behind it was run against coin-flip entry on the same
           stocks through identical exit code — twice, once per shipped rule set —
-          and random entry did as well or better both times (p = 0.50 and 0.41).
+          and was statistically indistinguishable from it both times (p = 0.50 and
+          0.41; on the first test random entry actually did better).
           This pattern tested no better than random entry.
           What remains true: these are liquid stocks near a price level buyers
           previously defended, with earnings dates verified. A factual screen
@@ -254,8 +257,8 @@
           resolved picks hit target first, averaging
           {{ b.record.avg_r|num(2, sign=True) }}R.{% elif b.record and b.record.logged %}
           {{ b.record.logged }} logged, none resolved yet.{% else %}nothing logged yet.{% endif %}
-          A permutation test found the pattern performed <em>worse</em> than a coin flip
-          managed the same way — it is a filter, not a signal.
+          A permutation test found the pattern statistically indistinguishable
+          from a coin flip managed the same way — it is a filter, not a signal.
           <a href="/limits">The test</a>.</p>
       </div>
     </details>
@@ -400,7 +403,8 @@ document.getElementById("ownCsv").addEventListener("change", async ev => {
     const r = await fetch("/parse_portfolio", {method: "POST",
       signal: uctl.signal, body: await file.text()});
     const d = await r.json();
-    if (!d.ok) { n.textContent = d.error || "could not read that file";
+    if (!d.ok) { n.textContent = (d.error || "That file could not be read as a broker export")
+                   + " — type the positions in the box above instead: TICKER, shares, cost.";
                  n.style.color = "var(--amber)"; return; }
     const list = (d.holdings || []).map(x => ({ticker: String(x.ticker).toUpperCase(),
                                                shares: x.shares, cost: x.cost}));
@@ -463,11 +467,11 @@ function paintCredit(d, run) {
   let lead;
   if (lev === null) lead = "";
   else if (lev < 25) lead = `It owes little next to what it is worth: debts are ` +
-    `${lev}% of the company's market value.`;
-  else if (lev < 60) lead = `It carries real debt — ${lev}% of the company's ` +
-    `market value — but comfortably less than the business is worth.`;
-  else lead = `It is heavily borrowed: debts are ${lev}% of the whole company's ` +
-    `market value, so a fall in the share price closes the gap quickly.`;
+    `${lev}% of what the whole business is worth.`;
+  else if (lev < 60) lead = `It carries real debt — ${lev}% of what the whole ` +
+    `business is worth — but with clear room beyond it.`;
+  else lead = `It is heavily borrowed: debts are ${lev}% of what the whole ` +
+    `business is worth, so a fall in the share price closes the gap quickly.`;
 
   const extra = [];
   if (d.percentile !== null && d.percentile !== undefined)
@@ -543,7 +547,10 @@ async function runCheck() {
                               : document.getElementById("ckHold").value})});
     const d = await r.json();
     done();
-    if (!d.ok) { out.innerHTML = `<p class="tiny">${esc(d.error || "could not check")}</p>`;
+    if (!d.ok) { out.innerHTML = '<p class="tiny">' +
+                   esc(d.error || "The check did not run") +
+                   ' — press Check it again; if it repeats, the server is restarting ' +
+                   'and needs a minute.</p>';
                  return; }
     let html = (d.findings || []).map(f =>
       `<p style="margin:0 0 .6rem"><b style="color:${COLOR[f.level]}">` +
