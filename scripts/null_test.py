@@ -47,12 +47,22 @@ def main() -> int:
     ap.add_argument("--universe-max", type=int, default=400)
     ap.add_argument("--seeds", type=int, default=25)
     ap.add_argument("--out", default="null_test.json")
+    # Which shipped rule set to falsify. The test has only ever run on the
+    # defaults; the site's headline pick comes from wide-net, and "the
+    # default is dead" is not the same claim as "what you are shown is
+    # dead". Both need saying or neither does.
+    ap.add_argument("--preset", default="balanced")
     a = ap.parse_args()
 
     def log(m):
         print(m, flush=True)
 
-    p = screener.clean_params({"universe_max": a.universe_max})
+    import scripts.scheduled_scan as _sched  # noqa: E402  (the shipped presets)
+    overrides = dict(_sched.PRESETS.get(a.preset) or {})
+    if a.preset not in _sched.PRESETS:
+        log(f"unknown preset {a.preset!r} — using the defaults")
+    p = screener.clean_params(dict(overrides, universe_max=a.universe_max))
+    log(f"preset: {a.preset} {overrides or '(defaults)'}")
     log(f"universe: building up to {a.universe_max} tickers")
     universe = screener.build_universe(p, log)
     log(f"universe: {len(universe)} tickers")
@@ -127,7 +137,7 @@ def main() -> int:
     log("=" * 66)
 
     out = {
-        "ran_at": time.time(),
+        "ran_at": time.time(), "preset": a.preset,
         "universe": len(have), "scanned": scanned,
         "real": {"n": n_real, "avg_r": real_agg["avg_r"],
                  "win_rate_pct": real_agg["win_rate_pct"],

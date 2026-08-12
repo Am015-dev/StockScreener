@@ -24,6 +24,9 @@ on:
       seeds:
         description: "How many coin-flip runs"
         default: "25"
+      preset:
+        description: "Which shipped rule set (balanced / relaxed / wide-net)"
+        default: "balanced"
 
 permissions:
   contents: write        # the result branch; without this the push 403s and
@@ -47,6 +50,7 @@ jobs:
           python scripts/null_test.py \
             --universe-max "${{ github.event.inputs.universe_max || '400' }}" \
             --seeds "${{ github.event.inputs.seeds || '25' }}" \
+            --preset "${{ github.event.inputs.preset || 'balanced' }}" \
             --out null_test.json
       - name: Publish the result
         if: always()
