@@ -116,6 +116,21 @@
          identical exit code. What remains
          above the fold is what survived testing: the pre-trade check
          and the credit report. -->
+    {% if b.reporting_soon %}
+    <div class="card">
+      <p style="margin:0 0 .35rem"><b>Reporting this week</b></p>
+      <p class="tiny" style="margin:0 0 .6rem">A stop-loss protects badly through
+        a report — the price can gap straight past it. Do not enter these now;
+        check anything here you hold.</p>
+      <p style="margin:0;font-variant-numeric:tabular-nums">
+        {% for e in b.reporting_soon %}<span style="display:inline-block;margin:0 .9rem .3rem 0"
+          data-report-ticker="{{ e.ticker }}"><b class="tk">{{ e.ticker }}</b>
+          <span class="tiny">{% if e.days == 0 %}today{% elif e.days == 1 %}tomorrow{% else %}in {{ e.days }} days{% endif %}</span></span>{% endfor %}
+      </p>
+      <p class="tiny warn" id="reportHeld" style="display:none;margin:.5rem 0 0"></p>
+    </div>
+    {% endif %}
+
     <div class="card act">
       <p class="tiny" style="margin:0 0 .5rem">{{ b.date or "Undated" }}{% if b.market_label %} ·
         {{ b.market_label }}{% endif %}{% if b.fresh_phrase %} ·
@@ -142,21 +157,6 @@
       <input id="ckHold" type="hidden">
       <div id="ckOut" style="margin-top:.9rem"></div>
     </div>
-
-    {% if b.reporting_soon %}
-    <div class="card">
-      <p style="margin:0 0 .35rem"><b>Reporting this week</b></p>
-      <p class="tiny" style="margin:0 0 .6rem">A stop-loss protects badly through
-        a report — the price can gap straight past it. Do not enter these now;
-        check anything here you hold.</p>
-      <p style="margin:0;font-variant-numeric:tabular-nums">
-        {% for e in b.reporting_soon %}<span style="display:inline-block;margin:0 .9rem .3rem 0"
-          data-report-ticker="{{ e.ticker }}"><b class="tk">{{ e.ticker }}</b>
-          <span class="tiny">{% if e.days == 0 %}today{% elif e.days == 1 %}tomorrow{% else %}in {{ e.days }} days{% endif %}</span></span>{% endfor %}
-      </p>
-      <p class="tiny warn" id="reportHeld" style="display:none;margin:.5rem 0 0"></p>
-    </div>
-    {% endif %}
 
     <div class="card">
       <p style="margin:0 0 .5rem"><b>Can this company pay its debts?</b></p>
