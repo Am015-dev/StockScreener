@@ -282,9 +282,19 @@
     <button class="ghost" id="themeBtn" onclick="toggleTheme()"
             aria-label="Switch between light and dark" style="flex:0 0 auto">Theme</button>
   </div>
-  <div class="sub">Finds strong, rising stocks that just dipped — and for each one tells you
-    a <b>buy price</b>, a <b>stop-loss</b> (where to sell to cap your loss), a <b>target</b>,
-    and <b>how many shares</b> to buy so one bad trade never costs more than you allow.</div>
+  <div class="sub">The full working of the pattern screen: liquid stocks near a price
+    level buyers previously defended, with earnings dates verified, plus the stop,
+    target and position size the rules would have used.</div>
+
+  <div style="margin:.2rem 0 .8rem;padding:.7rem .9rem;border:1px solid var(--red);
+       border-radius:8px;color:var(--red);font-size:.92rem">
+    <b>This pattern was tested against random entry and failed — twice.</b>
+    Coin-flip entry on the same stocks, through identical stop/target/exit code,
+    did as well or better on both shipped rule sets (p&nbsp;=&nbsp;0.50 and 0.41).
+    Everything on this page is a factual screen output and a research record.
+    None of it is evidence that buying these stocks makes money.
+    <a href="/limits" style="color:inherit">The full test</a>.
+  </div>
 
 
   <div id="stallBox" style="display:none;margin:.3rem 0 .6rem;padding:.6rem .8rem;

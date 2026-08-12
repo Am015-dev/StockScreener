@@ -1,7 +1,16 @@
 # Does this strategy work?
 
-No. Not at a size anyone can trade. This file records what was measured, so
-the question does not have to be re-litigated from intuition.
+No — and as of 12 August 2026 that is no longer a performance statement,
+it is a falsification. A permutation test (`scripts/null_test.py`) ran
+coin-flip entry on the same stocks through byte-for-byte identical exit
+code, on both shipped rule sets: **balanced** p = 0.50 (random entry beat
+the signal on every measure), **wide-net** p = 0.41 (a lead of a third of
+a standard deviation, i.e. noise). The entry signal carries no
+information; whatever small expectancy exists comes from the exit
+management and is available to anyone entering at random. Because of
+this, the site recommends no trades. The sections below record the tuning
+history that led here, so the question does not have to be re-litigated
+from intuition.
 
 ## The bar
 
