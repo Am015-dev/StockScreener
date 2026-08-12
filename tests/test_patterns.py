@@ -233,8 +233,8 @@ v2 = patterns.verdict({"survives": True, "edge_pct": 1.2, "horizon": 5,
                        "n": 100, "p": 0.001, "after_costs_pct": 1.0,
                        "family_size": 11})
 assert "after costs" in v2 and "+1.20%" in v2, v2
-assert "no better than random" in patterns.verdict(
-    {"survives": False, "p": 0.4, "family_size": 11})
+assert "no better than buying a random stock that was moving just as much" \
+    in patterns.verdict({"survives": False, "p": 0.4, "family_size": 11})
 assert "too rare" in patterns.verdict(None)
 print("a significant result smaller than costs is reported as untradeable")
 

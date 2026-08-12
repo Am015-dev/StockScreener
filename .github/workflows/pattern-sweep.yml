@@ -1,13 +1,12 @@
 # Test the pattern library against real market history, and publish the
 # result whatever it is.
 #
-# It runs here because the history costs one Polygon call per trading
-# day at five calls a minute — half an hour for a year. That is fine on
-# a runner and impossible in a web request.
+# It runs here because it needs a year of daily bars for several hundred
+# companies — about ten minutes of polite fetching, which is fine on a
+# runner and impossible in a web request. No API key is needed.
 #
-# The history is cached on the data branch between runs, so the second
-# run and every run after it fetch only the days they do not already
-# hold: one call.
+# The history is cached on the data branch between runs, so later runs
+# fetch only the companies they do not already hold.
 name: Pattern sweep
 
 on:
@@ -18,12 +17,15 @@ on:
     - cron: "20 2 * * 6"
   workflow_dispatch:
     inputs:
-      sessions:
-        description: "Trading days of history to test over"
-        default: "250"
+      span:
+        description: "How much history to ask for (1y, 2y, 5y)"
+        default: "1y"
       tickers:
-        description: "Most-traded names to test on"
-        default: "500"
+        description: "Companies to test on, after ranking"
+        default: "400"
+      candidates:
+        description: "Companies to fetch history for, before ranking"
+        default: "800"
       horizons:
         description: "Forward horizons in sessions, comma separated"
         default: "3,5,10"
@@ -52,16 +54,19 @@ jobs:
           git fetch origin screener-data --depth=1 2>/dev/null || true
           if git show origin/screener-data:state/pattern_history.json \
                > /tmp/pattern_history.json 2>/dev/null; then
-            echo "restored $(python -c "import json;d=json.load(open('/tmp/pattern_history.json'));print(len(d.get('dates') or []))" 2>/dev/null || echo '?') sessions"
+            echo "restored $(python -c "import json;d=json.load(open('/tmp/pattern_history.json'));print(len(d.get('raw') or {}))" 2>/dev/null || echo '?') companies"
           fi
 
       - name: Sweep
         env:
+          # optional: only widens which companies are considered. Without
+          # it the built-in universe is used and the sweep runs the same.
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
           python scripts/pattern_sweep.py \
-            --sessions "${{ github.event.inputs.sessions || '250' }}" \
-            --tickers "${{ github.event.inputs.tickers || '500' }}" \
+            --span "${{ github.event.inputs.span || '1y' }}" \
+            --tickers "${{ github.event.inputs.tickers || '400' }}" \
+            --candidates "${{ github.event.inputs.candidates || '800' }}" \
             --horizons "${{ github.event.inputs.horizons || '3,5,10' }}" \
             --out published/patterns.json \
             --history /tmp/pattern_history.json
@@ -115,8 +120,9 @@ jobs:
                         f"{patterns.p_words(r['p'])} | {r['n']} | "
                         f"{r.get('days', '?')} |")
           else:
-              print("**Nothing survived.** No pattern beat random entry on the "
-                    "same days by more than round-trip costs, after correcting "
-                    "for how many were tried. That is the expected result for "
-                    "simple price shapes, and publishing it is the point.")
+              print("**Nothing survived.** No pattern beat a random stock that "
+                    "was moving just as much, on the same days, by more than "
+                    "round-trip costs, after correcting for how many were "
+                    "tried. That is the expected result for simple price "
+                    "shapes, and publishing it is the point.")
           PY

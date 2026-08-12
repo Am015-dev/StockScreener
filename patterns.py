@@ -511,15 +511,15 @@ def verdict(row: dict | None) -> str:
     if not row:
         return "too rare on this data to say anything about."
     if not row.get("survives"):
-        return (f"no better than random entry on the same days "
-                f"(p = {p_words(row.get('p'))} across "
+        return (f"no better than buying a random stock that was moving just as "
+                f"much, on the same days (p = {p_words(row.get('p'))} across "
                 f"{row.get('family_size', '?')} patterns tested).")
     if row["after_costs_pct"] <= 0:
         return (f"a real difference of {row['edge_pct']:+.2f}% over "
                 f"{row['horizon']} sessions — but round-trip costs of "
                 f"{ROUND_TRIP_COST_PCT}% eat it, so it is not tradeable.")
     return (f"{row['edge_pct']:+.2f}% over {row['horizon']} sessions against "
-            f"random entry on the same days ({row['n']} occurrences on "
-            f"{row.get('days', '?')} separate days, p = "
-            f"{p_words(row.get('p'))}), {row['after_costs_pct']:+.2f}% "
-            f"after costs.")
+            f"buying a random stock that was moving just as much, on the same "
+            f"days ({row['n']} occurrences on {row.get('days', '?')} separate "
+            f"days, p = {p_words(row.get('p'))}), "
+            f"{row['after_costs_pct']:+.2f}% after costs.")
