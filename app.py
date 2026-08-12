@@ -1324,6 +1324,12 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
         # ranked here rather than trusting the ranking the scan stored, so
         # a name added to the book later is ranked against the current set
         return _with_peers(dict(pub, ok=True, cached=True, from_scan=True))
+    if pub and pub.get("not_modelled"):
+        # A bank or insurer, refused by sector on the runner. The refusal
+        # IS the answer — falling through to a live fetch here would
+        # replace "this model does not apply to this company" with "the
+        # SEC is not answering", which is about the wrong subject.
+        return dict(pub, ok=True, cached=True, from_scan=True)
 
     key = f"credit:{ticker}"
     hit, cached = cache_store.fetch(key, CREDIT_TTL)

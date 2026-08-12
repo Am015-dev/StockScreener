@@ -153,3 +153,31 @@ print("and no code path sets it back to hidden")
 assert 'localStorage.setItem("dipfinder_skipped"' in _js, \
     "skip must persist across visits, not just the session"
 print("skipping the holdings question is remembered on the next visit")
+
+
+# ---- the page must not recommend a trade its own test falsified ----
+# The permutation test ran twice — balanced (p = 0.50, 25 seeds, 376
+# stocks) and wide-net (p = 0.41, 40 seeds, 657 stocks) — and coin-flip
+# entry did as well or better both times. The headline used to be
+# "Closest to the setup today: <ticker>", with the refutation in small
+# print underneath. A tool that headlines a number it has proven means
+# nothing is a toy; the pick is gone, and this pins it gone.
+A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
+                top_picks=[GOOD], pending=[], results_ts=time.time(),
+                status="done")
+_html = c.get("/").get_data(as_text=True)
+assert "Closest to the setup today" not in _html
+assert "Nothing to do today" not in _html
+print("no trade is recommended anywhere on the page")
+
+# the falsification is stated WITH the list it applies to, in words
+assert "no better than random entry" in _html
+assert "not\n          a recommendation" in _html or "not a recommendation" in _html.replace("\n          ", " ")
+print("the pattern list carries its own refutation, in full sentences")
+
+# and the working tools lead: both check inputs sit above the collapsed
+# pattern section
+_above = _html.split("<details")[0]
+for _id in ('id="ckTicker"', 'id="crTicker"'):
+    assert _id in _above, f"{_id} is below the fold"
+print("the pre-trade check and the credit report lead the page")

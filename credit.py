@@ -74,6 +74,37 @@ VOL_MAX = 1.5
 FLAT_DAY_MAX = 0.20
 
 
+# Companies the model must refuse on sector, not on arithmetic.
+#
+# Merton reads "current liabilities" as debt coming due against the
+# firm's assets. For a bank, deposits ARE the liabilities — they fund the
+# business and grow when it is healthy. For an insurer, "current
+# liabilities" are claims payable, funded by premiums already collected.
+# Neither is debt the company might fail to roll over, and the KMV
+# literature excludes financials for exactly this reason.
+#
+# This was live: MOH, a health insurer, ranked fourth-closest-to-trouble
+# on the site because its medical claims payable were read as debt coming
+# due. The number was arithmetic, not measurement.
+FINANCIAL_SIC = (6000, 6799)          # depository, insurance, brokers, REITs
+
+
+def is_financial(sic) -> bool:
+    """Whether an SEC SIC code lands in finance/insurance/real estate."""
+    try:
+        code = int(str(sic).strip())
+    except (TypeError, ValueError):
+        return False
+    return FINANCIAL_SIC[0] <= code <= FINANCIAL_SIC[1]
+
+
+NOT_MODELLED = ("Banks and insurers are not modelled here. Their balance "
+                "sheets are the business — deposits and claims payable are "
+                "how they operate, not debt coming due against too little "
+                "to pay it — so this model's default point is meaningless "
+                "for them, and a number would be worse than a refusal.")
+
+
 def flat_day_share(closes) -> float | None:
     """The share of days whose close did not move at all.
 
