@@ -965,6 +965,50 @@ def _credit_book(fetch: bool = False) -> dict:
     return data
 
 
+_earn_pub = {"ts": 0.0, "data": None}
+
+
+def _earnings_book(fetch: bool = False) -> dict:
+    """The earnings calendar the scan already built, published.
+
+    The instance used to rebuild this from ~32 sequential Nasdaq calls
+    after every deploy, and while it did, every pre-trade check answered
+    "calendar is still loading — try again in a minute". That was the
+    single most common thing a user actually saw this tool say. The
+    runner has the finished map minutes before any deploy completes;
+    reading it makes the block disappear.
+    """
+    if not fetch:
+        return _earn_pub["data"] or {}
+    data = _published_get("earnings.json")
+    if not data:
+        return _earn_pub["data"] or {}
+    _earn_pub.update(data=data, ts=time.time())
+    print(f"[warm] earnings calendar (published): "
+          f"{len(data.get('map') or {})} companies", flush=True)
+    return data
+
+
+def _published_earnings() -> tuple[dict, bool]:
+    """(ticker -> trading days to report, complete) — re-based to today,
+    exactly as screener does for its own stored copy, and refused when
+    older than three days rather than served stale."""
+    book = _earnings_book()
+    m, as_of = book.get("map") or {}, book.get("as_of")
+    if not m or not as_of:
+        return {}, False
+    try:
+        import datetime as _d
+        shift = (_d.date.today()
+                 - _d.date.fromisoformat(str(as_of))).days
+    except (TypeError, ValueError):
+        return {}, False
+    if shift > 3:
+        return {}, False           # stale enough to be wrong about "clear"
+    cal = {t: d - shift for t, d in m.items() if d - shift >= 0}
+    return cal, bool(book.get("complete"))
+
+
 _credit_view_memo = {"key": None, "data": {}}
 
 
@@ -1107,6 +1151,13 @@ def check_trade():
             warming = not hit
     except Exception:
         pass
+    if not earn:
+        # the calendar the scan published — same data, already built, so
+        # a fresh deploy answers instead of asking the reader to wait out
+        # a warm-up they cannot see
+        earn, complete = _published_earnings()
+        if earn:
+            warming = False
 
     row = next((r for r in (_state.get("results") or [])
                 if (r.get("ticker") or "").upper() == ticker), None)
@@ -1772,7 +1823,8 @@ def _warm_books():
     anything.
     """
     for label, fn in (("price book", _price_book), ("volatility book", _vol_book),
-                      ("credit book", _credit_book)):
+                      ("credit book", _credit_book),
+                      ("earnings calendar (published)", _earnings_book)):
         try:
             fn(fetch=True)
         except Exception as e:

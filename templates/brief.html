@@ -552,7 +552,14 @@ async function runCheck() {
                    ' — press Check it again; if it repeats, the server is restarting ' +
                    'and needs a minute.</p>';
                  return; }
-    let html = (d.findings || []).map(f =>
+    let html = "";
+    if (d.bottom_line) {
+      const tone = d.verdict === "block" ? COLOR.block
+                 : d.verdict === "warn" ? COLOR.warn : COLOR.ok;
+      html += `<p style="margin:0 0 .7rem;font-weight:640;color:${tone}">` +
+              esc(d.bottom_line) + `</p>`;
+    }
+    html += (d.findings || []).map(f =>
       `<p style="margin:0 0 .6rem"><b style="color:${COLOR[f.level]}">` +
       `${ICON[f.level]} ${esc(f.headline)}</b><br>` +
       `<span class="tiny">${esc(f.detail)}</span></p>`).join("");

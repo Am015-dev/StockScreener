@@ -628,7 +628,15 @@ def main() -> int:
                 prev = json.loads(Path("/tmp/prev_credit.json").read_text())
             except Exception:
                 pass
-            creds = credit_book(board, book, vols, prev=prev)
+            # The whole liquid universe, not 120 names of it. The budget
+            # existed for a metered world: the repository is public now,
+            # Actions is unmetered, and the SEC's 10-requests-per-second
+            # guidance is the only constraint that still exists — the
+            # 0.12s pause between names honours it. Names measured within
+            # 20 hours are skipped, so once coverage is full each run
+            # costs only what changed.
+            creds = credit_book(board, book, vols, prev=prev,
+                                max_names=2000, budget_s=1500.0)
             if creds:
                 (out / "credit.json").write_text(json.dumps(creds))
                 kb = (out / "credit.json").stat().st_size / 1024
@@ -636,6 +644,24 @@ def main() -> int:
                       f"board names measured ({kb:.0f} KB)")
         except Exception as e:
             print(f"credit book skipped: {type(e).__name__}: {e}", file=sys.stderr)
+
+    # The earnings calendar, as the gates used it. The instance rebuilds
+    # this exact map from ~32 sequential Nasdaq calls after every deploy,
+    # and while it does, every pre-trade check answers "calendar is still
+    # loading — try again in a minute". The scan has the finished map in
+    # its cache right now; publishing it makes that block disappear for
+    # the life of the deploy.
+    try:
+        cal, cal_ok = screener._earnings_calendar(build=False)
+        if cal:
+            (out / "earnings.json").write_text(json.dumps(
+                {"as_of": time.strftime("%Y-%m-%d", time.gmtime()),
+                 "complete": bool(cal_ok), "map": cal}))
+            print(f"published earnings calendar: {len(cal)} companies, "
+                  f"{'complete' if cal_ok else 'INCOMPLETE'}")
+    except Exception as e:
+        print(f"earnings calendar not published: {type(e).__name__}: {e}",
+              file=sys.stderr)
 
     (out / "index.json").write_text(json.dumps({
         "generated_at": time.time(), "presets": index, "failures": failures,

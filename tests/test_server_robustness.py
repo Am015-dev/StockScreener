@@ -758,3 +758,48 @@ for _payload, _want in (
 print("every holdings shape the page teaches parses to tickers, never numbers")
 
 print("\nCHECK PARSER PINNED")
+
+
+# ---- the published earnings calendar replaces the warm-up block ----
+# "Earnings calendar is still loading — try again in a minute" was the
+# single most common sentence this tool actually said to a user: the
+# instance rebuilt the calendar from ~32 Nasdaq calls after every
+# deploy. The scan publishes the finished map now, and a fresh instance
+# answers from it instead of asking the reader to wait out a warm-up.
+import datetime as _dt2
+_saved_earn = dict(A._earn_pub)
+try:
+    A._earn_pub.update(data={
+        "as_of": _dt2.date.today().isoformat(), "complete": True,
+        "map": {"ZQX": 30, "NEARER": 4}}, ts=time.time())
+    c3 = A.app.test_client()
+    r = c3.post("/check", json={"ticker": "ZQX", "holdings": ""}).get_json()
+    heads = [f["headline"] for f in r["findings"]]
+    assert not any("still loading" in h for h in heads), heads
+    assert any("No earnings for 30 days" in h for h in heads), heads
+    assert r["bottom_line"], r
+    print("a fresh instance answers the earnings question from the published calendar")
+
+    # a company reporting soon still blocks — the data is used, not bypassed
+    r2 = c3.post("/check", json={"ticker": "NEARER", "holdings": ""}).get_json()
+    assert any("Earnings in 4 days" in f["headline"] for f in r2["findings"])
+    assert r2["bottom_line"].startswith("Do not buy this today")
+    print("and the earnings gate still blocks what it should")
+
+    # a stale published calendar is refused, not trusted about 'clear'
+    A._earn_pub["data"]["as_of"] = (
+        _dt2.date.today() - _dt2.timedelta(days=5)).isoformat()
+    cal, ok = A._published_earnings()
+    assert cal == {} and ok is False
+    print("a five-day-old published calendar is refused rather than believed")
+
+    # and re-basing: yesterday's map moves one day closer today
+    A._earn_pub["data"]["as_of"] = (
+        _dt2.date.today() - _dt2.timedelta(days=1)).isoformat()
+    cal, ok = A._published_earnings()
+    assert cal.get("NEARER") == 3, cal
+    print("the published days-to-report are re-based onto today")
+finally:
+    A._earn_pub.clear(); A._earn_pub.update(_saved_earn)
+
+print("\nPUBLISHED EARNINGS PINNED")

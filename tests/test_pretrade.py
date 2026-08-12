@@ -288,3 +288,25 @@ assert not any("exact stock" in h for h in heads3), heads3
 print("not holding it is still reported as before")
 
 print("\nSELF-HOLDING PINNED")
+
+
+# ---- the check answers first, then shows its working ----
+# A list of findings is evidence, not a decision. The reader's question
+# is "should anything here stop me?" and the tool made them derive the
+# answer from four paragraphs — which is how it earned "nobody
+# understands a thing".
+r_block = pretrade.check("AAA", [], BOOK2, {"AAA": 3}, cal_complete=True)
+assert r_block["bottom_line"].startswith("Do not buy this today"), r_block["bottom_line"]
+assert "earnings in 3 days" in r_block["bottom_line"], r_block["bottom_line"]
+
+r_warn = pretrade.check("AAA", [{"ticker": "AAA", "shares": 5, "cost": 100}],
+                        BOOK2, {}, cal_complete=True)
+assert r_warn["bottom_line"].startswith("Think twice"), r_warn["bottom_line"]
+assert "already own this exact stock" in r_warn["bottom_line"]
+
+r_clean = pretrade.check("AAA", [{"ticker": "CCC", "shares": 2, "cost": 50}],
+                         BOOK2, {}, cal_complete=True)
+assert r_clean["bottom_line"] == "Nothing here argues against it.", r_clean["bottom_line"]
+print("the check opens with its answer: block, warn and clear all state it plainly")
+
+print("\nBOTTOM LINE PINNED")
