@@ -310,3 +310,63 @@ assert r_clean["bottom_line"] == "Nothing here argues against it.", r_clean["bot
 print("the check opens with its answer: block, warn and clear all state it plainly")
 
 print("\nBOTTOM LINE PINNED")
+
+
+# ---- the analysis: evidence with its arithmetic attached ----
+# The site could say a company's distance to default, and separately
+# whether a trade overlapped, and separately when earnings were due —
+# three fragments, no synthesis. "No evidence or analysis, very
+# difficult to jump to conclusions" was accurate.
+import analysis
+
+CL = [100.0 + 8 * (i % 13) / 13 - (i > 40) * 6 for i in range(60)]
+a = analysis.build("TST", CL, dates=[f"d{i}" for i in range(60)], vol=0.37,
+                   credit_rep={"dd": 3.06, "band": "watch it",
+                               "driven_by": "debts"},
+                   earnings_days=30, risk_budget=100.0)
+assert a["headline"] and a["ticker"] == "TST"
+labels = [e["label"] for e in a["evidence"]]
+for want in ("Where it stands", "What being wrong costs", "Can it pay its debts",
+             "Earnings"):
+    assert want in labels, (want, labels)
+print("the analysis covers position, risk, credit and earnings")
+
+# every line must carry a number — that is what makes it evidence
+import re as _re
+for e in a["evidence"]:
+    assert _re.search(r"\d", e["text"]), e
+print("every line of evidence carries the number it came from")
+
+# the risk frame is the part that needs no forecast at all
+rf = analysis.risk_frame(100.0, 0.37, risk_budget=100.0)
+assert rf["stop_pct"] > 0 and rf["stop_price"] < 100.0
+assert rf["shares"] == int(100.0 / rf["risk_per_share"])
+# a violent stock must get a WIDER stop and therefore FEWER shares
+calm = analysis.risk_frame(100.0, 0.15, risk_budget=100.0)
+assert calm["stop_pct"] < rf["stop_pct"], (calm["stop_pct"], rf["stop_pct"])
+assert calm["shares"] > rf["shares"], "a calmer stock buys more shares per unit of risk"
+print(f"a {rf['annual_vol_pct']}% stock gets a {rf['stop_pct']}% stop and "
+      f"{rf['shares']} shares; a {calm['annual_vol_pct']}% one gets "
+      f"{calm['stop_pct']}% and {calm['shares']}")
+
+# imminent earnings outrank everything in the headline: a stop cannot
+# protect across a report, whatever the chart says
+soon = analysis.build("TST", CL, vol=0.2, earnings_days=2)
+assert "reports within days" in soon["headline"], soon["headline"]
+assert "earnings" in soon["flags"]
+print("an imminent report takes the headline, ahead of the chart")
+
+# and a company near its default point outranks the chart too
+weak = analysis.build("TST", CL, vol=0.2, earnings_days=40,
+                      credit_rep={"dd": 1.2, "band": "close to the edge"})
+assert "close to trouble on its debts" in weak["headline"], weak["headline"]
+print("a company near its default point takes the headline ahead of the chart")
+
+# nothing to analyse must say so rather than invent a headline
+thin = analysis.build("TST", [1.0, 2.0])
+assert "Not enough published data" in thin["headline"]
+assert analysis.risk_frame(None, 0.3) is None
+assert analysis.price_context([]) is None
+print("with no data it says so, and computes nothing")
+
+print("\nANALYSIS PINNED")
