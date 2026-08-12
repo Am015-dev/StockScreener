@@ -86,6 +86,10 @@ jobs:
           JOURNAL_DB: /tmp/journal.db
           MARKET_DB: /tmp/market.db
           SCREENER_CACHE_DB: /tmp/cache.db
+          # Absent, the scan uses Yahoo exactly as before. Present, the
+          # price and volatility books come from one grouped call per
+          # trading day instead of a batched scrape.
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
           set +e
           python scripts/scheduled_scan.py \

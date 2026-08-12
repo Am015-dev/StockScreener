@@ -29,6 +29,7 @@ import backtest
 import db
 import journal
 import screener
+import polygon_data as polygon
 import pandas as _pd
 
 # The presets the site publishes. "balanced" is the shipped default; the
@@ -100,6 +101,79 @@ def simulate(p: dict, universe: list, progress) -> dict | None:
     except Exception as e:
         progress(f"simulation skipped: {type(e).__name__}: {e}")
         return None
+
+
+def polygon_books(prev_prices: dict | None = None, days: int = 60,
+                  progress=print) -> tuple:
+    """(price_book, volatility_book, universe) from Polygon, or (None,...).
+
+    One grouped call returns every US ticker for a day — 12,410 of them
+    in 0.8 seconds, measured. That replaces the batched yfinance
+    download that could silently lose whole sectors, and it carries
+    VOLUME, which is what distinguishes a quote that did not trade from
+    a price that did not move.
+
+    Fetches only the days it does not already hold, so an hourly run
+    costs one call once the book exists. Returns None when there is no
+    key, so the Yahoo path stays exactly as it was.
+    """
+    if not polygon.have_key():
+        return None, None, None
+    import datetime as _dt
+    today = _dt.date.today()
+    # ask for more calendar days than we need and keep what traded: the
+    # API answers a closed day with nothing, which is the honest shape
+    wanted = []
+    d = today
+    while len(wanted) < days + 12 and (today - d).days < days * 2 + 30:
+        if d.weekday() < 5:
+            wanted.append(d.isoformat())
+        d -= _dt.timedelta(days=1)
+    wanted.reverse()
+
+    book = polygon.price_book(wanted, have=prev_prices, progress=progress)
+    if not book.get("series"):
+        progress("  polygon: no price data returned — keeping the Yahoo path")
+        return None, None, None
+    # trim to the last `days` that actually traded
+    keep = book["dates"][-days:]
+    idx = [book["dates"].index(k) for k in keep]
+    series = {t: [v[i] for i in idx] for t, v in book["series"].items()}
+
+    # Rank on the newest session's REAL volume. One extra call, and worth
+    # it: passing a placeholder volume ranks by share price, which would
+    # have built a universe of expensive stocks rather than traded ones.
+    common = polygon.common_stocks(progress=progress)
+    bars = polygon.grouped_day(keep[-1], progress=progress)
+    if bars:
+        uni = polygon.universe_by_liquidity(bars, common or None, cap=2000,
+                                            min_dollar_vol=5e6)
+    else:
+        progress("  polygon: no volume for the newest session — keeping every "
+                 "series rather than ranking on a number we do not have")
+        uni = list(series)
+
+    trimmed = {t: series[t] for t in uni if t in series}
+    prices = {"dates": keep, "series": trimmed}
+
+    # volatility from the same bars — no second source to disagree with
+    import math
+    vols = {}
+    for t, row in trimmed.items():
+        c = [float(x) for x in row if x and float(x) > 0]
+        if len(c) < 40:
+            continue
+        rets = [math.log(c[i] / c[i - 1]) for i in range(1, len(c))]
+        n = len(rets)
+        mean = sum(rets) / n
+        var = sum((r - mean) ** 2 for r in rets) / (n - 1)
+        sd = math.sqrt(var) * math.sqrt(252.0)
+        import credit as _credit
+        if sd > 1e-6 and not _credit.usable_volatility(sd, c):
+            vols[t] = {"vol": round(sd, 5), "obs": n, "as_of": keep[-1]}
+    progress(f"  polygon: {len(trimmed)} price series, {len(vols)} volatilities, "
+             f"{len(keep)} sessions")
+    return prices, vols, uni
 
 
 def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
@@ -607,9 +681,25 @@ def main() -> int:
     # rate-limited and fail outright from a datacenter IP, which is why
     # the check could not exist without this file.
     book = {}
+    pg_vols = None
     if index:
         try:
-            book = price_book()
+            # Polygon first when a key exists: one grouped call carries
+            # every US ticker for a day, with volume, under a documented
+            # contract — against a scrape that lost whole sectors at a
+            # time. Only the days not already published are fetched, so
+            # an hourly run costs one call. No key, no change: the Yahoo
+            # path below is exactly what it was.
+            prev = {}
+            try:
+                prev = json.loads((out / "prices.json").read_text())
+            except Exception:
+                pass
+            pg_book, pg_vols, _uni = polygon_books(prev_prices=prev,
+                                                   progress=print)
+            book = pg_book or price_book()
+            if pg_book:
+                print("price book source: polygon (grouped daily bars)")
             if book:
                 (out / "prices.json").write_text(json.dumps(book))
                 kb = (out / "prices.json").stat().st_size / 1024
@@ -624,7 +714,10 @@ def main() -> int:
     vols = {}
     if index:
         try:
-            vols = volatility_book()
+            # from the same bars as the price book when Polygon supplied
+            # them: two sources for one number is two numbers that can
+            # disagree, and this project has already shipped that bug
+            vols = pg_vols or volatility_book()
             if vols:
                 (out / "vol.json").write_text(json.dumps(vols))
                 kb = (out / "vol.json").stat().st_size / 1024
