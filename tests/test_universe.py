@@ -138,3 +138,18 @@ print(f"bundled fallback still present ({len(universe_static.US_CORE)} US names)
       f"but no longer the ceiling")
 
 print("\nALL UNIVERSE TESTS PASSED")
+
+
+# ---- the data layer includes financials; only the pattern excludes them ----
+# ALL_SECTORS builds the universe, and the universe is what every feature
+# reads: the price book (overlap), the earnings calendar, the credit
+# queue. Excluding Financial Services HERE meant JPMorgan, Bank of
+# America, Visa and Mastercard could not exist anywhere on the site — a
+# reader holding bank stocks was told their whole book "could not be
+# compared". The no-financials rule belongs to the pattern screen alone.
+assert "Financial Services" in screener.ALL_SECTORS, \
+    "the universe must carry the sector ordinary portfolios hold most of"
+assert "Financial Services" in screener.SECTOR_EXCLUDE, \
+    "while the pattern screen still refuses financial candidates"
+assert screener.DEFAULTS["sectors"] == list(screener.ALL_SECTORS)
+print("financials are data everywhere, candidates nowhere")
