@@ -607,6 +607,23 @@ async function runCheck() {
                    'and needs a minute.</p>';
                  return; }
     let html = "";
+    // The analysis first: where it stands, what being wrong costs, how
+    // many shares that buys, whether it can pay its debts. Each line
+    // carries its own number, so the reader can disagree by checking the
+    // arithmetic rather than by trusting the tool.
+    const an = d.analysis;
+    if (an && an.headline) {
+      html += `<p style="margin:0 0 .5rem;font-size:1.12rem;font-weight:640;` +
+              `line-height:1.35">${esc(an.headline)}</p>`;
+      if (an.evidence && an.evidence.length) {
+        html += `<div style="margin:0 0 .9rem;border-left:3px solid var(--line);` +
+                `padding-left:.85rem">` +
+          an.evidence.map(e =>
+            `<p style="margin:0 0 .45rem;font-size:.93rem"><b style="color:var(--ink-2)">` +
+            `${esc(e.label)}:</b> ${esc(e.text)}</p>`).join("") +
+          `</div>`;
+      }
+    }
     if (d.bottom_line) {
       const tone = d.verdict === "block" ? COLOR.block
                  : d.verdict === "warn" ? COLOR.warn : COLOR.ok;

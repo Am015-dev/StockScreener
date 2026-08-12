@@ -28,6 +28,7 @@ import credit
 import journal
 import market_clock
 import portfolio_import
+import analysis
 import pretrade
 import screener
 
@@ -1195,6 +1196,27 @@ def check_trade():
         reward_eur=((row["risk_EUR"] * row["RR"]) if row and row.get("risk_EUR")
                     and row.get("RR") else None),
         friction_pct=(row or {}).get("friction_pct"))
+    # The analysis the reader actually came for: where the price stands,
+    # what being wrong costs, how many shares that buys, whether the
+    # company can pay its debts, and when it reports — each line carrying
+    # the number it came from. The check used to answer four yes/no
+    # questions and leave the synthesis to the reader; that is the work
+    # they came here to have done.
+    try:
+        raw = (series.get(ticker) or [])
+        rep = _credit_for(ticker) if ticker in view or raw else {}
+        v = (_vol_book() or {}).get(ticker) or {}
+        res["analysis"] = analysis.build(
+            ticker, [c for c in raw if c],
+            dates=[d for d, c in zip((book or {}).get("dates") or [], raw) if c],
+            vol=v.get("vol") or (rep or {}).get("equity_vol"),
+            credit_rep=rep, earnings_days=(earn or {}).get(ticker),
+            cal_complete=complete,
+            risk_budget=float((row or {}).get("risk_EUR") or 100.0))
+    except Exception as e:                                  # noqa: BLE001
+        print(f"[check] analysis for {ticker}: {type(e).__name__}: {e}",
+              flush=True)
+
     res["ok"] = True
     res["book_size"] = len(pretrade._series_of(book))
     res["ms"] = round((time.time() - _t_start) * 1000)
