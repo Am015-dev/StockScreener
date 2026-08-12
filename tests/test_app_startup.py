@@ -146,3 +146,54 @@ assert rules == captured["rules"], "recorded rules must match what was simulated
 print("simulations carry their rule set — old numbers cannot pass as new ones")
 
 print("\nALL APP-STARTUP TESTS PASSED")
+
+
+# ---- a cold instance answers from the copies shipped with the build ----
+# The books were filled only by the network warmers, so for the first
+# minute after every deploy — and after every free-tier spin-down —
+# /published reported {credit: 0, prices: 0, vol: 0} and the site told
+# visitors "the SEC's company list could not be read" about companies it
+# had measured hours earlier. The data was on its own disk the whole time.
+import json as _json2
+import os as _os2
+import importlib as _il
+
+import app as A          # this file imports the app per-scenario; grab it now
+_dir = A.PUBLISHED_DIR
+_os2.makedirs(_dir, exist_ok=True)
+_written = []
+try:
+    for _name, _payload in (
+            ("prices.json", {"dates": ["d1"], "series": {"BOOT": [1.0, 2.0]}}),
+            ("vol.json", {"BOOT": {"vol": 0.3, "obs": 250}}),
+            ("credit.json", {"BOOT": {"ticker": "BOOT", "dd": 5.0,
+                                      "band": "comfortable"}})):
+        _p = _os2.path.join(_dir, _name)
+        if not _os2.path.exists(_p):
+            with open(_p, "w") as _f:
+                _json2.dump(_payload, _f)
+            _written.append(_p)
+
+    A._book.update(data=None, ts=0.0)
+    A._vols.update(data=None, ts=0.0)
+    A._creds.update(data=None, ts=0.0)
+    _skip = _os2.environ.pop("SKIP_WARM", None)
+    try:
+        A._boot_books()
+    finally:
+        if _skip is not None:
+            _os2.environ["SKIP_WARM"] = _skip
+
+    assert A._book["data"], "the price book must load from disk at boot"
+    assert A._creds["data"], "the credit book must load from disk at boot"
+    # ts stays 0 so the warmer still refreshes from the live branch
+    assert A._book["ts"] == 0.0 and A._creds["ts"] == 0.0
+    print("a cold instance fills its books from the shipped copies, and still refreshes")
+finally:
+    for _p in _written:
+        try:
+            _os2.remove(_p)
+        except OSError:
+            pass
+
+print("\nCOLD-START BOOKS PINNED")

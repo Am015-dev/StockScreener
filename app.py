@@ -1719,20 +1719,25 @@ def changelog():
     lines = ["# Changelog", "",
              "Generated from the deployed commit history — this is the record,",
              "not a summary of it.", ""]
-    n = 0
+    # Render's shallow clone strips parent links, so --no-merges cannot
+    # recognise a merge commit — the page opened with "Merge branch
+    # 'claude/…'", an internal label recording nothing a visitor can
+    # use. Filtering by subject fixed that and then emptied the page
+    # entirely, because a shallow clone can hold nothing BUT merges. So:
+    # filter, and fall back to the raw history rather than to nothing.
+    rows = []
     for row in out.stdout.splitlines():
         date, _, subject = row.partition("\t")
-        # Render's shallow clone strips parent links, so --no-merges
-        # cannot recognise a merge commit — and the page opened with
-        # "Merge branch 'claude/…'", an internal label that records
-        # nothing a visitor can use. Filter by what the line SAYS.
-        if subject.startswith(("Merge ", "Published scan ", "Scheduled scan ")):
-            continue
+        rows.append((date, subject))
+    useful = [(d, s2) for d, s2 in rows
+              if not s2.startswith(("Merge ", "Published scan ",
+                                    "Scheduled scan "))]
+    for date, subject in (useful or rows):
         lines.append(f"- **{date}** — {subject}")
-        n += 1
-    if n < 3:
+    if not useful:
         lines.append("")
-        lines.append("_This build carries only a shallow slice of history; "
+        lines.append("_This build carries only a shallow slice of history, so "
+                     "the entries above are merge points rather than changes; "
                      "the repository holds the full record._")
     return Response("\n".join(lines) + "\n",
                     mimetype="text/markdown; charset=utf-8")
@@ -2028,6 +2033,45 @@ def _ensure_warm() -> list:
         print(f"[warm] started {', '.join(started)}", flush=True)
     return started
 
+
+def _boot_books() -> None:
+    """Fill the books from the copies shipped with this build, instantly.
+
+    The books were populated only by the background warmers, which fetch
+    over the network — so for the first minute after every deploy, and
+    after every free-tier spin-down, /published reported
+    {credit: 0, prices: 0, vol: 0} and the site answered real questions
+    with "the SEC's company list could not be read". The data was on the
+    instance's own disk the whole time.
+
+    This is a local file read of a few hundred kilobytes: fast enough for
+    import, and it makes a cold instance answer immediately with data
+    that is at worst a few hours old. The warmers still run and still
+    replace it with the live branch; this only removes the window where
+    the site knows nothing.
+    """
+    if os.environ.get("SKIP_WARM"):
+        return
+    for name, store in (("prices.json", _book), ("vol.json", _vols),
+                        ("credit.json", _creds)):
+        try:
+            path = os.path.join(PUBLISHED_DIR, name)
+            if not os.path.exists(path):
+                continue
+            with open(path) as f:
+                data = json.load(f)
+            if data:
+                store.update(data=data, ts=0.0)   # ts=0: due for refresh
+                _published_reads[name] = "shipped copy (boot)"
+        except Exception as e:                                # noqa: BLE001
+            print(f"[boot] {name}: {type(e).__name__}: {e}", flush=True)
+    print(f"[boot] books from shipped copies: "
+          f"{len(pretrade._series_of(_book['data'] or {}))} prices, "
+          f"{len(_vols['data'] or {})} vol, {len(_creds['data'] or {})} credit",
+          flush=True)
+
+
+_boot_books()
 
 # The test suite is hermetic — it imports this module and must not reach
 # Nasdaq, the SEC or GitHub to do it.
