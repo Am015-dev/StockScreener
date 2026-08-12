@@ -1,7 +1,31 @@
 # StockScreener
 
-Pullback-in-Uptrend swing screener (US + EU large caps) with quality & policy
-gates, plus a small web UI you can deploy for free on Render.
+Free-data investment research tools for a small personal book, deployable
+for free on Render. What the site actually offers, in the order it offers
+it:
+
+1. **A pre-trade check** — type a ticker and it is checked against what
+   you already own: overlap (is this a trade you already hold under
+   another name, measured on published return correlations), verified
+   earnings dates, credit standing, and whether the buy genuinely widens
+   your diversification (effective number of bets, before vs after).
+2. **A credit report** — Merton/KMV distance-to-default computed from SEC
+   XBRL filings and published share prices, with peer ranking, a 60-day
+   history, driver attribution (debts vs share-price volatility), and its
+   sources named. No default probability is quoted — the honest reasons
+   are on the report itself. Banks and insurers are refused, not
+   mis-measured.
+3. **A pattern screen, kept as a research record.** The pullback entry
+   signal was falsified by a permutation test on both shipped rule sets
+   (coin-flip entry through identical exit code did as well or better,
+   p = 0.50 and p = 0.41 — see [STRATEGY.md](STRATEGY.md) and `/limits`).
+   **The site recommends no trades.** The screen survives as a factual
+   watchlist — liquid stocks near defended price levels with verified
+   earnings dates — to feed the pre-trade check.
+
+Everything below documents the screening machinery. Read it with the
+falsification above in mind: it is a description of a filter, not of an
+edge.
 
 ## What it screens for
 
@@ -145,9 +169,9 @@ The repo contains a [`render.yaml`](render.yaml) blueprint:
 2. In the [Render dashboard](https://dashboard.render.com): **New → Blueprint**,
    pick this repo, accept the defaults. That creates a free web service running
    `gunicorn app:app`.
-3. Open the service URL, press **Run screener**, and watch the live progress
-   log. A full scan takes a few minutes; results are ranked by R:R and
-   downloadable as CSV.
+3. Open the service URL. Scans run on a GitHub Actions schedule and are
+   published to a data branch the site reads — a page load is a file
+   read, and there is no Run button.
 
 Notes on the free plan:
 
