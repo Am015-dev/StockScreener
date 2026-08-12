@@ -115,6 +115,28 @@ jobs:
           mkdir -p published/state
           cp /tmp/journal.db published/state/journal.db 2>/dev/null || true
           cp /tmp/market.db  published/state/market.db  2>/dev/null || true
+
+          # Carry forward anything this run did not produce.
+          #
+          # The push below force-pushes a FRESH repository, so the branch
+          # ends up being exactly what this directory contains — every file
+          # not written by this run is deleted from it. Overnight that
+          # removed credit.json and vol.json outright, and the site lost
+          # its credit standings and its volatility book, because the
+          # scheduled runs execute the scan script from the DEFAULT branch
+          # and that copy does not know how to build either of them.
+          #
+          # A publish must never be able to delete data it simply did not
+          # generate. Stale is a thing the page can say; missing is not.
+          git fetch origin screener-data --depth=1 2>/dev/null || true
+          for f in $(git ls-tree --name-only origin/screener-data 2>/dev/null \
+                     | grep '\.json$'); do
+            if [ ! -f "published/$f" ]; then
+              git show "origin/screener-data:$f" > "published/$f" \
+                && echo "carried forward $f (this run did not produce it)"
+            fi
+          done
+
           cd published
           git init -q
           git config user.name "github-actions[bot]"
