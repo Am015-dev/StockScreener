@@ -195,7 +195,16 @@ def occurrences(series: dict, fn, horizon: int = DEFAULT_HORIZON,
         for i in range(min_history, n - horizon):
             if c[i] is None or c[i + horizon] is None:
                 continue
-            window = [x for x in c[max(0, i - 60):i + 1] if x is not None]
+            # The window must be CONTIGUOUS. Dropping missing sessions
+            # and closing the gap would make "a single session down 3%"
+            # measure a move across a week the stock did not trade, and
+            # a halted or newly-listed name would quietly manufacture
+            # shapes it never made.
+            window = c[max(0, i - 60):i + 1]
+            cut = len(window)
+            while cut and window[cut - 1] is not None:
+                cut -= 1
+            window = window[cut:]
             if len(window) < min_history:
                 continue
             try:
@@ -204,31 +213,6 @@ def occurrences(series: dict, fn, horizon: int = DEFAULT_HORIZON,
             except Exception:                                 # noqa: BLE001
                 continue
     return hits
-
-
-def date_matched_null(series: dict, hit_days: list, horizon: int,
-                      seed: int, min_history: int = 51) -> list:
-    """Random entries on THE SAME DAYS the pattern fired.
-
-    This is the heart of the module. A pattern that fires disproportion-
-    ately on days the market rallied will show a wonderful average
-    return and mean nothing; drawing the null from the same calendar
-    days removes that entirely, because whatever the market did that
-    day, it did to both samples.
-    """
-    rng = random.Random(seed)
-    by_day: dict = {}
-    for t, closes in (series or {}).items():
-        c = [x if (x and x > 0) else None for x in (closes or [])]
-        for i in range(min_history, len(c) - horizon):
-            if c[i] is not None and c[i + horizon] is not None:
-                by_day.setdefault(i, []).append((t, _ret(c[i + horizon], c[i])))
-    out = []
-    for day in hit_days:
-        pool = by_day.get(day)
-        if pool:
-            out.append(rng.choice(pool)[1])
-    return out
 
 
 def _mean(xs):
