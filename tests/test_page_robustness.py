@@ -195,3 +195,23 @@ assert _i_verdict != -1 and (_i_table == -1 or _i_verdict < _i_table)
 assert "Finds strong, rising stocks" not in _full, \
     "the old sales pitch is back"
 print("/full states the falsification before it shows a row")
+
+
+# ---- the page opens with information, not with a question ----
+# "What do you own?" as a full card was the first thing every visitor
+# saw, and the review's biggest single deduction for value density. The
+# ask is now one line above the day's news; the form appears only when
+# the reader asks for it.
+_html = c.get("/").get_data(as_text=True)
+assert 'id="ownInvite"' in _html, "the slim invitation must exist"
+_i_invite = _html.find('id="ownInvite"')
+_i_gate = _html.find('id="ownGate"')
+assert _i_invite < _i_gate, "the invitation comes before the full form"
+assert 'id="ownGate" style="display:none"' in _html, \
+    "the full form must not ship visible"
+# and the ask itself is short: the old card ran to four paragraphs
+_invite = _html[_i_invite:_html.find("</p>", _i_invite)]
+import re as _re3
+_words = len(_re3.sub(r"<[^>]+>", " ", _invite).split())
+assert _words < 40, f"the invitation is {_words} words — it is meant to be a line"
+print(f"the holdings ask is a {_words}-word line, and the form waits to be asked for")
