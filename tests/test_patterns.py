@@ -77,6 +77,15 @@ assert row["p_source"].startswith("normal"), row["p_source"]
 assert row["p_perm"] == round(1 / (row["permutations"] + 1), 4), row
 print(f"  and the permutation floor ({row['p_perm']}) did not swallow it")
 
+# ...but the refinement must not run away with itself. A normal tail
+# fitted to the null draws and extrapolated far enough will hand back
+# 0.0, and "the probability of this happening by chance is zero" is the
+# one statement no sample of any size can support.
+assert row["p"] >= patterns.P_FLOOR, row
+assert round(row["p"], 6) > 0, row
+print(f"  and the reported p stops at {patterns.P_FLOOR:g} rather than "
+      f"claiming zero")
+
 # ---- 3. the date-matched null is what makes it honest ----
 # On a day every stock rose, a pattern that fired that day would show a
 # wonderful return and mean nothing. The null draws from the SAME days,
@@ -94,6 +103,34 @@ alive = [k for k, v in r_rally.items() if v.get("survives")]
 assert not alive, f"a market-wide move was mistaken for a pattern: {alive}"
 print("a pattern that only rides market-wide days shows no edge over its "
       "date-matched null")
+
+# ---- 3b. the clustering bug itself, pinned ----
+# This is the one that got through. Run over a 60-session book, the
+# framework called this project's own falsified pullback rule
+# significant at p = 0.004 — on 289 "observations" sitting on FOUR
+# calendar days. Everything firing on one day shares that day's market
+# move, so those 289 carried about as much evidence as four. A big `n`
+# on a handful of days is not a sample, and must be refused as one.
+# a shape that exists ONLY on three calendar days, in every ticker at
+# once — a sector-wide gap, an index rebalance, a Fed morning
+spiky = {t: list(c) for t, c in make_series(seed=5).items()}
+SPIKE_DAYS = (120, 180, 240)
+for c in spiky.values():
+    for d in SPIKE_DAYS:
+        c[d] = round(c[d - 1] * 1.25, 4)
+jumped = lambda w: w[-1] / w[-2] > 1.2                           # noqa: E731
+
+clustered = patterns.test_pattern(spiky, jumped, min_hits=30)
+assert clustered is None, \
+    f"hundreds of stock-days on three calendar days were treated as a " \
+    f"sample: {clustered}"
+# and the refusal is about days, not about n: force the day floor down
+# and the same shape is measurable, which proves the day count is what
+# rejected it rather than some unrelated guard
+forced = patterns.test_pattern(spiky, jumped, min_hits=30, min_days=3)
+assert forced and forced["days"] == 3 and forced["n"] >= 100, forced
+print(f"{forced['n']} observations on {forced['days']} days is refused as a "
+      f"sample — the day is the unit, not the stock-day")
 
 # ---- 4. rarity is refused, not reported with a p-value ----
 assert patterns.test_pattern(noise, lambda w: len(w) > 9999) is None
