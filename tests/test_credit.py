@@ -548,3 +548,141 @@ assert abs(h[0] - credit.restate(REP, 137.0)["dd"]) < 0.01
 print("the headline and the chart are the same calculation")
 
 print("\nRESTATEMENT PINNED")
+
+
+# ---- a volatility that is not a measurement must be refused ----
+# The published book carried 21 names above 200% annualised and one at
+# 982%, against a median of 36%. Every one was a thinly traded secondary
+# listing — OTC ADRs, London IOB lines, grey-market tickers — whose
+# "close" is a quote that did not trade: it sits still for days and then
+# catches up in one jump, and the standard deviation of THAT is a fact
+# about a data feed.
+#
+# It reached the reader as a verdict. QH was published as "in distress on
+# this measure" — the strongest words this model has — on 0.9% leverage,
+# because a 471% volatility swamped a balance sheet with almost no debt
+# in it. A reader who checked that against the company would have stopped
+# believing the whole page, and would have been right to.
+assert credit.usable_volatility(0.25) is None
+assert credit.usable_volatility(1.2) is None
+assert "not a measurement" in (credit.usable_volatility(4.716) or "")
+assert credit.usable_volatility(None) is not None
+assert credit.usable_volatility(0) is not None
+print("an implausible volatility is refused, and says why")
+
+# the stale-quote tell, measured rather than asserted: names above 150%
+# annualised had a median 49% of days with a return of EXACTLY zero;
+# names between 15% and 60% had a median of 0%
+_traded = [100.0 * (1 + 0.013 * ((i * 7 % 11) - 5)) for i in range(120)]
+_stale = []
+for i in range(120):                       # moves one day in four
+    _stale.append(_stale[-1] if _stale and i % 4 else 100.0 + i * 3.0)
+assert credit.flat_day_share(_traded) < 0.05
+assert credit.flat_day_share(_stale) > 0.5
+assert credit.usable_volatility(0.4, _traded) is None
+assert "stale quote" in (credit.usable_volatility(0.4, _stale) or "")
+print(f"a quote unchanged on {credit.flat_day_share(_stale)*100:.0f}% of days is "
+      f"refused; a traded one at {credit.flat_day_share(_traded)*100:.0f}% is not")
+
+# and the refusal has to reach report(), including when the volatility was
+# handed in from the published book — which is exactly the path QH took
+_bad = credit.report("QH", 7.1e9, _traded, 0.03e9, 0.1e9,
+                     as_of="2026-06-30", vol=4.716, vol_obs=249)
+assert _bad["dd"] is None, _bad["dd"]
+assert "a usable volatility" in _bad["missing"]
+assert _bad["vol_refused"] and "not a measurement" in _bad["vol_refused"]
+print("a published volatility gets the same examination as a measured one")
+
+# A stale series is caught where its volatility is COMPUTED, not where a
+# number is handed in. `closes` in report() is the short window used to
+# price the shares — a different series from the one the published
+# volatility came from — and judging one by the other would refuse a real
+# company for the shape of a window that had nothing to do with it.
+assert credit.equity_volatility(_stale) is None, "a stale series yields no volatility"
+assert credit.equity_volatility(_traded) is not None
+# so a flat pricing window with a genuine published volatility still works
+_flat_window = [100.0] * 60
+assert credit.report("X", 100e9, _flat_window, 10e9, 30e9, vol=0.30)["dd"] is not None
+print("the stale-quote gate sits on the series it judges, and nowhere else")
+
+# the ordinary case must be untouched — a guard that refuses everything is
+# not a guard
+_ok = credit.report("TST", 60e9, CLOSES, 10e9, 30e9, as_of="2026-06-30")
+assert _ok["dd"] is not None and _ok["band"]
+assert credit.equity_volatility(CLOSES) is not None
+print("a normally traded company is still measured")
+
+print("\nUNUSABLE VOLATILITY PINNED")
+
+
+# ---- the label must say WHICH input made the distance short ----
+# From the published book, the two lines that made this necessary:
+#   F     debts 78.1% of its value, shares swing 37%/yr -> "watch it"
+#   LITE  debts  5.9% of its value, shares swing 94%/yr -> "watch it"
+# Identical words. A reader takes "watch it" to mean the company might
+# struggle to pay what it owes; for a company owing six percent of its
+# market value that is not what the number says, and a label that cannot
+# tell the two apart is a label that reads as arbitrary.
+_lev = credit.report("LEV", 55.8e9, CLOSES, 149.3e9, 302.9e9, vol=0.37)
+_vol = credit.report("VOL", 63.3e9, CLOSES, 2.0e9, 4.0e9, vol=0.94)
+assert _lev["dd"] is not None and _vol["dd"] is not None
+assert _lev["driven_by"] == "debts", _lev["driven_by"]
+assert _vol["driven_by"] == "swings", (_vol["driven_by"], _vol["dd"])
+assert "what it owes" in _lev["verdict"]
+assert "share price swinging" in _vol["verdict"]
+print(f"the heavily indebted one says debts ({_lev['dd']}), the volatile one says "
+      f"swings ({_vol['dd']}) — same band, different sentence")
+
+# a company with plenty of room needs no explanation, and must not get a
+# manufactured one
+_safe = credit.report("SAFE", 4469e9, CLOSES, 149e9, 276e9, vol=0.25)
+assert _safe["dd"] > 4 and _safe["driven_by"] is None
+assert credit._because(None) == ""
+print("a company far from trouble is not given a driver it does not need")
+
+# and the attribution is computed, not guessed from a leverage threshold:
+# hold the SAME balance sheet at an ordinary volatility and see if the
+# room appears
+_dp = credit.default_point(2.0e9, 4.0e9)
+_at_ref = credit.distance_to_default(
+    *credit.solve_merton(63.3e9, _dp, credit.REFERENCE_VOL), _dp)
+assert _at_ref > 4.0 > _vol["dd"], (_at_ref, _vol["dd"])
+print(f"held at an ordinary {credit.REFERENCE_VOL*100:.0f}% volatility the same "
+      f"balance sheet gives {_at_ref:.1f} — which is what makes it the swings")
+
+# restate() must carry the attribution too, or the front page and the
+# report page disagree about the same company
+_r = credit.restate(dict(_vol, shares=1e9), 63.3)
+assert _r["driven_by"] and _r["driven_by"] in ("swings", "both", "debts")
+assert credit._because(_r["driven_by"]) in _r["verdict"]
+print("a restated standing carries the same explanation as a fresh one")
+
+print("\nDRIVER ATTRIBUTION PINNED")
+
+
+# ---- restate() and report() must agree on every figure they both emit ----
+# They did not: market leverage was debts/ASSET-value in one and
+# debts/EQUITY in the other, so the published book said Ford's debts were
+# 78% of the business and the page rendered 313%. Two numbers for one
+# fact, on two screens, is the whole trust problem in miniature.
+_base = credit.report("LEVX", 55.8e9, CLOSES, 149.3e9, 302.9e9, vol=0.37)
+_base["shares"] = 55.8e9 / CLOSES[-1]
+_same = credit.restate(_base, CLOSES[-1])
+for k in ("market_leverage", "asset_vol", "band", "driven_by"):
+    a, b = _base.get(k), _same.get(k)
+    if isinstance(a, float):
+        assert abs(a - b) < 0.005, (k, a, b)
+    else:
+        assert a == b, (k, a, b)
+assert abs(_same["asset_value"] - _base["asset_value"]) / _base["asset_value"] < 0.005
+print(f"restated at the same price, every shared figure matches "
+      f"(leverage {_base['market_leverage']*100:.1f}% both ways)")
+
+# and leverage is against the business's value, not the share count's —
+# the two differ by a factor of four on a company like this
+assert _base["market_leverage"] < 1.0, _base["market_leverage"]
+assert abs(_base["market_leverage"]
+           - _base["default_point"] / _base["asset_value"]) < 1e-3
+print("leverage is measured against the whole business, consistently")
+
+print("\nFIGURE CONSISTENCY PINNED")

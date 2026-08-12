@@ -67,6 +67,23 @@
     <p class="big {{ 'ok' if r.dd >= 4 else 'warn' if r.dd >= 2.5 else 'bad' }}">
       {{ '%.2f'|format(r.dd) }}</p>
     <p class="lead" style="margin:.3rem 0 .8rem">standard deviations — {{ r.band }}</p>
+    {% if r.driven_by == 'swings' %}
+    <p class="muted"><b>Read the label carefully.</b> This company's debts are
+      {{ (r.market_leverage * 100)|round(1) }}% of what the whole business is worth —
+      that is not much. The distance is short because the share price swings
+      {{ (r.equity_vol * 100)|round(0)|int }}% a year, not because of its debts. A
+      volatile share price and a strained balance sheet get the same words from this
+      model, and they are not the same thing.</p>
+    {% elif r.driven_by == 'debts' %}
+    <p class="muted">The distance is short because of what the company owes:
+      {{ (r.market_leverage * 100)|round(1) }}% of what the whole business is worth, against shares
+      that swing {{ (r.equity_vol * 100)|round(0)|int }}% a year — less than the
+      typical company measured here.</p>
+    {% elif r.driven_by == 'both' %}
+    <p class="muted">Both inputs are pushing this one: its debts are
+      {{ (r.market_leverage * 100)|round(1) }}% of what the whole business is worth, and its shares
+      swing {{ (r.equity_vol * 100)|round(0)|int }}% a year.</p>
+    {% endif %}
     {% if r.percentile is not none %}
     <p class="muted">Against the {{ r.peers_n }} other companies measured today it sits
       at the {{ 'stronger' if r.percentile >= 50 else 'weaker' }} end: safer than
@@ -117,7 +134,7 @@
       <tr><td>What it owes, weighted for when it comes due
               <span class="tiny">(all short-term, half of long-term)</span></td>
           <td class="r">{{ '%.1f'|format(r.default_point / 1e9) }}bn</td></tr>
-      <tr><td>Debts as a share of the market's valuation</td>
+      <tr><td>Debts as a share of what the whole business is worth</td>
           <td class="r">{{ (r.market_leverage * 100)|round(1) }}%</td></tr>
       <tr><td>How much the business's value swings in a year</td>
           <td class="r">{{ (r.asset_vol * 100)|round(1) }}%</td></tr>

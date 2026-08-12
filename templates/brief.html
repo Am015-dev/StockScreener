@@ -176,7 +176,9 @@
           <p style="margin:0 0 .2rem;font-size:.92rem"><a href="/credit/{{ c.ticker }}"
             style="text-decoration:none"><b class="tk">{{ c.ticker }}</b></a>
             <span class="tiny {{ 'ok' if c.level == 'ok' else 'warn' if c.level == 'warn' else 'loss' }}"
-              >{{ '%.2f'|format(c.dd) }} — {{ c.band }}</span></p>
+              >{{ '%.2f'|format(c.dd) }} — {{ c.band }}</span>
+            {%- if c.note %}<span class="tiny" style="display:block;color:var(--ink-3)"
+              >{{ c.note }}</span>{% endif %}</p>
           {% endfor %}
         </div>
         <div style="flex:1 1 11rem">
@@ -220,7 +222,10 @@
               <td>{% if w.credit %}<a href="/credit/{{ w.ticker }}" style="text-decoration:none"><span class="{{ 'ok' if w.credit.level == 'ok'
                   else 'warn' if w.credit.level == 'warn' else 'loss' }}"
                   title="{{ w.credit.band }} — {{ w.credit.dd }} standard deviations
-                         from its default point">{{ w.credit.word }}</span></a>{% else %}—{% endif %}</td>
+                         from its default point{% if w.credit.note %}, driven by
+                         {{ w.credit.note }}{% endif %}">{{ w.credit.word }}</span
+                  >{% if w.credit.driven_by == 'swings' %}<span class="nm2">price swings,
+                  not debts</span>{% endif %}</a>{% else %}—{% endif %}</td>
               <td>{{ w.earnings or '—' }}</td>
             </tr>
           {% endfor %}
