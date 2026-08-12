@@ -2038,14 +2038,21 @@ def alert():
     if br.get("risk_factor", 1) < 1:
         lines.append(f"⚠ defensive market (breadth {br.get('pct')}%) — "
                      f"sizes throttled to {br['risk_factor']:g}x")
+    # A pushed message that says "buy ≈X, stop Y" is a recommendation,
+    # whatever the website says — and the entry signal behind it was
+    # falsified against random entry on both rule sets. The alert now
+    # sends what is factually true (the watchlist and its levels) framed
+    # as what it is, with the refutation attached to every message.
     if res:
-        lines.append(f"{len(res)} verified pick(s):")
+        lines.append(f"{len(res)} name(s) on the pattern watchlist:")
         for r in res[:TOP_N]:
-            lines.append(f"  {r['ticker']}: buy ≈{r['price']}, stop {r['stop']}, "
-                         f"target {r['resistance']}, {r['shares']} sh, "
-                         f"risk €{r['risk_EUR']} (R:R {r['RR']}, score {r['score']})")
+            lines.append(f"  {r['ticker']}: {r['price']} vs defended level "
+                         f"{r['support']}, earnings {r.get('earnings_in') or 'unverified'}")
+        lines.append("Not a recommendation — this pattern tested no better "
+                     "than random entry (p=0.41-0.50). Run any name through "
+                     "the pre-trade check before acting.")
     else:
-        lines.append("no verified picks today"
+        lines.append("nothing on the watchlist today"
                      + (f" ({len(pend)} awaiting data verification)" if pend else ""))
     lines.append("https://pullback-screener.onrender.com")
     text = "\n".join(lines)
