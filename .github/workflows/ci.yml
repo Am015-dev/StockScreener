@@ -71,6 +71,8 @@ jobs:
         run: python tests/test_brief.py
       - name: Pre-trade check + per-stock analysis (evidence, sizing)
         run: python tests/test_pretrade.py
+      - name: Pattern finder (recovers a planted edge, rejects noise, corrects FDR)
+        run: python tests/test_patterns.py
       - name: Polygon adapter (bulk shape, pacing, refusals — offline)
         run: python tests/test_polygon.py
       - name: Credit model (Merton solve, refusals, no invented probability)
