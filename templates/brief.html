@@ -77,11 +77,18 @@
        said "I do not see any Moodys like report anywhere" was looking at
        this screen, and they were right: on their device there was
        nothing else on the page. -->
+  <p class="tiny" id="ownInvite" style="display:none;margin:0 0 1rem;padding:.6rem .8rem;
+     border:1px solid var(--line);border-radius:10px">
+    Add your holdings to switch on the overlap check — the one thing a free screener
+    cannot do. <button id="ownOpen" style="background:none;border:none;color:var(--accent);
+    text-decoration:underline;cursor:pointer;padding:0;font:inherit">Add them</button>
+    · <button id="ownNo" style="background:none;border:none;color:var(--ink-3);
+    text-decoration:underline;cursor:pointer;padding:0;font:inherit">not now</button></p>
+
   <div class="card act" id="ownGate" style="display:none">
     <p class="lead" style="margin-bottom:.6rem">What do you own?</p>
-    <p class="muted" style="margin-bottom:1rem">Optional, and everything below works
-      without it. It turns on the one thing a free screener cannot do — telling you
-      whether a trade you are considering is one you already hold.</p>
+    <p class="muted" style="margin-bottom:1rem">Kept in this browser. It switches on the
+      overlap check — whether a trade you are considering is one you already hold.</p>
     <label class="tiny" for="ownText">One per line — <code>TICKER, shares, cost</code></label>
     <textarea id="ownText" rows="4" spellcheck="false"
       placeholder="NVDA, 4, 118.20&#10;KO, 30, 61.05"
@@ -353,7 +360,18 @@ function paintHoldings() {
   const main = document.getElementById("main");
   const bar = document.getElementById("ownBar");
   const answered = (h && h.length) || skipped();
-  gate.style.display = answered ? "none" : "block";
+  // The page must open with information, not a question. Unanswered, the
+  // reader gets a one-line invitation above the day's news; the full form
+  // appears only when they ask for it. "What do you own?" as the first
+  // screen was the review's biggest single deduction for value density.
+  const invite = document.getElementById("ownInvite");
+  if (!answered && !gate.dataset.open) {
+    gate.style.display = "none";
+    if (invite) invite.style.display = "block";
+  } else {
+    gate.style.display = answered ? "none" : "block";
+    if (invite) invite.style.display = "none";
+  }
   // never hidden. The holdings question gates ONE feature — the overlap
   // check — and it used to gate the entire product behind itself.
   main.style.display = "block";
@@ -395,6 +413,16 @@ document.getElementById("ownSave").addEventListener("click", () => {
   }
   saveHoldings(list, `Saved ${list.length} position(s).`);
 });
+document.getElementById("ownOpen").addEventListener("click", () => {
+  const g = document.getElementById("ownGate");
+  g.dataset.open = "1";
+  paintHoldings();
+  document.getElementById("ownText").focus();
+});
+document.getElementById("ownNo").addEventListener("click", () => {
+  try { localStorage.setItem("dipfinder_skipped", "1"); } catch (e) {}
+  paintHoldings();
+});
 document.getElementById("ownSkip").addEventListener("click", () => {
   try { localStorage.setItem("dipfinder_skipped", "1"); } catch (e) {}
   paintHoldings();
@@ -407,7 +435,11 @@ document.getElementById("ownEdit").addEventListener("click", () => {
     localStorage.removeItem("dipfinder_skipped");
     sessionStorage.removeItem("dipfinder_skipped");
   } catch (e) {}
-  document.getElementById("ownGate").style.display = "block";
+  const g = document.getElementById("ownGate");
+  g.dataset.open = "1";
+  g.style.display = "block";
+  const inv = document.getElementById("ownInvite");
+  if (inv) inv.style.display = "none";
   document.getElementById("ownBar").style.display = "none";
   document.getElementById("ownText").focus();
 });
