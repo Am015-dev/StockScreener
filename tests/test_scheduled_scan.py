@@ -362,9 +362,9 @@ print("a name with no published prices is skipped, not valued without one")
 # carries the rest forward. What it must NOT carry is a standing whose
 # price has moved on: the distance is a market value against a balance
 # sheet, so a week-old entry is a week-old market capitalisation.
-_prev = {"OLD": {"ticker": "OLD", "dd": 4.0, "sic": "3711",
+_prev = {"OLD": {"ticker": "OLD", "dd": 4.0, "sic": "3711", "capck": True,
                  "built": 1_000_000 - 30 * 86400},
-         "KEPT": {"ticker": "KEPT", "dd": 6.0, "sic": "3711",
+         "KEPT": {"ticker": "KEPT", "dd": 6.0, "sic": "3711", "capck": True,
                   "built": 1_000_000 - 3600}}
 _merged = scheduled_scan.credit_book(["AAA"], _cb_prices, _cb_vols,
                                      prev=_prev, now=1_000_000)
@@ -381,9 +381,9 @@ _wide_prices = {"dates": _cb_prices["dates"],
                 "series": {t: [100.0] * 60 for t in ("AAA", "BBB")}}
 _stale_first = scheduled_scan.credit_book(
     [], _wide_prices, _cb_vols,
-    prev={"BBB": {"ticker": "BBB", "dd": 1.0, "sic": "3711",
+    prev={"BBB": {"ticker": "BBB", "dd": 1.0, "sic": "3711", "capck": True,
                   "built": 1_000_000 - scheduled_scan.CREDIT_REFRESH_S - 60},
-          "AAA": {"ticker": "AAA", "dd": 1.0, "sic": "3711",
+          "AAA": {"ticker": "AAA", "dd": 1.0, "sic": "3711", "capck": True,
                   "built": 1_000_000 - 60}},
     max_names=1, now=1_000_000)
 assert _stale_first["BBB"]["built"] == 1_000_000, \
@@ -407,9 +407,9 @@ def _counting_sec(url, timeout=20):
 
 
 scheduled_scan._sec_get = _counting_sec
-_fresh = {"AAA": {"ticker": "AAA", "dd": 1.0, "sic": "3711",
+_fresh = {"AAA": {"ticker": "AAA", "dd": 1.0, "sic": "3711", "capck": True,
                   "built": 1_000_000 - 60},
-          "BBB": {"ticker": "BBB", "dd": 1.0, "sic": "3711",
+          "BBB": {"ticker": "BBB", "dd": 1.0, "sic": "3711", "capck": True,
                   "built": 1_000_000 - 60}}
 _seen_urls.clear()
 _skipped = scheduled_scan.credit_book(["AAA", "BBB"], _cb_prices, _cb_vols,
@@ -425,7 +425,7 @@ _widen_prices = {"dates": _cb_prices["dates"],
                  "series": {"AAA": [100.0] * 60, "BBB": [100.0] * 60}}
 _widened = scheduled_scan.credit_book(
     ["AAA"], _widen_prices, _cb_vols,
-    prev={"AAA": {"ticker": "AAA", "dd": 1.0, "sic": "3711",
+    prev={"AAA": {"ticker": "AAA", "dd": 1.0, "sic": "3711", "capck": True,
                   "built": 1_000_000 - 60}},
     max_names=1, now=1_000_000)
 assert _widened["BBB"]["built"] == 1_000_000, \

@@ -516,10 +516,7 @@ function paintCredit(d, run) {
   el.innerHTML = `<p style="margin:0 0 .6rem"><b style="color:${COLOR[lvl]}">` +
     `${ICON[lvl]} Credit standing: ${esc(d.band)}</b> ` +
     `<a class="tiny" href="/credit/${encodeURIComponent(d.ticker || "")}">full report →</a><br>` +
-    `<span class="tiny">${esc(lead)} ${esc(extra.join(" "))} ${esc(precise)} ` +
-    `No chance-of-default percentage is given — that needs a database of ` +
-    `companies that actually defaulted, which is the part nobody gives away.` +
-    `</span></p>`;
+    `<span class="tiny">${esc(lead)} ${esc(extra.join(" "))} ${esc(precise)}</span></p>`;
 }
 
 async function runCheck() {

@@ -98,6 +98,48 @@ def is_financial(sic) -> bool:
     return FINANCIAL_SIC[0] <= code <= FINANCIAL_SIC[1]
 
 
+def secondary_line(ticker: str) -> str | None:
+    """Why this ticker's price line cannot price its filings, or None.
+
+    BABAF — Alibaba's over-the-counter ordinary-share line — was the
+    front page's number one "closest to trouble" because the SEC filing's
+    share count (an ADS-equivalent figure) was multiplied by the ordinary
+    -share OTC price: equity understated roughly eight times, leverage
+    "79%" against a true ~29%. The filing and that price line do not
+    describe the same share, and no arithmetic on the pair is a
+    measurement. US OTC foreign-ordinary lines are five letters ending in
+    F; London IOB and Milan cross-listings carry their own suffixes.
+    """
+    t = (ticker or "").upper()
+    if len(t) == 5 and t.endswith("F") and "." not in t and "-" not in t:
+        return ("this is an over-the-counter line of a foreign company — "
+                "its SEC filing and this price line do not describe the "
+                "same share, so no honest number can come from the pair")
+    if t.endswith((".IL", ".XC")) or (("." in t) and t.split(".")[0][:1] == "1"
+                                      and t.endswith(".MI")):
+        return ("this is a secondary cross-listing — measured under its "
+                "primary ticker if it files in the US")
+    return None
+
+
+def equity_vs_cap(equity: float | None, market_cap: float | None) -> str | None:
+    """Why shares x price cannot be this company's equity, or None.
+
+    An independent market-cap reading catches the unit mismatches the
+    suffix rule cannot: if the two disagree by more than double, the
+    share count and the price line are not about the same instrument,
+    and the distance built on them would be arithmetic, not measurement.
+    """
+    if not equity or not market_cap or market_cap <= 0:
+        return None
+    ratio = equity / market_cap
+    if ratio > 2.0 or ratio < 0.5:
+        return (f"the share count and the price line disagree — they imply "
+                f"{equity / 1e9:.0f}bn of equity against {market_cap / 1e9:.0f}bn "
+                f"on the market screen, so they do not describe the same share")
+    return None
+
+
 NOT_MODELLED = ("Banks and insurers are not modelled here. Their balance "
                 "sheets are the business — deposits and claims payable are "
                 "how they operate, not debt coming due against too little "
