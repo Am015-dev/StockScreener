@@ -737,3 +737,24 @@ finally:
     A._load_published = _saved_lp
 
 print("\nALERT WORDING PINNED")
+
+
+# ---- /check parses the holdings format the page itself teaches ----
+# The textarea says "One per line — TICKER, shares, cost". The endpoint
+# split that on commas AND whitespace alike, so "MSFT, 10, 300" became
+# three positions named MSFT, 10 and 300 — and the reply said "4 of your
+# 6 positions could not be compared" about a two-position book, with the
+# numbers rendered as tickers in user-facing text.
+_c2 = A.app.test_client()
+for _payload, _want in (
+        ("MSFT, 10, 300\nNVDA, 5, 120", ["MSFT", "NVDA"]),
+        ("MSFT NVDA", ["MSFT", "NVDA"]),
+        ("MSFT,NVDA", ["MSFT", "NVDA"]),
+        ("BRK-B, 2, 410\nSHELL.L, 100, 2450", ["BRK-B", "SHELL.L"]),
+        ("10, 20, 30", []),
+        ("", [])):
+    _r = _c2.post("/check", json={"ticker": "ZQX", "holdings": _payload}).get_json()
+    assert _r.get("held") == _want, (_payload, _r.get("held"))
+print("every holdings shape the page teaches parses to tickers, never numbers")
+
+print("\nCHECK PARSER PINNED")

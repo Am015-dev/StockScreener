@@ -463,11 +463,11 @@ function paintCredit(d, run) {
   let lead;
   if (lev === null) lead = "";
   else if (lev < 25) lead = `It owes little next to what it is worth: debts are ` +
-    `${lev}% of the company's market value.`;
-  else if (lev < 60) lead = `It carries real debt — ${lev}% of the company's ` +
-    `market value — but comfortably less than the business is worth.`;
-  else lead = `It is heavily borrowed: debts are ${lev}% of the whole company's ` +
-    `market value, so a fall in the share price closes the gap quickly.`;
+    `${lev}% of what the whole business is worth.`;
+  else if (lev < 60) lead = `It carries real debt — ${lev}% of what the whole ` +
+    `business is worth — but with clear room beyond it.`;
+  else lead = `It is heavily borrowed: debts are ${lev}% of what the whole ` +
+    `business is worth, so a fall in the share price closes the gap quickly.`;
 
   const extra = [];
   if (d.percentile !== null && d.percentile !== undefined)

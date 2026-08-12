@@ -64,6 +64,15 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
     ticker = (ticker or "").strip().upper()
     held = [h.get("ticker", "").strip().upper()
             for h in (holdings or []) if h.get("ticker")]
+    # The strongest possible answer to "do I already own this trade?" is
+    # owning the identical ticker — and it used to be the one answer the
+    # check could not give. The candidate was silently dropped from the
+    # holdings before the comparison, so a reader holding 40 shares of
+    # AAPL who checked AAPL was told "This is something you do not
+    # already own". The tool's one promise, answered wrongly.
+    self_pos = next((h for h in (holdings or [])
+                     if (h.get("ticker") or "").strip().upper() == ticker),
+                    None)
     held = [h for h in held if h and h != ticker]
     # How much money sits in each position. The bets figure is a property
     # of the portfolio, not of the ticker list, and the sentence built
@@ -120,10 +129,22 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
             "This is refused rather than guessed.")
 
     # ---- 2. how much of this do you already own? ----
-    if not held:
+    if self_pos is not None:
+        try:
+            sh = float(self_pos.get("shares") or 0)
+        except (TypeError, ValueError):
+            sh = 0
+        size = f" — {sh:g} shares" if sh > 0 else ""
+        add("warn", "You already own this exact stock",
+            f"{ticker} is in the holdings you gave{size}. Buying more makes "
+            f"an existing bet bigger; nothing about it is new. The overlap "
+            f"figures below compare it against the REST of your book.")
+    if not held and self_pos is None:
         add("note", "No holdings given",
             "Paste your positions to find out whether this is a new bet or one "
             "you already have.")
+    elif not held:
+        pass          # the self-holding warning above is the whole answer
     else:
         dates = _dates_of(price_book)
         series = _corr_series(price_book, held + [ticker])
@@ -173,11 +194,16 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
                         f"{share} times out of a hundred. Buy less than you were "
                         f"going to, and count it as more of {partner} rather than "
                         f"as something new.")
-                else:
+                elif self_pos is None:
                     add("ok", "This is something you do not already own",
                         f"The closest thing in your book is {partner}, and the two "
                         f"move independently enough that a bad week for one is not "
                         f"a bad week for the other.")
+                else:
+                    add("note", "The rest of your book moves independently of it",
+                        f"Aside from your existing {ticker} position, the closest "
+                        f"thing you hold is {partner}, and the two move "
+                        f"independently.")
 
             # ---- 3. bets before and after ----
             before = concentration.effective_bets(
@@ -200,13 +226,17 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
                         f"with this added — near enough no change, because it "
                         f"moves with something you already hold. It is more money "
                         f"on a bet you have, not a new one.{basis}")
-                else:
+                elif self_pos is None:
                     add("ok",
                         f"This genuinely spreads your money wider",
                         f"Your {len(measured)} positions behave like about "
                         f"{before:.1f} separate ones today, and about {after:.1f} "
                         f"with this added — it is a different bet, not a bigger "
                         f"version of one you already have.{basis}")
+                # holding it already, "spreads your money wider" would
+                # contradict the warning above on the same card; the
+                # self-holding finding is the answer and nothing here
+                # needs to argue with it
 
     # ---- 4. do the costs eat it? ----
     if friction_pct is not None and reward_eur:

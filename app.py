@@ -1068,8 +1068,27 @@ def check_trade():
                     for h in holdings if h]
         holdings = [h for h in holdings if isinstance(h, dict)]
     if isinstance(holdings, str):
-        holdings = [{"ticker": t.strip()} for t in holdings.replace(",", " ").split()
-                    if t.strip()]
+        # The page's own textarea teaches "TICKER, shares, cost — one per
+        # line", and this parser used to flatten that on commas AND
+        # whitespace alike — so "MSFT, 10, 300" became three holdings
+        # named MSFT, 10 and 300, and the check answered "4 of your 6
+        # positions could not be compared" about a two-position book,
+        # with the numbers rendered as tickers in the reply. Parse the
+        # format the page teaches: one holding per line, ticker first.
+        def _is_num(tok):
+            return tok and not tok.replace(".", "").replace("-", "").isdigit()
+
+        parsed = []
+        for line in holdings.splitlines() or [holdings]:
+            fields = [f.strip() for f in line.split(",") if f.strip()]
+            if len(fields) > 1 and all(not _is_num(f) for f in fields[1:]):
+                # "MSFT, 10, 300" — the taught format; the ticker leads
+                # and everything after it is a quantity, never a position
+                fields = fields[:1]
+            for f in fields:
+                parsed.extend({"ticker": tok} for tok in f.split()
+                              if _is_num(tok))
+        holdings = parsed
 
     book = _price_book()
     # Earnings come from the same published scan, so the answer here is the
