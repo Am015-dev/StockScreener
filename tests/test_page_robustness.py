@@ -181,3 +181,17 @@ _above = _html.split("<details")[0]
 for _id in ('id="ckTicker"', 'id="crTicker"'):
     assert _id in _above, f"{_id} is below the fold"
 print("the pre-trade check and the credit report lead the page")
+
+
+# ---- /full carries the verdict too ----
+# The full board is where the stops, targets and sizes live, which makes
+# it the page MOST likely to be read as advice — it must state the
+# falsification before it shows a single row.
+_full = c.get("/full").get_data(as_text=True)
+assert _full and "tested against random entry and failed" in _full
+_i_verdict = _full.find("tested against random entry")
+_i_table = _full.find("<table")
+assert _i_verdict != -1 and (_i_table == -1 or _i_verdict < _i_table)
+assert "Finds strong, rising stocks" not in _full, \
+    "the old sales pitch is back"
+print("/full states the falsification before it shows a row")
