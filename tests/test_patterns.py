@@ -132,6 +132,44 @@ assert forced and forced["days"] == 3 and forced["n"] >= 100, forced
 print(f"{forced['n']} observations on {forced['days']} days is refused as a "
       f"sample — the day is the unit, not the stock-day")
 
+# ---- 3c. volatile stocks are compared against volatile stocks ----
+# The confound that made the first real sweep produce eleven "tradeable"
+# patterns, every one of them a volatility shape. Here half the names are
+# violent AND drift up, half are calm and flat. No shape carries any
+# information — but any shape that selects the violent half will look
+# wonderful against a pool that is mostly the calm half.
+mixed = {}
+rng = random.Random(21)
+for t in range(60):
+    violent = t < 30
+    px = [100.0]
+    for _ in range(320):
+        # the violent half moves 4x as hard AND drifts up; that drift is
+        # a property of the STOCK, not of anything a pattern spotted
+        px.append(px[-1] * (1 + rng.gauss(0.0040 if violent else 0.0002,
+                                          0.032 if violent else 0.008)))
+    mixed[f"{'V' if violent else 'C'}{t}"] = px
+
+# "a single session up 3% or more" fires almost only in the violent half
+naive = patterns.test_pattern(mixed, patterns.p_gap_up_3pct, seeds=200,
+                              match_volatility=False)
+matched = patterns.test_pattern(mixed, patterns.p_gap_up_3pct, seeds=200)
+assert naive and matched, (naive, matched)
+assert naive["p"] < 0.05, \
+    f"the confound did not reproduce, so this test proves nothing: {naive}"
+assert matched["p"] > 0.05, \
+    f"a pure volatility-selection effect survived the matched null: {matched}"
+assert matched["edge_pct"] < naive["edge_pct"], (naive, matched)
+print(f"a shape that only selects volatile stocks: {naive['edge_pct']:+.2f}% "
+      f"at p = {patterns.p_words(naive['p'])} against any stock, but "
+      f"{matched['edge_pct']:+.2f}% at p = {patterns.p_words(matched['p'])} "
+      f"against equally volatile ones")
+
+# and the matching must not blunt a genuine edge: the planted one from
+# section 2 still has to come through when the null is volatility-matched
+assert row["survives"] and row["p"] < 0.01, row
+print("  while the planted edge still survives the same matching")
+
 # ---- 4. rarity is refused, not reported with a p-value ----
 assert patterns.test_pattern(noise, lambda w: len(w) > 9999) is None
 rare = patterns.test_pattern(noise, lambda w: w[-1] > 1e9)
@@ -161,6 +199,21 @@ allsig = {f"p{i}": {"p": 0.04, "edge_pct": 0.1, "horizon": 5, "n": 100,
                     "after_costs_pct": -0.1} for i in range(20)}
 assert all(v["survives"] for v in patterns.benjamini_hochberg(allsig, 0.10).values())
 print("twenty results all at p = 0.04 do survive — which is BH working, not failing")
+
+# and the family has to span every holding period, not just one. Trying
+# three horizons is three times the tests; correcting each separately
+# would hand out three tickets in the same lottery at the price of one.
+many = patterns.sweep_many(noise, [3, 5], seeds=30)
+sizes = {v["family_size"] for rows in many.values() for v in rows.values()
+         if v and v.get("family_size")}
+assert len(sizes) == 1, f"rows corrected against different families: {sizes}"
+one = patterns.sweep(noise, horizon=5, seeds=30)
+one_size = {v["family_size"] for v in one.values() if v.get("family_size")}
+assert sizes.pop() > one_size.pop(), \
+    "two holding periods were corrected as if only one had been tried"
+assert not [k for rows in many.values() for k, v in rows.items()
+            if v and v.get("survives")], "found an edge in a random walk"
+print("two holding periods are corrected as one family, not two")
 
 # a single genuinely small p in a small family does survive
 bh2 = patterns.benjamini_hochberg(

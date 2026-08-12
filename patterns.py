@@ -226,26 +226,56 @@ def _sd(xs):
     return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
 
 
+def trailing_vol(closes: list, window: int = 20) -> list:
+    """Standard deviation of the last `window` daily moves, per session.
+
+    One entry per close, None where there is not enough contiguous
+    history behind it. This is what the null is matched on.
+    """
+    c = [x if (x and x > 0) else None for x in (closes or [])]
+    rets = [None] * len(c)
+    for i in range(1, len(c)):
+        if c[i] is not None and c[i - 1] is not None:
+            rets[i] = c[i] / c[i - 1] - 1.0
+    out = [None] * len(c)
+    for i in range(window, len(c)):
+        w = rets[i - window + 1:i + 1]
+        if any(x is None for x in w):
+            continue
+        m = sum(w) / len(w)
+        out[i] = math.sqrt(sum((x - m) ** 2 for x in w) / (len(w) - 1))
+    return out
+
+
 def test_pattern(series: dict, fn, horizon: int = DEFAULT_HORIZON,
                  seeds: int = 200, min_hits: int = 30,
-                 min_days: int = MIN_DAYS) -> dict | None:
-    """Measure one pattern against its date-matched null, BY DAY.
+                 min_days: int = MIN_DAYS, vol_buckets: int = 5,
+                 match_volatility: bool = True) -> dict | None:
+    """Measure one pattern against a matched null, BY DAY.
 
-    The unit of observation is the calendar day, not the stock-day, and
-    getting that wrong is how this framework produced its first false
-    positive. Run over a 60-session book it reported the project's own
-    falsified pullback rule as significant at p = 0.004 — on 289
-    "observations" that sat on FOUR days. Everything that fires on one
-    day shares that day's market move, so 289 correlated observations
-    carry about as much evidence as four independent ones, and treating
-    them as 289 shrinks the apparent standard error by roughly a factor
-    of eight.
+    Two things are matched, and both were learned from being wrong.
 
-    So: for each day the pattern fires, take the mean forward return of
-    its hits MINUS the mean forward return of everything trading that
-    day. That daily excess is one observation. The test is then whether
-    the average daily excess is bigger than the same statistic computed
-    from random stock picks on the same days, in the same counts.
+    THE DAY. The unit of observation is the calendar day, not the
+    stock-day. Run over a 60-session book this reported the project's
+    own falsified pullback rule as significant at p = 0.004 — on 289
+    "observations" that sat on FOUR days. Everything firing on one day
+    shares that day's market move, so treating 289 correlated
+    observations as independent shrank the standard error by about
+    eight. Each day contributes exactly one number: the mean forward
+    return of the hits minus the mean of the comparison group.
+
+    THE VOLATILITY. Matching only on the date is still not enough, and
+    the first real-market sweep proved it: eleven combinations came out
+    "tradeable" and every single one was a volatility shape — a 3% day
+    up, a 3% day down, a week of 2% moves, a new 20-day low. They were
+    not detecting a shape. They were detecting that the shape selects
+    volatile stocks, and comparing them against a pool that was mostly
+    quiet ones. In a rising year the volatile half drifts up faster, and
+    that difference is what the "edge" was made of.
+
+    So the comparison group is drawn from the same volatility bucket, on
+    the same day: what did stocks that were moving THIS much, on THIS
+    day, do next? Anything left after that belongs to the shape.
 
     Returns None when there are too few DAYS to say anything, however
     many stock-days that adds up to.
@@ -255,41 +285,88 @@ def test_pattern(series: dict, fn, horizon: int = DEFAULT_HORIZON,
         return None
     by_day: dict = {}
     for d, t, r in hits:
-        by_day.setdefault(d, []).append(r)
+        by_day.setdefault(d, []).append((t, r))
     if len(by_day) < min_days:
         return None
 
-    # every stock's forward return, per day: both the benchmark each day
-    # is measured against and the pool the null draws from
-    pool: dict = {}
+    # every stock's forward return and trailing volatility, per day
+    raw: dict = {}
     for t, closes in (series or {}).items():
         c = [x if (x and x > 0) else None for x in (closes or [])]
+        vol = trailing_vol(c)
         for i in range(51, len(c) - horizon):
             if c[i] is not None and c[i + horizon] is not None:
-                pool.setdefault(i, []).append(_ret(c[i + horizon], c[i]))
+                raw.setdefault(i, []).append(
+                    (t, _ret(c[i + horizon], c[i]), vol[i]))
 
-    def daily_excess(picks_per_day: dict) -> float:
-        vals = []
-        for day, rs in picks_per_day.items():
-            bench = pool.get(day)
-            if not bench or not rs:
-                continue
-            vals.append(_mean(rs) - _mean(bench))
-        return _mean(vals) if vals else 0.0
+    # Split each day into volatility buckets, so a pattern that picks
+    # violent stocks is compared against other violent stocks rather
+    # than against the market's quiet majority.
+    nb = max(1, int(vol_buckets)) if match_volatility else 1
+    pools: dict = {}     # day -> [returns per bucket]
+    bucket_of: dict = {}  # day -> {ticker: bucket}
+    for d, rows in raw.items():
+        usable = [r for r in rows if r[2] is not None]
+        if not match_volatility or len(usable) < nb * 8:
+            # too thin to bucket honestly: one bucket, and the result is
+            # a plain date-matched null again rather than a fake one
+            pools[d] = [[r[1] for r in rows]]
+            bucket_of[d] = {r[0]: 0 for r in rows}
+            continue
+        usable.sort(key=lambda r: r[2])
+        per = len(usable) / nb
+        pools[d] = [[] for _ in range(nb)]
+        bo = {}
+        for j, (t, ret, _) in enumerate(usable):
+            b = min(nb - 1, int(j / per))
+            pools[d][b].append(ret)
+            bo[t] = b
+        # a name with no volatility yet still needs somewhere to sit
+        for t, ret, v in rows:
+            if v is None:
+                bo.setdefault(t, nb // 2)
+        bucket_of[d] = bo
 
-    real = daily_excess(by_day)
+    # Per day: the hits' mean, and the mean of the matched comparison
+    # group weighted by how many hits came from each bucket. Fixed, so
+    # computed once rather than inside the permutation loop.
+    days = []
+    for d, tr in by_day.items():
+        buckets = pools.get(d)
+        bo = bucket_of.get(d) or {}
+        if not buckets:
+            continue
+        counts: dict = {}
+        for t, _ in tr:
+            b = bo.get(t)
+            if b is not None and buckets[b]:
+                counts[b] = counts.get(b, 0) + 1
+        if not counts:
+            continue
+        total = sum(counts.values())
+        bench = sum(_mean(buckets[b]) * n for b, n in counts.items()) / total
+        rs = [r for t, r in tr if bo.get(t) in counts]
+        days.append((d, rs, [(buckets[b], n) for b, n in counts.items()],
+                     bench, total))
+    if len(days) < min_days:
+        return None
+
+    real = _mean([_mean(rs) - bm for _, rs, _, bm, _ in days])
 
     rng_master = random.Random(20260812)
     null_stats = []
     for s in range(seeds):
         rng = random.Random(rng_master.randrange(1 << 30) + s)
-        draw = {}
-        for day, rs in by_day.items():
-            bench = pool.get(day)
-            if bench:
-                k = min(len(rs), len(bench))
-                draw[day] = [rng.choice(bench) for _ in range(k)]
-        null_stats.append(daily_excess(draw))
+        # random.choices does the whole day's draw in one C call; the
+        # equivalent Python loop over random.choice dominated everything
+        pick = rng.choices
+        stat = []
+        for _, _rs, groups, bm, total in days:
+            got = 0.0
+            for pool_b, k in groups:
+                got += sum(pick(pool_b, k=k))
+            stat.append(got / total - bm)
+        null_stats.append(_mean(stat))
     if len(null_stats) < 5:
         return None
 
@@ -314,7 +391,9 @@ def test_pattern(series: dict, fn, horizon: int = DEFAULT_HORIZON,
     all_r = [r for _, _, r in hits]
     return {
         "n": len(hits),
-        "days": len(by_day),
+        # the days actually scored, not the days it fired: a day with no
+        # benchmark contributes nothing and must not be counted as sample
+        "days": len(days),
         "tickers": len({t for _, t, _ in hits}),
         "mean_pct": round(_mean(all_r) * 100, 3),
         "null_mean_pct": round(nm * 100, 3),
@@ -355,9 +434,51 @@ def benjamini_hochberg(results: dict, fdr: float = 0.10) -> dict:
     return out
 
 
+def sweep_many(series: dict, horizons: list, seeds: int = 200,
+               library: dict | None = None, progress=None,
+               fdr: float = 0.10) -> dict:
+    """Every pattern at every holding period, corrected ONCE across all of it.
+
+    Correcting each holding period separately is a way of testing three
+    times and paying for one. Trying five shapes at three horizons is
+    fifteen tests, and the reader's protection has to be sized to the
+    fifteen — otherwise adding a holding period is a free extra ticket in
+    the same lottery.
+
+    Returns {horizon: {pattern: result}} with `survives` decided on the
+    combined family, so every row on the page carries the same
+    family_size and it is the honest one.
+    """
+    lib = library or LIBRARY
+    flat, order = {}, []
+    for h in horizons:
+        if progress:
+            progress(f"--- horizon {h} sessions ---")
+        for name, fn in lib.items():
+            r = test_pattern(series, fn, horizon=h, seeds=seeds)
+            key = f"{h}|{name}"
+            flat[key] = r
+            order.append((h, name, key))
+            if progress:
+                progress(f"  {name}: " + (
+                    "too rare, or on too few separate days, to test" if not r
+                    else f"n={r['n']} on {r['days']} days "
+                         f"edge={r['edge_pct']:+.3f}% p={p_words(r['p'])}"))
+    done = benjamini_hochberg(flat, fdr=fdr)
+    out: dict = {h: {} for h in horizons}
+    for h, name, key in order:
+        out[h][name] = done.get(key) or flat.get(key)
+    return out
+
+
 def sweep(series: dict, horizon: int = DEFAULT_HORIZON, seeds: int = 200,
           library: dict | None = None, progress=None) -> dict:
-    """Test every pattern in the library, then correct for having done so."""
+    """Test every pattern in the library at ONE horizon, then correct.
+
+    Use sweep_many when more than one holding period is tried: the
+    correction has to cover everything that was tested, and running this
+    once per horizon quietly splits the family.
+    """
     lib = library or LIBRARY
     raw = {}
     for name, fn in lib.items():

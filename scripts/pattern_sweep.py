@@ -101,22 +101,26 @@ def main() -> int:
               "min_days": patterns.MIN_DAYS,
               "horizons": {}}
 
+    # One correction across every shape at every holding period. Doing it
+    # per horizon would mean three holding periods bought three separate
+    # lotteries at the price of one.
+    all_res = patterns.sweep_many(tested, horizons, seeds=a.seeds, progress=log)
     for h in horizons:
-        log(f"--- horizon {h} sessions ---")
-        res = patterns.sweep(tested, horizon=h, seeds=a.seeds, progress=log)
+        res = all_res[h]
         report["horizons"][str(h)] = res
-        alive = [k for k, v in res.items() if v.get("survives")]
+        alive = [k for k, v in res.items() if v and v.get("survives")]
         tradeable = [k for k in alive
-                     if res[k].get("after_costs_pct", -1) > 0]
-        log(f"  {len(res)} tested, {len(alive)} survived the correction, "
-            f"{len(tradeable)} clear costs")
+                     if (res[k].get("after_costs_pct") or -1) > 0]
+        log(f"  horizon {h}: {len(res)} tested, {len(alive)} survived the "
+            f"correction, {len(tradeable)} clear costs")
 
-    # The families are tested independently per horizon, so the honest
-    # family size for a reader is everything tried across all of them.
     total = sum(len(v) for v in report["horizons"].values())
+    # `v` is None for a shape too rare to measure — those rows are kept in
+    # the report on purpose, so the page can say so rather than hide them
     survivors = [(h, k, v) for h, rows in report["horizons"].items()
                  for k, v in rows.items()
-                 if v.get("survives") and v.get("after_costs_pct", -1) > 0]
+                 if v and v.get("survives")
+                 and (v.get("after_costs_pct") or -1) > 0]
     report["total_tests"] = total
     report["tradeable"] = [{"horizon": h, "pattern": k, **v}
                            for h, k, v in survivors]

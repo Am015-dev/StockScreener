@@ -29,6 +29,7 @@ import journal
 import market_clock
 import portfolio_import
 import analysis
+import patterns
 import pretrade
 import screener
 
@@ -1695,6 +1696,62 @@ def favicon():
            ' fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>')
     return Response(svg, mimetype="image/svg+xml",
                     headers={"Cache-Control": "public, max-age=604800"})
+
+
+@app.route("/patterns")
+def patterns_page():
+    """Which price shapes were tested, and which of them survived.
+
+    This exists because the honest answer to "does this shape work" is
+    almost always no, and nowhere on the internet shows you the no. Every
+    site that tests patterns publishes the winners; the losers are what
+    tell you whether the winners mean anything. If eleven shapes were
+    tried and one came out at p = 0.04, that is not a discovery, it is
+    arithmetic — and a reader can only see that if the other ten are on
+    the page.
+
+    The measurement runs weekly on a runner, because it needs a year of
+    daily bars for hundreds of names. This page only reads the result.
+    """
+    d = _published_get("patterns.json") or {}
+    rows = []
+    for h, res in sorted((d.get("horizons") or {}).items(),
+                         key=lambda kv: int(kv[0])):
+        for name, r in (res or {}).items():
+            if not r:
+                rows.append({"pattern": name, "horizon": int(h),
+                             "measured": False})
+                continue
+            rows.append({"pattern": name, "horizon": int(h), "measured": True,
+                         "n": r.get("n"), "days": r.get("days"),
+                         "edge_pct": r.get("edge_pct"),
+                         "after_costs_pct": r.get("after_costs_pct"),
+                         "hit_rate_pct": r.get("hit_rate_pct"),
+                         "p": r.get("p"),
+                         "p_text": patterns.p_words(r.get("p")),
+                         "family_size": r.get("family_size"),
+                         "survives": bool(r.get("survives")),
+                         "tradeable": bool(r.get("survives")
+                                           and (r.get("after_costs_pct") or 0) > 0),
+                         "verdict": patterns.verdict(r)})
+    # strongest first, so the page is read top-down and the reader does
+    # not have to hunt for whether anything worked
+    rows.sort(key=lambda r: (not r.get("tradeable"), not r.get("survives"),
+                             r.get("p") if r.get("p") is not None else 2))
+    measured = [r for r in rows if r.get("measured")]
+    return render_template("patterns.html", d=d, rows=rows,
+                           measured=measured,
+                           unmeasured=len(rows) - len(measured),
+                           # the family every result was corrected against —
+                           # taken from the results rather than counted here,
+                           # so the page cannot claim a correction the
+                           # measurement did not actually apply
+                           family=(measured[0].get("family_size")
+                                   if measured else None),
+                           tradeable=[r for r in rows if r.get("tradeable")],
+                           cost=patterns.ROUND_TRIP_COST_PCT,
+                           min_days=patterns.MIN_DAYS,
+                           source=_published_reads.get("patterns.json"))
 
 
 @app.route("/limits")
