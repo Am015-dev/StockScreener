@@ -89,12 +89,12 @@
       at the {{ 'stronger' if r.percentile >= 50 else 'weaker' }} end: safer than
       <b>{{ r.percentile }}%</b> of them.</p>
     {% endif %}
-    <p class="tiny">A distance, not a probability. The commercial version of this
-      report converts the distance into a percentage chance of default using a
-      database of companies that actually defaulted, built over decades. That
-      database is the part that is not free, and the textbook substitute is wrong in
-      a specific direction — it returns 0.000000% for companies that do sometimes
-      default. So no percentage is quoted here.</p>
+    <details class="tiny"><summary style="cursor:pointer">A distance, not a
+      probability — why no percentage is shown</summary>
+      <p style="margin:.4rem 0 0">The commercial version converts this distance into
+      a default probability using a proprietary database of companies that actually
+      defaulted. The free substitute returns 0.000000% for companies that do
+      sometimes default, so no percentage is quoted here.</p></details>
   </div>
 
   {% if hist and hist|length > 5 %}
@@ -119,10 +119,8 @@
       {%- elif hist[-1] < hist[0] - 0.05 %} <span class="warn">moving towards it</span>
       {%- else %} little changed{% endif %}.
     </p>
-    <p class="tiny"><b>Read this carefully:</b> the balance sheet is held constant
-      across the window — it is the one filed to {{ r.as_of }}. So this shows how the
-      market re-rated a fixed set of debts, not how the debts themselves changed. It
-      moves with the share price, because that is what moves daily.</p>
+    <p class="tiny">The debts are held at the {{ r.as_of }} filing across this
+      window; the movement is the market re-pricing them.</p>
   </div>
   {% endif %}
 
@@ -190,9 +188,8 @@
       <tr><td>Volatility</td>
           <td class="r">{{ r.vol_obs }} days of returns</td></tr>
     </table></div>
-    <p class="tiny" style="margin-top:.7rem">Every figure above is from the company's
-      own filings with the SEC and its published share price. Nothing is estimated,
-      surveyed or bought.</p>
+    <p class="tiny" style="margin-top:.7rem">All figures are from the company's own
+      SEC filings and its published share price.</p>
   </div>
   {% endif %}
 

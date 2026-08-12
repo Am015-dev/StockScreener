@@ -143,6 +143,21 @@
       <div id="ckOut" style="margin-top:.9rem"></div>
     </div>
 
+    {% if b.reporting_soon %}
+    <div class="card">
+      <p style="margin:0 0 .35rem"><b>Reporting this week</b></p>
+      <p class="tiny" style="margin:0 0 .6rem">A stop-loss protects badly through
+        a report — the price can gap straight past it. Do not enter these now;
+        check anything here you hold.</p>
+      <p style="margin:0;font-variant-numeric:tabular-nums">
+        {% for e in b.reporting_soon %}<span style="display:inline-block;margin:0 .9rem .3rem 0"
+          data-report-ticker="{{ e.ticker }}"><b class="tk">{{ e.ticker }}</b>
+          <span class="tiny">{% if e.days == 0 %}today{% elif e.days == 1 %}tomorrow{% else %}in {{ e.days }} days{% endif %}</span></span>{% endfor %}
+      </p>
+      <p class="tiny warn" id="reportHeld" style="display:none;margin:.5rem 0 0"></p>
+    </div>
+    {% endif %}
+
     <div class="card">
       <p style="margin:0 0 .5rem"><b>Can this company pay its debts?</b></p>
       <p class="tiny" style="margin:0 0 .8rem">A full report on any company:
@@ -196,17 +211,12 @@
         (top {{ b.watchlist|length }} shown){% endif %}, {{ b.n_blocked }} blocked,
         and why it makes no recommendation</summary>
       <div style="margin-top:1rem">
-        <p class="warn" style="margin:0 0 .9rem;font-size:.9rem"><b>This list is not
-          a recommendation, and that is a tested result, not a legal footnote.</b>
-          The entry pattern behind it was run against coin-flip entry on the same
-          stocks through identical exit code — twice, once per shipped rule set —
-          and was statistically indistinguishable from it both times (p = 0.50 and
-          0.41; on the first test random entry actually did better).
-          This pattern tested no better than random entry.
-          What remains true: these are liquid stocks near a price level buyers
-          previously defended, with earnings dates verified. A factual screen
-          output, useful as a watchlist to run through the check above — nothing
-          more. <a href="/limits" style="color:inherit">The full record</a>.</p>
+        <p class="warn" style="margin:0 0 .9rem;font-size:.9rem"><b>Not a recommendation —
+          tested, twice:</b> this pattern tested no better than random entry
+          (p = 0.50 and 0.41).
+          It remains a factual screen — liquid stocks near defended price levels,
+          earnings verified — worth running through the check above.
+          <a href="/limits" style="color:inherit">The full record</a>.</p>
         {% if b.watchlist %}
         <div class="wrap"><table class="wl" id="results-wl">
           <thead><tr><th>Stock</th><th class="r">Price</th><th class="r">Support</th>
@@ -266,7 +276,7 @@
     <footer class="tiny">
       <a href="/limits">Limits</a> · <a href="/changelog">Changelog</a> ·
       <a href="/full">Full board</a> · <a href="/results.csv">CSV</a><br>
-      Not advice. Verify the earnings date yourself.
+      Research, not advice.
     </footer>
   </div>
 </div>
@@ -295,6 +305,20 @@ function parseHoldings(text) {
       if (cost && isFinite(parseFloat(cost))) o.cost = parseFloat(cost);
       return o;
     }).filter(Boolean);
+}
+function markReporters(h) {
+  // the reader's own names, flagged in the reporting-soon strip — this is
+  // the single most actionable sentence the page can produce for them
+  const own = new Set(h.map(x => x.ticker));
+  const mine = [...document.querySelectorAll("[data-report-ticker]")]
+    .map(el => el.dataset.reportTicker).filter(t => own.has(t));
+  const note = document.getElementById("reportHeld");
+  if (!note) return;
+  if (mine.length) {
+    note.style.display = "block";
+    note.textContent = "You hold " + mine.join(", ") + " — expect a jump either " +
+      "way on the report, and do not count on a stop through it.";
+  } else note.style.display = "none";
 }
 function markOverlaps(h) {
   const own = new Set(h.map(x => x.ticker));
@@ -346,6 +370,7 @@ function paintHoldings() {
     const f = document.getElementById("ckHold");
     if (f) f.value = h.map(x => x.ticker).join(" ");
     markOverlaps(h);
+    markReporters(h);
   } else if (answered) {
     bar.style.display = "block";
     document.getElementById("ownSummary").textContent =

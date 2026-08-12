@@ -172,7 +172,7 @@ print("no trade is recommended anywhere on the page")
 
 # the falsification is stated WITH the list it applies to, in words
 assert "no better than random entry" in _html
-assert "not\n          a recommendation" in _html or "not a recommendation" in _html.replace("\n          ", " ")
+assert "Not a recommendation" in _html.replace("\n          ", " ")
 print("the pattern list carries its own refutation, in full sentences")
 
 # and the working tools lead: both check inputs sit above the collapsed

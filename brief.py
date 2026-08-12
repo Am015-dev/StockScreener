@@ -168,9 +168,30 @@ def credit_directory(credit: dict | None, n: int = 5) -> dict | None:
             "strongest": [entry(*row) for row in rows[::-1][:n]]}
 
 
+def reporting_soon(earnings: dict | None, universe: dict | None,
+                   within_days: int = 7, cap: int = 8) -> list:
+    """Companies reporting within the week, from the published calendar.
+
+    This is the one thing on the page that is NEW every single day
+    without the reader typing anything — and it is decision-relevant in
+    itself: a stop-loss protects badly through a report, so "what is
+    about to report" is exactly the list of names not to enter now and
+    to watch if held. Filtered to the measured universe so it is not a
+    wall of microcaps.
+    """
+    if not earnings:
+        return []
+    known = set(universe or {})
+    rows = [(int(d), t) for t, d in earnings.items()
+            if isinstance(d, (int, float)) and 0 <= d <= within_days
+            and (not known or t in known)]
+    rows.sort()
+    return [{"ticker": t, "days": d} for d, t in rows[:cap]]
+
+
 def build(state: dict, market: dict | None = None,
           fresh: dict | None = None, credit: dict | None = None,
-          publishing: dict | None = None) -> dict:
+          publishing: dict | None = None, earnings: dict | None = None) -> dict:
     """Turn finished scan state into the card. Never raises."""
     results = list(state.get("results") or [])
     pending = list(state.get("pending") or [])
@@ -328,6 +349,8 @@ def build(state: dict, market: dict | None = None,
         # asking "how solvent is the thing I already own" is not asking
         # about today's pullback candidates.
         "credit_index": credit_directory(credit),
+        # what changes today without the reader doing anything
+        "reporting_soon": reporting_soon(earnings, credit),
         "bar": {"profit_factor": port.get("profit_factor"), "passes": tradeable},
         "concentration": state.get("concentration") or {},
     }

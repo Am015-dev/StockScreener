@@ -378,3 +378,29 @@ assert brief.build(STATE, mc.state())["credit_index"] is None
 print("the card carries the directory, and says nothing when there is nothing to say")
 
 print("\nCREDIT REPORT REACHABILITY PINNED")
+
+
+# ---- the page has to change daily without the reader typing anything ----
+# "Reporting this week" is the one card that is new every day, and it is
+# decision-relevant by itself: a stop protects badly through a report.
+_cal = {"AAA": 2, "BBB": 0, "CCC": 9, "DDD": 5, "EEE": 1, "ZZZ": 3}
+_universe = {"AAA": {}, "BBB": {}, "CCC": {}, "DDD": {}, "EEE": {}}
+soon = brief.reporting_soon(_cal, _universe)
+assert [e["ticker"] for e in soon] == ["BBB", "EEE", "AAA", "DDD"], soon
+assert soon[0]["days"] == 0
+print("reporting-soon lists this week's reporters, nearest first")
+
+# outside the measured universe is noise, not news; nine days out is not
+# "this week"; and no calendar means no card, never a guess
+assert not any(e["ticker"] == "ZZZ" for e in soon)
+assert not any(e["ticker"] == "CCC" for e in soon)
+assert brief.reporting_soon({}, _universe) == []
+assert brief.reporting_soon(None, None) == []
+print("it filters to the measured universe and says nothing without data")
+
+out = brief.build(STATE, mc.state(), credit=_universe, earnings=_cal)
+assert [e["ticker"] for e in out["reporting_soon"]][:2] == ["BBB", "EEE"]
+assert brief.build(STATE, mc.state())["reporting_soon"] == []
+print("the card reaches the page, and an absent calendar leaves it absent")
+
+print("\nREPORTING SOON PINNED")

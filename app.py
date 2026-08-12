@@ -713,6 +713,7 @@ def index():
     return render_template(
         "brief.html",
         b=brief.build(_state, m, f, credit=_credit_view(),
+                      earnings=_published_earnings()[0],
                       publishing=(_publishing_state(float(_state["results_ts"]), f)
                                   if _state.get("results_ts") else None)))
 
