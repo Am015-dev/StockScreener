@@ -1166,11 +1166,16 @@ def check_trade():
     # ticks. "ZZZZ: no earnings due for at least 45 days" was a true
     # sentence about the calendar and a false impression about a company
     # that does not exist.
-    known = (ticker in pretrade._series_of(book)
-             or ticker in (earn or {})
-             or ticker in (_credit_view() or {})
-             or ticker.replace(".", "-") in (_credit_view() or {}))
-    if not known:
+    series = pretrade._series_of(book)
+    view = _credit_view() or {}
+    known = (ticker in series or ticker in (earn or {})
+             or ticker in view or ticker.replace(".", "-") in view)
+    # "unknown" is only a fact when the books are loaded. On a freshly
+    # restarted instance they are empty for a minute, and this gate told
+    # a visitor "Nothing is known about AAPL — check the spelling". An
+    # empty library is not evidence about a book.
+    books_ready = bool(series) or bool(view)
+    if books_ready and not known:
         return jsonify({
             "ok": True, "ticker": ticker, "held": [], "findings": [{
                 "level": "warn", "headline": "Nothing is known about this symbol",

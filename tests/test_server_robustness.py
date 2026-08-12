@@ -842,3 +842,28 @@ finally:
     A._credit_view = _saved_view
 
 print("\nALIAS AND UNKNOWN-SYMBOL PINNED")
+
+
+# ---- "unknown symbol" is only a fact when the books are loaded ----
+# On a freshly restarted instance the books are empty for a minute, and
+# the unknown-symbol gate answered "Nothing is known about AAPL — check
+# the spelling" to the first visitor after every deploy. An empty
+# library is not evidence about a book.
+_saved_pb2, _saved_view2 = A._price_book, A._credit_view
+try:
+    A._price_book = lambda fetch=False: {}
+    A._credit_view = lambda: {}
+    _c5 = A.app.test_client()
+    r = _c5.post("/check", json={"ticker": "AAPL", "holdings": ""}).get_json()
+    assert "check the spelling" not in (r.get("bottom_line") or ""), r["bottom_line"]
+    print("an empty instance never calls a real ticker a typo")
+
+    # and once the books exist, a ghost is still a ghost
+    A._credit_view = lambda: {"AAPL": {"dd": 5.0}}
+    r2 = _c5.post("/check", json={"ticker": "ZZZZ", "holdings": ""}).get_json()
+    assert "check the spelling" in (r2.get("bottom_line") or ""), r2
+    print("a loaded instance still refuses ghosts")
+finally:
+    A._price_book, A._credit_view = _saved_pb2, _saved_view2
+
+print("\nWARM-UP VS UNKNOWN PINNED")
