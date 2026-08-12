@@ -383,7 +383,7 @@ for want in ("P05", "standard deviations", "Where it has been",
 assert "no percentage is quoted" in html
 assert "0.000000%" in html, "the reason no probability is given must be concrete"
 # and the held-constant caveat, because the line moves with price alone
-assert "balance sheet is held constant" in html
+assert "held at the" in html and "filing across this" in html
 print("the report carries the metric, the history, the drivers, the peers "
       "and the provenance")
 
