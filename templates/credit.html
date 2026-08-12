@@ -106,10 +106,10 @@
          aria-label="Distance to default over the last {{ hist|length }} trading days,
                      from {{ '%.2f'|format(hist[0]) }} to {{ '%.2f'|format(hist[-1]) }}"
          style="display:block">
-      <polyline fill="none" stroke="{{ '#157f5b' if hist[-1] >= hist[0] else '#c8442c' }}"
+      <polyline fill="none" stroke="{{ 'var(--green)' if hist[-1] >= hist[0] else 'var(--red)' }}"
         stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
         points="{% for d in hist %}{{ (loop.index0 / (hist|length - 1) * 596 + 2)|round(1) }},{{ (142 - (d - lo) / span * 130)|round(1) }} {% endfor %}" />
-      <line x1="0" y1="146" x2="600" y2="146" stroke="{{ '#e3e1dc' }}" stroke-width="1"/>
+      <line x1="0" y1="146" x2="600" y2="146" stroke="var(--line)" stroke-width="1"/>
     </svg>
     <p class="tiny" style="margin-top:.5rem">
       {{ '%.2f'|format(hist[0]) }} → {{ '%.2f'|format(hist[-1]) }} over the last
@@ -129,11 +129,17 @@
   <div class="card">
     <h2>What is driving it</h2>
     <div class="scroll"><table>
-      <tr><td>What the market says the whole company is worth</td>
+      <tr><td>What the market says its shares are worth</td>
           <td class="r">{{ '%.1f'|format(r.equity / 1e9) }}bn</td></tr>
       <tr><td>What it owes, weighted for when it comes due
               <span class="tiny">(all short-term, half of long-term)</span></td>
           <td class="r">{{ '%.1f'|format(r.default_point / 1e9) }}bn</td></tr>
+      {% if r.asset_value %}
+      <tr><td>What the whole business is worth
+              <span class="tiny">(shares plus debts, as the model solves it —
+              the denominator of the percentage below)</span></td>
+          <td class="r">{{ '%.1f'|format(r.asset_value / 1e9) }}bn</td></tr>
+      {% endif %}
       <tr><td>Debts as a share of what the whole business is worth</td>
           <td class="r">{{ (r.market_leverage * 100)|round(1) }}%</td></tr>
       <tr><td>How much the business's value swings in a year</td>

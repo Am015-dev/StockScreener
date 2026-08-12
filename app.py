@@ -1296,6 +1296,31 @@ def _cik_for(ticker: str, timeout: float = 8.0) -> int | None:
     return (_cik_map["data"] or {}).get(ticker.upper())
 
 
+def _sic_of(cik: int, timeout: float = 10.0) -> str | None:
+    """The company's SIC code, streamed from the head of its submissions
+    file and abandoned after 64KB. Same contract as the runner's copy:
+    None means unknown, and unknown is NOT treated as financial."""
+    import re as _re
+    import requests as rq
+    try:
+        r = rq.get(f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json",
+                   headers={"User-Agent": screener.SEC_UA},
+                   timeout=timeout, stream=True)
+        if r.status_code != 200:
+            r.close()
+            return None
+        buf = b""
+        for chunk in r.iter_content(8192):
+            buf += chunk
+            if b'"sicDescription"' in buf or len(buf) > 65536:
+                break
+        r.close()
+        m = _re.search(rb'"sic"\s*:\s*"?(\d{2,4})"?', buf)
+        return m.group(1).decode() if m else None
+    except Exception:
+        return None
+
+
 def _with_peers(rep: dict) -> dict:
     """Rank a distance against every other measured name on today's board.
 
@@ -1343,11 +1368,12 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
         # ranked here rather than trusting the ranking the scan stored, so
         # a name added to the book later is ranked against the current set
         return _with_peers(dict(pub, ok=True, cached=True, from_scan=True))
-    if pub and pub.get("not_modelled"):
-        # A bank or insurer, refused by sector on the runner. The refusal
-        # IS the answer — falling through to a live fetch here would
-        # replace "this model does not apply to this company" with "the
-        # SEC is not answering", which is about the wrong subject.
+    if pub and (pub.get("not_modelled") or pub.get("unmeasurable")):
+        # A refusal published by the runner — a bank, an insurer, or a
+        # listing whose quote does not trade. The refusal IS the answer;
+        # falling through to a live fetch would replace "this cannot be
+        # measured honestly, and here is why" with "the SEC is not
+        # answering", which is about the wrong subject.
         return dict(pub, ok=True, cached=True, from_scan=True)
 
     key = f"credit:{ticker}"
@@ -1381,6 +1407,18 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
                 "verdict": "The SEC is not answering this server at the moment, "
                            "so companies outside today's published board cannot "
                            "be measured. Nothing here is about the company."}
+    # The sector gate, on THIS path too. The runner refuses financials
+    # before publishing, but a financial outside the published book fell
+    # through to here and was fully modelled — Cigna's $55bn of claims
+    # payable read as debt coming due, with a band and a percentile. The
+    # exact defect the guard exists for, resurrected by the fallback.
+    sic = _sic_of(cik)
+    if credit.is_financial(sic):
+        rep = {"ok": True, "ticker": ticker, "dd": None, "band": None,
+               "sic": sic, "not_modelled": True,
+               "verdict": credit.NOT_MODELLED}
+        cache_store.put(key, rep)
+        return rep
     sec = _sec_within(budget_s)
     try:
         bs = credit.fetch_balance_sheet(cik, sec)
@@ -1460,13 +1498,26 @@ def credit_page(ticker: str):
     """
     t = (ticker or "").strip().upper()
     rep = _credit_for(t) if t else {}
-    closes = [c for c in ((pretrade._series_of(_price_book()) or {}).get(t) or [])
-              if c]
-    dates = (_price_book() or {}).get("dates") or []
-    hist = None
+    # Dates and closes are paired BEFORE any filtering. The published
+    # calendar is the union of US and EU sessions, so a US ticker carries
+    # None on EU-only dates — and filtering the closes while slicing the
+    # dates by length made the caption claim "56 trading days to
+    # 2026-08-12" for a ticker whose last real close was the 11th, with
+    # every intermediate date shifted by the market holidays in between.
+    raw = (pretrade._series_of(_price_book()) or {}).get(t) or []
+    all_dates = (_price_book() or {}).get("dates") or []
+    if len(all_dates) < len(raw):
+        all_dates = [None] * (len(raw) - len(all_dates)) + list(all_dates)
+    pairs = [(d, c) for d, c in zip(all_dates, raw) if c]
+    closes = [c for _, c in pairs]
+    hist, hdates = None, []
     if rep.get("dd") is not None:
-        hist = credit.history(closes, rep.get("shares"),
+        full = credit.history(closes, rep.get("shares"),
                               rep.get("default_point"), rep.get("equity_vol"))
+        if full:
+            pts = [(d, h) for (d, _), h in zip(pairs, full) if h is not None]
+            hist = [h for _, h in pts] or None
+            hdates = [d for d, _ in pts if d]
     # nearest neighbours, so "65th percentile" has faces attached to it
     book = _credit_view() or {}
     peers = sorted(((r.get("dd"), k) for k, r in book.items()
@@ -1480,14 +1531,13 @@ def credit_page(ticker: str):
         near = [{"ticker": k, "dd": d, "band": credit.band(d)}
                 for d, k in rows[max(0, i - 2):i + 3]]
     return render_template("credit.html", r=rep, t=t, hist=hist, near=near,
-                           dates=dates[-len(hist):] if hist else [],
+                           dates=hdates,
                            # the filing date and the price date are different
-                           # facts and the report has to carry both: the
-                           # distance is a quarterly balance sheet solved
-                           # against a daily close, and a reader who is told
-                           # only the first will read the number as older
-                           # than it is
-                           priced_on=(dates[-1] if dates and closes else None),
+                           # facts and the report has to carry both — and the
+                           # price date is THIS ticker's last real close, not
+                           # the calendar's last entry, which can be a session
+                           # on another exchange
+                           priced_on=(pairs[-1][0] if pairs else None),
                            n_measured=len(peers) + 1)
 
 
@@ -1971,6 +2021,12 @@ def published_route():
     """What the scheduled scan has published, and how old it is."""
     idx = _published_index()
     return jsonify({"base": PUBLISHED_BASE, "index": idx,
+                    # which commit this process is actually running.
+                    # Render sets RENDER_GIT_COMMIT on every deploy; the
+                    # release gate compares it against the commit it just
+                    # pushed, so "deployed" is an observation, not a claim
+                    # about what should have happened by now.
+                    "build": os.environ.get("RENDER_GIT_COMMIT"),
                     "using": _state.get("published_preset"),
                     "dir": PUBLISHED_DIR,
                     "dir_listing": sorted(os.listdir(PUBLISHED_DIR))

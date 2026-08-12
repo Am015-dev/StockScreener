@@ -157,8 +157,12 @@ src = (ROOT / "templates" / "brief.html").read_text()
 # version of it. "Has not been profitable" invites the thought that
 # tuning might fix it; "indistinguishable from random entry" does not.
 assert "filter, not a" in src, "the card must not present the list as a signal"
-assert "worse" in src and "coin flip" in src, \
-    "the banner must state that random entry beat the pattern"
+# "worse than a coin flip" was itself an overclaim: on the wide-net run
+# the signal LED random entry by a third of a standard deviation, which
+# is noise, not defeat. The statistically defensible claim — and now the
+# only one on the page — is indistinguishability.
+assert "indistinguishable" in src and "coin flip" in src, \
+    "the banner must state the signal is indistinguishable from random entry"
 # Affirmative language only — the disclaimer itself contains the word
 # "recommendations", and a bare substring check flags its own denial.
 for banned in ("One action today: buy", "we recommend", "you should buy",

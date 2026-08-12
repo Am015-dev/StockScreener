@@ -291,13 +291,30 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
                 out[t] = rep
                 misses = 0
             else:
-                misses += 1
+                # A refusal is an ANSWER, and it must be recorded like one.
+                # Unrecorded failures kept built=0, sorted to the FRONT of
+                # the next run's queue, and once five of them existed every
+                # run re-attempted the same five, tripped the abort below,
+                # and measured nothing — coverage froze at one run's worth
+                # of names, which is exactly what the live book showed:
+                # 96 entries, every timestamp from a single run. Recorded,
+                # the refusal is skipped like a measurement, sorts to the
+                # back, and /credit/<t> can say WHY instead of "not
+                # measured".
+                out[t] = {"ticker": t, "dd": None, "band": None, "sic": sic,
+                          "built": now, "unmeasurable": True,
+                          "verdict": rep.get("verdict"),
+                          "vol_refused": rep.get("vol_refused")}
             done += 1
         except Exception:
+            # only a FAILED CALL counts toward the abort: the model saying
+            # "this cannot be measured honestly" is a result, and it used
+            # to be counted as the SEC refusing — five stale quotes in a
+            # row read as an outage and stopped the run
             misses += 1
         if misses >= 5:
-            print(f"credit book: the SEC refused {misses} in a row after "
-                  f"{done} — stopping", file=sys.stderr)
+            print(f"credit book: {misses} SEC calls failed in a row after "
+                  f"{done} names — stopping this run", file=sys.stderr)
             break
         time.sleep(0.12)          # SEC asks for 10/second
 
@@ -404,7 +421,8 @@ def price_book(max_tickers: int = 2000, days: int = 60) -> dict:
                 closes = data[t]["Close"].reindex(idx)
                 if int(closes.notna().sum()) < days // 2:
                     continue           # too gappy on this calendar to publish
-                out[t] = [None if _pd.isna(x) else round(float(x), 2)
+                out[t] = [None if _pd.isna(x)
+                          else round(float(x), 2 if x >= 1 else 4)
                           for x in closes]
             except Exception:
                 continue

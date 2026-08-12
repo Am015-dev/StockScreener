@@ -400,3 +400,35 @@ for banned in ("<polyline", "standard deviations —"):
 print("an unmeasured company gets a page that states it, with no chart and no band")
 
 print("\nPUBLISHED CREDIT BOOK PINNED")
+
+
+# ---- the live path refuses financials too ----
+# The runner refused them before publishing, but a financial OUTSIDE the
+# published book fell through to the live SEC fetch and was fully
+# modelled: Cigna's $55bn of claims payable read as debt coming due,
+# with a band, a colour and a peer percentile. Same defect, other door.
+_saved_sic = A._sic_of
+_saved_cik = A._cik_for
+_saved_book = A._credit_book
+try:
+    A._sic_of = lambda cik, timeout=10.0: "6324"
+    A._cik_for = lambda t, timeout=8.0: 1739940
+    A._credit_book = lambda fetch=False: {}
+    A._creds.update(data={}, ts=0.0)
+    A._sec_health.update(fails=0, until=0.0)
+    rep = A._credit_for("CI")
+    assert rep["dd"] is None and rep.get("not_modelled"), rep
+    assert "not modelled" in (rep.get("verdict") or ""), rep
+    print("a financial reached through the live path is refused, not modelled")
+
+    # and the refusal is cached, so the next ask costs nothing
+    A._sic_of = lambda cik, timeout=10.0: (_ for _ in ()).throw(AssertionError("hit the network"))
+    rep2 = A._credit_for("CI")
+    assert rep2.get("not_modelled"), rep2
+    print("the refusal is cached like any other answer")
+finally:
+    A._sic_of = _saved_sic
+    A._cik_for = _saved_cik
+    A._credit_book = _saved_book
+
+print("\nLIVE SECTOR GATE PINNED")

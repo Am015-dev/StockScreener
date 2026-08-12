@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dip Finder — buy strong stocks on a pullback</title>
+<title>Dip Finder — the pattern screen, full working</title>
 <style>
   /* ============================================================
      Design tokens.
@@ -289,8 +289,9 @@
   <div style="margin:.2rem 0 .8rem;padding:.7rem .9rem;border:1px solid var(--red);
        border-radius:8px;color:var(--red);font-size:.92rem">
     <b>This pattern was tested against random entry and failed — twice.</b>
-    Coin-flip entry on the same stocks, through identical stop/target/exit code,
-    did as well or better on both shipped rule sets (p&nbsp;=&nbsp;0.50 and 0.41).
+    On both shipped rule sets it was statistically indistinguishable from
+    coin-flip entry on the same stocks through identical stop/target/exit code
+    (p&nbsp;=&nbsp;0.50 and 0.41; on the first test random entry actually did better).
     Everything on this page is a factual screen output and a research record.
     None of it is evidence that buying these stocks makes money.
     <a href="/limits" style="color:inherit">The full test</a>.
@@ -529,7 +530,8 @@
   <section id="btSection">
     <h2>Simulation — would these rules have made money?</h2>
     <div class="secsub">Replays your exact filter settings over <b>every stock and every
-      trading day of the last 5 years</b> for the scanned stocks, and grades each signal
+      trading day of the replay window (about four years of history)</b> for the
+      scanned stocks, and grades each signal
       the same way as the track record: did it hit the target or the stop first?
       The first run downloads the deep history (a few minutes); it is cached for the day.</div>
     <div class="bar" style="margin-bottom:.5rem">
@@ -585,8 +587,8 @@
         <div>
           <h3>How to read a pick</h3>
           <ul>
-            <li><b>Price</b> — the latest price; roughly where you'd buy.</li>
-            <li><b>Stop-loss</b> — place a sell-stop order here with your broker. If the price falls
+            <li><b>Price</b> — the latest price the screen used.</li>
+            <li><b>Stop-loss</b> — the exit level the pattern's rules would have used. If the price falls
               this far, the idea failed; the stop caps your loss at the shown <b>€ at risk</b>.</li>
             <li><b>Target</b> — the recent high the price could realistically return to.</li>
             <li><b>Reward:Risk</b> — 3.0 means you stand to win €3 for every €1 you risk.</li>
@@ -645,7 +647,7 @@ const COLDEFS = [
   ["status",   "Own it?",      "NEW = not in your portfolio. ADD (+x%) = you already hold it and are up/down x% on it.", fmtNum],
   ["sector",   "Sector",       "Industry the company is in.", fmtNum],
   ["mktcap_b", "Size",         "Company size (market value) in billions of US dollars.", v => "$" + v + "B"],
-  ["price",    "Price",        "Latest price — roughly where you'd buy.", fmtNum],
+  ["price",    "Price",        "Latest price the screen used.", fmtNum],
   ["stop",     "Stop-loss",    "Place a sell-stop here. If the price falls this far the idea failed; this caps your loss.", fmtNum],
   ["resistance","Target",      "The recent high the price could realistically climb back to — where you'd take profit.", fmtNum],
   ["RR",       "Reward:Risk",  "Possible gain vs possible loss. 3 = you stand to win €3 per €1 risked.", fmtNum],
@@ -989,9 +991,9 @@ function renderTopPicks(picks, near) {
       <div class="nm">${esc(p.name ?? "")} · ${esc(p.sector ?? "")}</div>
       <div class="scorebar"><div style="width:${Math.min(p.score ?? 0, 100)}%;background:${scoreColor(p.score)}"></div></div>
       <div class="nums">
-        <div><span data-tip="Latest price — roughly where you'd buy.">buy ≈</span> ${esc(p.price)}</div>
+        <div><span data-tip="Latest price the screen used.">price</span> ${esc(p.price)}</div>
         <div><span data-tip="The recent high the price could climb back to — where you'd take profit.">target</span> ${esc(p.resistance)}</div>
-        <div><span data-tip="Place a sell-stop order here. It caps your worst case at the € risk shown.">stop-loss</span> ${esc(p.stop)}</div>
+        <div><span data-tip="The exit level the rules would have used, sized to the € risk shown.">stop</span> ${esc(p.stop)}</div>
         <div><span data-tip="Possible gain vs possible loss. 3 = win €3 per €1 risked.">reward:risk</span> ${esc(p.RR)}</div>
         <div><span data-tip="How much it beat (+) or lagged (−) its market over 3 months.">vs market</span> ${p.rs_3m == null ? "—" : esc((p.rs_3m > 0 ? "+" : "") + p.rs_3m) + "%"}</div>
         <div><span data-tip="Stop distance in average daily wiggles. Under ~1 = noise could hit it.">stop room</span> ${p.stop_atr == null ? "—" : esc(p.stop_atr) + " ATR"}</div>
@@ -1090,7 +1092,7 @@ function renderNearBoard(nearRows, hints, nQualified) {
     `<th data-tip="Industry the company is in.">Sector</th>` +
     `<th data-tip="Company size (market value) in billions of dollars.">Size</th>` +
     `<th data-tip="Wall Street analyst consensus (via Yahoo). (n) = number of analysts.">Analysts</th>` +
-    `<th data-tip="Latest price — roughly where you'd buy.">Price</th>` +
+    `<th data-tip="Latest price the screen used.">Price</th>` +
     `<th data-tip="Sell-stop level that caps your loss.">Stop-loss</th>` +
     `<th data-tip="The recent high — where you'd take profit.">Target</th>` +
     `<th data-tip="Possible gain vs possible loss.">Reward:Risk</th>` +
@@ -1154,10 +1156,14 @@ function renderBacktest(bt, btStatus) {
   // of them. Taking every signal implies dozens open at once, which inflates
   // the drawdown into a number nobody could ever have experienced.
   const pf_v = bt.portfolio && bt.portfolio.n ? bt.portfolio : null;
+  // A share of the account stops at 100. These percentages are R-multiples
+  // scaled by the 1% risk per trade, uncompounded — honest right up to the
+  // point the account is gone, and meaningless past it. "-278%" rendered as
+  // a drawdown says the account died 2.8 times; "wiped out" says it once.
   const mdd_v = pf_v ? pf_v.mdd_pct : bt.mdd_pct;
   const sortino_v = pf_v ? pf_v.sortino : bt.sortino;
   tiles.push(
-    [mdd_v == null ? "—" : "−" + mdd_v + "%", "max drawdown*",
+    [mdd_v == null ? "—" : (mdd_v >= 100 ? "account wiped out" : "−" + mdd_v + "%"), "max drawdown*",
      "Worst peak-to-trough loss of the account, replayed holding at most " +
      (pf_v ? pf_v.slots : 5) + " positions at once at 1% risk each. Beyond −15…−20% is psychologically untradeable for most people."],
     [sortino_v == null ? "—" : sortino_v, "Sortino ratio*",
@@ -1171,7 +1177,7 @@ function renderBacktest(bt, btStatus) {
   document.getElementById("btBreak").innerHTML =
     `${esc(bt.hit_target)} hit target · ${esc(bt.hit_stop)} stopped out · ${esc(bt.expired)} expired · ` +
     `period ${esc(bt.from)} → ${esc(bt.to)} across ${esc(bt.n_stocks)} stocks · ` +
-    `total ${esc(rFmt(bt.total_r))} (≈${esc(bt.return_pct)}% at 1% risk/trade) · ` +
+    `total ${esc(rFmt(bt.total_r))} (${bt.return_pct <= -100 ? "past a whole account at 1% risk/trade" : "≈" + esc(bt.return_pct) + "% at 1% risk/trade"}) · ` +
     `best ${esc(bt.best.ticker)} ${esc(rFmt(bt.best.outcome_r))} · worst ${esc(bt.worst.ticker)} ${esc(rFmt(bt.worst.outcome_r))}` +
     (bt.spy ? ` · SPY same window: ${esc(bt.spy.return_pct)}% return, −${esc(bt.spy.mdd_pct)}% max drawdown` : "");
   // the simulation on screen may predate a filter change — say so rather
@@ -1208,9 +1214,9 @@ function renderBacktest(bt, btStatus) {
     pbox.innerHTML = `<b>Realistic portfolio (max ${esc(pf_v.slots)} positions at once, 1% risk each):</b> ` +
       `took ${esc(pf_v.n)} of ${esc(bt.n)} signals (${esc(pf_v.missed)} arrived with every slot full) · ` +
       `${esc(pf_v.win_rate_pct)}% ended in profit · profit factor ${esc(pf_v.profit_factor == null ? "∞" : pf_v.profit_factor)} · ` +
-      `total ${esc(rFmt(pf_v.total_r))} (≈${esc(pf_v.return_pct)}%) · max drawdown −${esc(pf_v.mdd_pct)}%. ` +
+      `total ${esc(rFmt(pf_v.total_r))} (${pf_v.return_pct <= -100 ? "the account would have been wiped out" : "≈" + esc(pf_v.return_pct) + "%"}) · max drawdown ${pf_v.mdd_pct >= 100 ? "the whole account" : "−" + esc(pf_v.mdd_pct) + "%"}. ` +
       `<span style="color:var(--muted)">Taking every signal instead would mean dozens of positions open simultaneously — ` +
-      `that path shows −${esc(bt.mdd_pct)}% drawdown, which is an artifact of an impossible position count, not the rules.</span>`;
+      `that path shows ${bt.mdd_pct >= 100 ? "a drawdown past the whole account" : "−" + esc(bt.mdd_pct) + "% drawdown"}, which is an artifact of an impossible position count, not the rules.</span>`;
   } else pbox.style.display = "none";
 
   // the paywall bar: hard thresholds, verdict stated in public
@@ -1219,7 +1225,7 @@ function renderBacktest(bt, btStatus) {
   if (gpf != null)
     checks.push([gpf >= 1.5, `profit factor ${gpf} (need ≥ 1.5)`]);
   if (mdd_v != null && bt.spy)
-    checks.push([mdd_v <= bt.spy.mdd_pct, `max drawdown −${mdd_v}% vs SPY −${bt.spy.mdd_pct}% (must not be worse)`]);
+    checks.push([mdd_v <= bt.spy.mdd_pct, `max drawdown ${mdd_v >= 100 ? "beyond the whole account" : "−" + mdd_v + "%"} vs SPY −${bt.spy.mdd_pct}% (must not be worse)`]);
   else if (mdd_v != null)
     checks.push([mdd_v <= 20, `max drawdown −${mdd_v}% (need no worse than −20%; SPY comparison unavailable)`]);
   if (sortino_v != null)
