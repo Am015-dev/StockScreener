@@ -196,6 +196,32 @@ def main() -> int:
         check("0.50" in lim and "0.41" in lim,
               "/limits carries both permutation results")
 
+        # ---- the pattern sweep ----
+        # The credit report shipped once with no route to it from anywhere
+        # a reader would look, and nobody found it for weeks. A page that
+        # cannot be reached is a page that does not exist.
+        pg.goto(base + "/", wait_until="load", timeout=90000)
+        link = pg.locator('a[href="/patterns"]').first
+        check(link.count() > 0 and link.is_visible(),
+              "the front page links to the pattern sweep, visibly")
+        pg.goto(base + "/patterns", wait_until="load", timeout=90000)
+        pat = pg.inner_text("body")
+        check("{{" not in pat, "no unrendered template on /patterns")
+        check("falsified rule" in pat or "Not measured yet" in pat,
+              "/patterns shows the known-worthless control, or says it has "
+              "not run yet")
+        if "Not measured yet" not in pat:
+            # the failures are the point: a page that only lists winners
+            # is the thing this whole module exists to not be
+            check("no better than random" in pat or "too rare" in pat,
+                  "/patterns publishes what failed, not only what survived")
+            check("volatility bucket" in pat,
+                  "/patterns states that the null is volatility-matched")
+        over = pg.evaluate("() => document.documentElement.scrollWidth - "
+                           "document.documentElement.clientWidth")
+        check(over <= 0, "/patterns does not scroll sideways on a phone",
+              f"{over}px of overflow")
+
         check(not js_errors, "no JavaScript errors anywhere",
               "; ".join(js_errors[:3]))
         b.close()
