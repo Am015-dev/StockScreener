@@ -253,4 +253,20 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
     if risk_eur is not None:
         out["risk_eur"] = risk_eur
     out["n_findings"] = len(out["findings"])
+    # ---- the answer, stated as one ----
+    # A list of findings is evidence; it is not a decision. The reader's
+    # question is "should anything here stop me?", and making them derive
+    # the answer from four paragraphs is how a tool earns "nobody
+    # understands a thing". The verdict already exists — say it first.
+    blocks = [f["headline"] for f in out["findings"] if f["level"] == "block"]
+    warns = [f["headline"] for f in out["findings"] if f["level"] == "warn"]
+    if blocks:
+        out["bottom_line"] = ("Do not buy this today: "
+                              + "; ".join(b.lower() for b in blocks[:2]) + ".")
+    elif warns:
+        out["bottom_line"] = ("Think twice — "
+                              + "; ".join(w.lower() for w in warns[:2]) + ".")
+    else:
+        out["bottom_line"] = "Nothing here argues against it."
+
     return out
