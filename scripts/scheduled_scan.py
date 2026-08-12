@@ -124,6 +124,7 @@ def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
     """
     import math
     out: dict = {}
+    skipped: list = []
     try:
         data = screener._cache.get("ohlc")
         if data is None:
@@ -147,6 +148,17 @@ def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
                 sd = math.sqrt(var) * math.sqrt(252.0)
                 if sd <= 1e-6:
                     continue          # a flat series is not a zero-risk stock
+                # and a quote that does not trade is not a volatility.
+                # This book published 21 names above 200% annualised, one
+                # at 982%, against a median of 36% — every one of them a
+                # thinly traded secondary listing whose close is a quote
+                # that sat still for days and then caught up in a jump.
+                # One of them reached the site as a company "in distress".
+                import credit as _credit
+                bad = _credit.usable_volatility(sd, c)
+                if bad:
+                    skipped.append((t, round(sd, 2), bad))
+                    continue
                 last = closes.index[-1]
                 out[t] = {"vol": round(sd, 5), "obs": n,
                           "as_of": str(getattr(last, "date", lambda: last)())}
@@ -154,6 +166,14 @@ def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
                 continue
     except Exception:
         pass
+    # Named, not silently dropped. A ticker that vanishes from the book is
+    # indistinguishable from one that was never scanned, and "we refused
+    # to publish this" is the interesting half of the story.
+    if skipped:
+        print(f"volatility book: refused {len(skipped)} unusable series",
+              file=sys.stderr)
+        for t, sd, why in sorted(skipped, key=lambda x: -x[1])[:15]:
+            print(f"  {t}: {sd * 100:.0f}% — {why}", file=sys.stderr)
     return out
 
 

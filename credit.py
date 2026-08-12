@@ -52,9 +52,67 @@ HORIZON_YEARS = 1.0
 # report says so rather than pretending otherwise.
 MIN_OBS = 40
 
+# A volatility this high is not a volatility.
+#
+# The published book had 21 names above 200% annualised and one at 982%,
+# against a median of 36%. They are all thinly traded secondary listings —
+# OTC ADRs, London IOB lines, grey-market tickers — whose "closing price"
+# is a quote that did not trade. The quote sits still for days and then
+# catches up in one jump, and the standard deviation of that is arithmetic
+# about a data feed, not risk.
+#
+# It reached the reader as a verdict. QH was published as "in distress on
+# this measure" — the strongest words this model can say — on 0.9%
+# leverage, because a 471% volatility swamped a balance sheet with almost
+# no debt in it. A refusal would have been correct and was available.
+VOL_MAX = 1.5
+
+# The tell, and it is not subtle. Measured over the published price book:
+# names above 150% annualised have a median of 49% of days with a return
+# of EXACTLY zero. Names between 15% and 60% have a median of 0%. A price
+# that is unchanged to the cent on half the days is not a price.
+FLAT_DAY_MAX = 0.20
+
+
+def flat_day_share(closes) -> float | None:
+    """The share of days whose close did not move at all.
+
+    Separated out so the publisher and the model apply one definition of
+    "this quote is not trading", and so it can be tested against real
+    series rather than asserted.
+    """
+    c = [float(x) for x in (closes or []) if x and float(x) > 0]
+    if len(c) < 3:
+        return None
+    rets = [math.log(c[i] / c[i - 1]) for i in range(1, len(c))]
+    return sum(1 for r in rets if abs(r) < 1e-9) / len(rets)
+
+
+def usable_volatility(vol: float | None, closes=None) -> str | None:
+    """Why this volatility must not be used, or None if it may be.
+
+    Returns the reason rather than a boolean, because a refusal that
+    cannot say what it refused is indistinguishable from a bug.
+    """
+    if vol is None or vol <= 0:
+        return "no volatility could be measured"
+    if vol > VOL_MAX:
+        return (f"{vol * 100:.0f}% annualised is not a measurement of risk — "
+                f"a quote that jumps like that is one that is not trading")
+    flat = flat_day_share(closes) if closes is not None else None
+    if flat is not None and flat > FLAT_DAY_MAX:
+        return (f"the price was unchanged on {flat * 100:.0f}% of days, so "
+                f"this is a stale quote rather than a traded price")
+    return None
+
 
 def equity_volatility(closes) -> float | None:
-    """Annualised volatility of daily log returns. None if unmeasurable."""
+    """Annualised volatility of daily log returns. None if unmeasurable.
+
+    "Unmeasurable" now includes measurable-but-meaningless: see VOL_MAX
+    and FLAT_DAY_MAX. Returning a number here that is arithmetic about a
+    stale quote puts it on a page under the word "distress".
+    """
     c = [float(x) for x in (closes or []) if x and float(x) > 0]
     if len(c) < MIN_OBS + 1:
         return None
@@ -63,7 +121,9 @@ def equity_volatility(closes) -> float | None:
     mean = sum(rets) / n
     var = sum((r - mean) ** 2 for r in rets) / (n - 1)
     sd = math.sqrt(var) * math.sqrt(252.0)
-    return sd if sd > 1e-6 else None
+    if sd <= 1e-6:
+        return None
+    return None if usable_volatility(sd, c) else sd
 
 
 def solve_merton(equity: float, default_point: float, equity_vol: float,
@@ -169,7 +229,24 @@ def report(ticker: str, equity: float | None, closes,
     if not equity or equity <= 0:
         out["missing"].append("market capitalisation")
     supplied = vol is not None and vol > 0
-    if not supplied:
+    if supplied:
+        # A volatility handed in from the published book gets the same
+        # examination as one measured here. It did not before, and that
+        # is exactly how a 471% annualised figure — a stale OTC quote,
+        # not a price — reached the page as a company "in distress".
+        #
+        # `closes` is deliberately NOT passed. It is the short window used
+        # to price the shares, not the series this volatility was measured
+        # from; judging one by the other would refuse a real company for
+        # the shape of a window that had nothing to do with the number.
+        # The series it DID come from is screened where it is computed.
+        bad = usable_volatility(vol)
+        if bad:
+            out["missing"].append("a usable volatility")
+            out["verdict"] = f"Cannot assess — {bad}."
+            out["vol_refused"] = bad
+            return out
+    else:
         vol = equity_volatility(closes)
         vol_obs = None
     if vol is None:
@@ -210,10 +287,25 @@ def report(ticker: str, equity: float | None, closes,
                dd=None if dd is None else round(dd, 2), band=band(dd),
                # market leverage: the single most watchable driver
                market_leverage=round(dp / V, 4) if V else None)
+    out["driven_by"] = driven_by(equity, dp, vol, dd, rf)
     out["verdict"] = (
         f"{out['dd']} standard deviations from its default point — "
-        f"{out['band']}." if dd is not None else "Cannot assess.")
+        f"{out['band']}{_because(out['driven_by'])}."
+        if dd is not None else "Cannot assess.")
     return out
+
+
+# What actually made the distance short, in the fewest words that stay
+# true. Kept next to the verdict because these two must never disagree.
+_BECAUSE = {
+    "swings": ", and that is the share price swinging rather than the debts",
+    "debts": ", and that is what it owes",
+    "both": ", from both what it owes and how hard the shares swing",
+}
+
+
+def _because(d: str | None) -> str:
+    return _BECAUSE.get(d or "", "")
 
 
 def history(closes, shares: float | None, default_point: float | None,
@@ -251,6 +343,53 @@ def history(closes, shares: float | None, default_point: float | None,
         if d is not None:
             out.append(round(d, 3))
     return out or None
+
+
+# A volatility to hold the model at when asking "would this company still
+# look short of room if its shares moved like an ordinary one?". Set from
+# the measured median across the published book (48%), not fitted.
+REFERENCE_VOL = 0.48
+
+
+def driven_by(equity: float | None, default_point: float | None,
+              equity_vol: float | None, dd: float | None,
+              rf: float = 0.0375) -> str | None:
+    """Which input made this distance short: the debts, or the swings.
+
+    The reason this exists, in one line from the published book:
+
+        F     debts  78.1% of its value, shares swing 37%/yr -> watch it
+        LITE  debts   5.9% of its value, shares swing 94%/yr -> watch it
+
+    Both carry the same two words, and a reader takes "watch it" to mean
+    the company might struggle to pay what it owes. For Ford that is what
+    the number says. For Lumentum, which owes six percent of its market
+    value, it is not — the distance is short because the share price is
+    violent, which is a fact about the stock, not the balance sheet.
+
+    Merton is a market-implied measure and mixing the two is exactly what
+    it is for. But a label that cannot tell them apart is a label that
+    reads as random, so the page has to name the driver.
+
+    Computed, not thresholded: the same balance sheet is re-solved with
+    the shares held at an ordinary volatility. If the company then has
+    plenty of room, the volatility was the binding input.
+    """
+    if dd is None or not equity or not default_point or not equity_vol:
+        return None
+    if dd >= 4.0:
+        return None                     # nothing to explain away
+    solved = solve_merton(equity, default_point, REFERENCE_VOL, rf)
+    if solved is None:
+        return None
+    at_ref = distance_to_default(solved[0], solved[1], default_point, rf)
+    if at_ref is None:
+        return None
+    if at_ref >= 4.0 and at_ref > dd + 0.5:
+        return "swings"
+    if equity_vol <= REFERENCE_VOL:
+        return "debts"
+    return "both"
 
 
 def restate(rep: dict | None, price: float | None,
@@ -292,11 +431,18 @@ def restate(rep: dict | None, price: float | None,
     if dd is None:
         return None
     dd = round(dd, 2)
+    why = driven_by(equity, dp, vol, dd, rf)
     return dict(rep, dd=dd, band=band(dd), equity=equity,
                 asset_value=solved[0], asset_vol=round(solved[1], 4),
-                market_leverage=round(dp / equity, 4),
+                # dp / ASSET value, exactly as report() computes it. It was
+                # dp / equity here, and the two disagreed by a factor of
+                # four on Ford — the published book said 78% and the page
+                # rendered 313%. A reader who checks one figure against
+                # another and finds them contradicting stops trusting all
+                # of them, and is right to.
+                market_leverage=round(dp / solved[0], 4), driven_by=why,
                 verdict=f"{dd} standard deviations from its default point "
-                        f"— {band(dd)}.",
+                        f"— {band(dd)}{_because(why)}.",
                 restated=True, stored_dd=rep["dd"])
 
 

@@ -121,8 +121,15 @@ def _credit_cell(rep: dict | None) -> dict | None:
     if not rep or rep.get("dd") is None:
         return None
     band = rep.get("band")
+    # What made the distance short, so a low-leverage volatile stock and a
+    # heavily indebted one do not carry the identical word. They did, and
+    # that is the single biggest reason this column read as arbitrary.
+    why = rep.get("driven_by")
+    note = {"swings": "the share price swinging, not the debts",
+            "debts": "what it owes",
+            "both": "what it owes and how hard the shares swing"}.get(why)
     return {"word": _CREDIT_SHORT.get(band, "measured"), "band": band,
-            "dd": rep.get("dd"),
+            "dd": rep.get("dd"), "driven_by": why, "note": note,
             "level": ("ok" if band in ("very far from trouble", "comfortable")
                       else "warn" if band == "watch it" else "bad")}
 
@@ -153,7 +160,8 @@ def credit_directory(credit: dict | None, n: int = 5) -> dict | None:
     def entry(dd, t, r):
         cell = _credit_cell(r) or {}
         return {"ticker": t, "dd": round(dd, 2), "band": r.get("band"),
-                "word": cell.get("word"), "level": cell.get("level")}
+                "word": cell.get("word"), "level": cell.get("level"),
+                "driven_by": cell.get("driven_by"), "note": cell.get("note")}
 
     return {"n": len(rows),
             "weakest": [entry(*row) for row in rows[:n]],
