@@ -67,14 +67,21 @@
 
 <div class="wrap">
   <!-- FIRST VISIT: the holdings question, and nothing else. Every other
-       section is withheld until it is answered or skipped, because a page
-       that asks a question and simultaneously shows nine answers is not
-       asking. -->
+       ask is a card at the top, not a wall in front of the page.
+
+       It WAS a wall: #main shipped display:none and only an answer or a
+       skip revealed it. So a first-time visitor — and every returning
+       one, because the skip was kept in sessionStorage and evaporated
+       with the tab — saw one question and nothing else. Not the brief,
+       not the pre-trade check, not the credit reports. The reader who
+       said "I do not see any Moodys like report anywhere" was looking at
+       this screen, and they were right: on their device there was
+       nothing else on the page. -->
   <div class="card act" id="ownGate" style="display:none">
-    <p class="lead" style="margin-bottom:.6rem">First: what do you own?</p>
-    <p class="muted" style="margin-bottom:1rem">Everything here reads from this. It is
-      what lets the tool say something a free screener cannot — whether a trade you are
-      considering is one you already hold.</p>
+    <p class="lead" style="margin-bottom:.6rem">What do you own?</p>
+    <p class="muted" style="margin-bottom:1rem">Optional, and everything below works
+      without it. It turns on the one thing a free screener cannot do — telling you
+      whether a trade you are considering is one you already hold.</p>
     <label class="tiny" for="ownText">One per line — <code>TICKER, shares, cost</code></label>
     <textarea id="ownText" rows="4" spellcheck="false"
       placeholder="NVDA, 4, 118.20&#10;KO, 30, 61.05"
@@ -94,7 +101,7 @@
   </div>
 
   <!-- EVERY OTHER VISIT: one card. Six lines. Then a way out. -->
-  <div id="main" style="display:none">
+  <div id="main">
     <p class="tiny" id="ownBar" style="margin:0 0 .8rem">
       <span id="ownSummary"></span><button id="ownEdit"
       style="background:none;border:none;color:var(--accent);text-decoration:underline;
@@ -297,12 +304,17 @@ function markOverlaps(h) {
   });
 }
 function skipped() {
+  // localStorage, not session: "skip" used to be forgotten the moment the
+  // tab closed, so the question came back on every single visit — and
+  // while it was a wall, so did the blank page behind it.
+  //
   // storage access throws outright in private browsing and in embeds with
-  // third-party storage blocked. Unguarded, that exception escaped before
-  // anything was revealed and left a completely white page — both the gate
-  // and the main content ship with display:none.
-  try { return !!sessionStorage.getItem("dipfinder_skipped"); }
-  catch (e) { return false; }
+  // third-party storage blocked, so this is guarded; an exception here
+  // once escaped and left a completely white page.
+  try {
+    return !!(localStorage.getItem("dipfinder_skipped") ||
+              sessionStorage.getItem("dipfinder_skipped"));
+  } catch (e) { return false; }
 }
 function paintHoldings() {
   const h = loadHoldings();
@@ -310,9 +322,10 @@ function paintHoldings() {
   const main = document.getElementById("main");
   const bar = document.getElementById("ownBar");
   const answered = (h && h.length) || skipped();
-  // the question and its answers are never on screen together
   gate.style.display = answered ? "none" : "block";
-  main.style.display = answered ? "block" : "none";
+  // never hidden. The holdings question gates ONE feature — the overlap
+  // check — and it used to gate the entire product behind itself.
+  main.style.display = "block";
   // "skip" used to be a one-way door: the bar carrying the only route back
   // to the gate was hidden whenever there were no holdings, so the overlap
   // check — the thing this page says a free screener cannot do — became
@@ -351,14 +364,17 @@ document.getElementById("ownSave").addEventListener("click", () => {
   saveHoldings(list, `Saved ${list.length} position(s).`);
 });
 document.getElementById("ownSkip").addEventListener("click", () => {
-  try { sessionStorage.setItem("dipfinder_skipped", "1"); } catch (e) {}
+  try { localStorage.setItem("dipfinder_skipped", "1"); } catch (e) {}
   paintHoldings();
 });
 document.getElementById("ownEdit").addEventListener("click", () => {
   const h = loadHoldings() || [];
   document.getElementById("ownText").value =
     h.map(x => [x.ticker, x.shares, x.cost].filter(v => v != null).join(", ")).join("\n");
-  try { sessionStorage.removeItem("dipfinder_skipped"); } catch (e) {}
+  try {
+    localStorage.removeItem("dipfinder_skipped");
+    sessionStorage.removeItem("dipfinder_skipped");
+  } catch (e) {}
   document.getElementById("ownGate").style.display = "block";
   document.getElementById("ownBar").style.display = "none";
   document.getElementById("ownText").focus();
