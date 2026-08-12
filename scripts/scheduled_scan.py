@@ -196,7 +196,7 @@ CREDIT_REFRESH_S = 20 * 3600
 
 def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
                 max_names: int = 120, budget_s: float = 420.0,
-                now: float | None = None) -> dict:
+                now: float | None = None, caps: dict | None = None) -> dict:
     """Distance to Default, computed HERE and accumulated across runs.
 
     The web instance cannot do this. The SEC rate-limits by IP and it is
@@ -231,6 +231,12 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
         # entries are re-measured rather than carried.
         if "sic" not in r:
             continue
+        # "capck" arrived with the unit-mismatch guards; a MEASURED entry
+        # from before them can be a BABAF — the front page's top
+        # "closest to trouble" was one — so it is re-measured rather
+        # than carried. Refusals carry fine; they claim nothing.
+        if r.get("dd") is not None and not r.get("capck"):
+            continue
         if now - float(r.get("built") or 0) <= CREDIT_MAX_AGE_S:
             out[t] = r
 
@@ -262,6 +268,15 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
         if not cik or not closes:
             continue
         try:
+            # a price line that cannot price the filings is refused before
+            # a single SEC call is spent on it
+            line = credit.secondary_line(t)
+            if line:
+                out[t] = {"ticker": t, "dd": None, "band": None, "sic": "",
+                          "built": now, "unmeasurable": True,
+                          "verdict": f"Cannot assess — {line}."}
+                done += 1
+                continue
             # sector first, and cheaply: a bank or insurer costs one small
             # streamed read and is refused with its reason published, so a
             # reader who asks about it gets the honest answer instead of a
@@ -276,6 +291,17 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
             bs = credit.fetch_balance_sheet(cik, _sec_get)
             sh = credit.shares_outstanding(cik, _sec_get)
             equity = sh["shares"] * float(closes[-1]) if sh.get("shares") else None
+            # shares x price against the screen's own market-cap reading:
+            # a 2x disagreement means the two are not about the same
+            # instrument, and BABAF reached the top of "closest to
+            # trouble" on exactly such a pair
+            cap_clash = credit.equity_vs_cap(equity, (caps or {}).get(t))
+            if cap_clash:
+                out[t] = {"ticker": t, "dd": None, "band": None, "sic": sic,
+                          "built": now, "unmeasurable": True,
+                          "verdict": f"Cannot assess — {cap_clash}."}
+                done += 1
+                continue
             v = (vols or {}).get(t) or {}
             rep = credit.report(t, equity, closes,
                                 bs["current_liabilities"], bs["total_liabilities"],
@@ -286,6 +312,7 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
             rep["shares_as_of"] = sh.get("as_of")
             rep["shares_tag"] = sh.get("tag")
             rep["sic"] = sic
+            rep["capck"] = True
             rep["built"] = now
             if rep.get("dd") is not None:
                 out[t] = rep
@@ -636,7 +663,8 @@ def main() -> int:
             # 20 hours are skipped, so once coverage is full each run
             # costs only what changed.
             creds = credit_book(board, book, vols, prev=prev,
-                                max_names=2000, budget_s=1500.0)
+                                max_names=2000, budget_s=1500.0,
+                                caps=screener._cache.get("mktcaps") or {})
             if creds:
                 (out / "credit.json").write_text(json.dumps(creds))
                 kb = (out / "credit.json").stat().st_size / 1024

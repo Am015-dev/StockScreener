@@ -288,6 +288,7 @@ assert _took < 10, f"a 4-second budget took {_took:.1f}s — the body is unbound
 print(f"a response that never stops arriving is abandoned after {_took:.1f}s")
 
 # and the caller turns that into a refusal, not a crash or a hang
+_real_cik_for = A._cik_for
 A._cik_for = lambda t, timeout=8.0: 1
 A._sec_json = lambda url, timeout=15: (_ for _ in ()).throw(
     TimeoutError("SEC did not answer"))
@@ -746,6 +747,9 @@ print("\nALERT WORDING PINNED")
 # 6 positions could not be compared" about a two-position book, with the
 # numbers rendered as tickers in user-facing text.
 _c2 = A.app.test_client()
+_saved_view_p = A._credit_view
+A._credit_view = lambda: {"ZQX": {"dd": 5.0}}   # the symbol must be known,
+# or the unknown-symbol refusal answers before the parser ever runs
 for _payload, _want in (
         ("MSFT, 10, 300\nNVDA, 5, 120", ["MSFT", "NVDA"]),
         ("MSFT NVDA", ["MSFT", "NVDA"]),
@@ -755,6 +759,7 @@ for _payload, _want in (
         ("", [])):
     _r = _c2.post("/check", json={"ticker": "ZQX", "holdings": _payload}).get_json()
     assert _r.get("held") == _want, (_payload, _r.get("held"))
+A._credit_view = _saved_view_p
 print("every holdings shape the page teaches parses to tickers, never numbers")
 
 print("\nCHECK PARSER PINNED")
@@ -803,3 +808,37 @@ finally:
     A._earn_pub.clear(); A._earn_pub.update(_saved_earn)
 
 print("\nPUBLISHED EARNINGS PINNED")
+
+
+# ---- one company, one answer; an unknown symbol, no green ticks ----
+# BRK.B (the form brokers print) answered "Not a US filer" — a false
+# statement about the most famous filer in the country — while BRK-B got
+# the honest sector refusal. And ZZZZ, a symbol that does not exist,
+# collected a green "No earnings due for at least 45 days".
+_saved_map = dict(A._cik_map)
+_saved_view = A._credit_view
+try:
+    A._cik_for = _real_cik_for          # an earlier section stubbed it
+    A._cik_map.update(data={"BRK-B": 1067983}, ts=time.time())
+    assert A._cik_for("BRK-B") == 1067983
+    assert A._cik_for("BRK.B") == 1067983, "the dot form must resolve too"
+    print("BRK.B and BRK-B resolve to the same company")
+
+    A._credit_view = lambda: {"BRK-B": {"dd": None, "not_modelled": True,
+                                        "verdict": "Banks and insurers are "
+                                                   "not modelled here."}}
+    rep = A._credit_for("BRK.B")
+    assert rep.get("not_modelled"), rep
+    print("the dot form gets the same honest refusal as the dash form")
+
+    _c4 = A.app.test_client()
+    r = _c4.post("/check", json={"ticker": "ZZZZ", "holdings": ""}).get_json()
+    assert r["verdict"] == "warn"
+    assert "check the spelling" in r["bottom_line"], r["bottom_line"]
+    assert not any(f["level"] == "ok" for f in r["findings"]), r["findings"]
+    print("an unknown symbol gets 'nothing is known', never a green tick")
+finally:
+    A._cik_map.clear(); A._cik_map.update(_saved_map)
+    A._credit_view = _saved_view
+
+print("\nALIAS AND UNKNOWN-SYMBOL PINNED")

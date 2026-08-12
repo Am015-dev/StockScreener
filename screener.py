@@ -472,6 +472,9 @@ def build_universe(p: dict, progress=print) -> list[str]:
                             scope="screen")
                         if ok:
                             got = [x["symbol"] for x in res.get("quotes", [])]
+                            for x in res.get("quotes", []):
+                                if x.get("symbol") and x.get("marketCap"):
+                                    _cache.setdefault("mktcaps", {})[x["symbol"]] = x["marketCap"]
                     except Exception as e:
                         progress(f"  us/{sector} failed: {e}")
                 if got is None and not direct_dead:
@@ -501,6 +504,9 @@ def build_universe(p: dict, progress=print) -> list[str]:
                             scope="screen")
                         if ok:
                             got = [x["symbol"] for x in res.get("quotes", [])]
+                            for x in res.get("quotes", []):
+                                if x.get("symbol") and x.get("marketCap"):
+                                    _cache.setdefault("mktcaps", {})[x["symbol"]] = x["marketCap"]
                     except Exception as e:
                         progress(f"  {region} failed: {e}")
                 if got is None and not direct_dead:
@@ -563,14 +569,32 @@ def build_universe(p: dict, progress=print) -> list[str]:
 
     seen: set = set()
     us, eu = dedupe(us_syms, seen), dedupe(eu_syms, seen)
-    # cap the universe (rate-limit + memory safety); each query is already
-    # sorted by market cap desc, so truncation keeps the largest names,
-    # split proportionally between US and EU
+    # Cap the universe BY SIZE, which is what the old comment claimed and
+    # the old code did not do. `us` is per-sector blocks concatenated, each
+    # sorted within itself — so us[:N] kept whole EARLY sectors and cut
+    # whole LATE ones: on the live site every Technology name survived
+    # while ALL of Communication Services and ALL of Energy vanished.
+    # Alphabet at $2tn was dropped for $10bn industrials, and every
+    # downstream surface inherited the hole: the price book could not
+    # measure overlap for GOOGL, the credit box answered "cannot assess"
+    # for five of the twelve largest companies in the country. The caps
+    # captured from the screen results order the cut; a name whose cap
+    # was not returned falls back behind all known-cap names in its
+    # original per-sector rank, which preserves the old behaviour only
+    # for the names the old behaviour was correct about.
+    caps = _cache.get("mktcaps") or {}
+
+    def by_size(lst):
+        return sorted(lst, key=lambda t: (-(caps.get(t) or 0),
+                                          lst.index(t)))
+
     cap = p["universe_max"]
     if len(us) + len(eu) > cap:
         us_keep = round(cap * len(us) / (len(us) + len(eu)))
-        us, eu = us[:us_keep], eu[:cap - us_keep]
-        progress(f"  universe capped at {cap} (largest caps kept: {len(us)} US, {len(eu)} EU)")
+        us, eu = by_size(us)[:us_keep], by_size(eu)[:cap - us_keep]
+        progress(f"  universe capped at {cap} by market cap "
+                 f"({len(us)} US, {len(eu)} EU; "
+                 f"{sum(1 for t in us + eu if t in caps)} with a known cap)")
     out = us + eu
     _cache.update(universe_key=key, universe=out, universe_ts=time.time())
     if not _rate_limited_now("screen"):  # don't overwrite a full stale universe with a partial one
@@ -903,8 +927,13 @@ def _screen_direct(query: dict, size: int) -> list[str]:
             return []
         res = ((r.json().get("finance") or {}).get("result") or [])
         if res:
-            return [q["symbol"] for q in (res[0].get("quotes") or [])
-                    if q.get("symbol")]
+            out = []
+            for q in (res[0].get("quotes") or []):
+                if q.get("symbol"):
+                    out.append(q["symbol"])
+                    if q.get("marketCap"):
+                        _cache.setdefault("mktcaps", {})[q["symbol"]] = q["marketCap"]
+            return out
     except Exception:
         pass
     return []

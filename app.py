@@ -1162,6 +1162,27 @@ def check_trade():
 
     row = next((r for r in (_state.get("results") or [])
                 if (r.get("ticker") or "").upper() == ticker), None)
+    # A symbol nothing here has ever heard of must not collect green
+    # ticks. "ZZZZ: no earnings due for at least 45 days" was a true
+    # sentence about the calendar and a false impression about a company
+    # that does not exist.
+    known = (ticker in pretrade._series_of(book)
+             or ticker in (earn or {})
+             or ticker in (_credit_view() or {})
+             or ticker.replace(".", "-") in (_credit_view() or {}))
+    if not known:
+        return jsonify({
+            "ok": True, "ticker": ticker, "held": [], "findings": [{
+                "level": "warn", "headline": "Nothing is known about this symbol",
+                "detail": f"{ticker} is not in the price book, the earnings "
+                          f"calendar or the credit book here. Check the "
+                          f"spelling; if it is a real listing, it is outside "
+                          f"what this tool measures."}],
+            "verdict": "warn", "n_findings": 1,
+            "bottom_line": f"Nothing is known about {ticker} here — check the spelling.",
+            "book_size": len(pretrade._series_of(book)),
+            "ms": round((time.time() - _t_start) * 1000),
+            "in_todays_scan": False})
     res = pretrade.check(
         ticker, holdings, book, earn, complete,
         warming=warming or not book,
@@ -1345,7 +1366,10 @@ def _cik_for(ticker: str, timeout: float = 8.0) -> int | None:
             # A miss must be retried, not frozen.
             if _cik_map["data"]:
                 _cik_map.update(ts=time.time())
-    return (_cik_map["data"] or {}).get(ticker.upper())
+    t = ticker.upper()
+    m = _cik_map["data"] or {}
+    # BRK.B / BRK-B are one company; the SEC file uses the dash form
+    return m.get(t) or m.get(t.replace(".", "-"))
 
 
 def _sic_of(cik: int, timeout: float = 10.0) -> str | None:
@@ -1415,7 +1439,17 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     """
     # Published first: computed on a runner the SEC will actually talk to,
     # so this path makes no outbound call and cannot time out.
-    pub = (_credit_view() or {}).get(ticker)
+    view = _credit_view() or {}
+    # Brokers print BRK.B; the SEC's ticker file and the published book
+    # say BRK-B. The dot form used to fall through every lookup and come
+    # back "Not a US filer" — a false statement about the most famous
+    # filer in the country — while the dash form got the honest sector
+    # refusal. One company gets one answer.
+    if ticker not in view and "." in ticker:
+        alias = ticker.replace(".", "-")
+        if alias in view or _cik_for(alias, timeout=0.1) is not None:
+            ticker = alias
+    pub = view.get(ticker)
     if pub and pub.get("dd") is not None:
         # ranked here rather than trusting the ranking the scan stored, so
         # a name added to the book later is ranked against the current set
@@ -1582,6 +1616,8 @@ def credit_page(ticker: str):
         i = next(j for j, (_, k) in enumerate(rows) if k == t)
         near = [{"ticker": k, "dd": d, "band": credit.band(d)}
                 for d, k in rows[max(0, i - 2):i + 3]]
+    n_book = sum(1 for r2 in book.values()
+                 if isinstance(r2, dict) and r2.get("dd") is not None)
     return render_template("credit.html", r=rep, t=t, hist=hist, near=near,
                            dates=hdates,
                            # the filing date and the price date are different
@@ -1590,7 +1626,10 @@ def credit_page(ticker: str):
                            # the calendar's last entry, which can be a session
                            # on another exchange
                            priced_on=(pairs[-1][0] if pairs else None),
-                           n_measured=len(peers) + 1)
+                           # the same set the front page counts — a
+                           # live-measured extra made this page say 180
+                           # while the directory said 179, in one minute
+                           n_measured=n_book)
 
 
 @app.route("/credit", methods=["POST"])
@@ -1618,6 +1657,17 @@ def credit_report():
                         "missing": ["the credit model"],
                         "verdict": "This company's credit standing could not "
                                    "be worked out just now."})
+
+
+@app.route("/favicon.ico")
+def favicon():
+    """A console error on every page load is a defect like any other."""
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+           '<rect width="32" height="32" rx="7" fill="#2a78d6"/>'
+           '<path d="M7 21l6-7 4 4 8-9" stroke="#fff" stroke-width="3"'
+           ' fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+    return Response(svg, mimetype="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.route("/limits")
@@ -1664,9 +1714,21 @@ def changelog():
     lines = ["# Changelog", "",
              "Generated from the deployed commit history — this is the record,",
              "not a summary of it.", ""]
+    n = 0
     for row in out.stdout.splitlines():
         date, _, subject = row.partition("\t")
+        # Render's shallow clone strips parent links, so --no-merges
+        # cannot recognise a merge commit — and the page opened with
+        # "Merge branch 'claude/…'", an internal label that records
+        # nothing a visitor can use. Filter by what the line SAYS.
+        if subject.startswith(("Merge ", "Published scan ", "Scheduled scan ")):
+            continue
         lines.append(f"- **{date}** — {subject}")
+        n += 1
+    if n < 3:
+        lines.append("")
+        lines.append("_This build carries only a shallow slice of history; "
+                     "the repository holds the full record._")
     return Response("\n".join(lines) + "\n",
                     mimetype="text/markdown; charset=utf-8")
 

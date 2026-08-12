@@ -705,3 +705,29 @@ assert "not modelled" in credit.NOT_MODELLED
 print("financials are recognised by SIC and refused with a reason")
 
 print("\nSECTOR GUARD PINNED")
+
+
+# ---- a price line that cannot price the filings is refused ----
+# BABAF — Alibaba's OTC ordinary-share line — was the front page's #1
+# "closest to trouble": the filing's ADS-equivalent share count times
+# the ordinary-share OTC price understated equity ~8x. No arithmetic on
+# that pair is a measurement.
+assert credit.secondary_line("BABAF"), "OTC foreign ordinary line"
+assert credit.secondary_line("TCEHF")
+assert credit.secondary_line("0RYA.IL"), "London IOB line"
+assert credit.secondary_line("1KLAC.MI"), "Milan cross-listing"
+assert credit.secondary_line("AAPL") is None
+assert credit.secondary_line("BRK-B") is None
+assert credit.secondary_line("SHEL.L") is None, "a primary LSE listing is not secondary"
+print("secondary price lines are recognised and refused; primaries pass")
+
+# and the arithmetic cross-check catches what the suffix rule cannot:
+# equity from shares x price must agree with an independent cap reading
+assert credit.equity_vs_cap(28.6e9, 230e9), "the BABAF pair, exactly"
+assert credit.equity_vs_cap(230e9, 28.6e9), "and the inverse mismatch"
+assert credit.equity_vs_cap(100e9, 95e9) is None, "ordinary disagreement passes"
+assert credit.equity_vs_cap(None, 230e9) is None
+assert credit.equity_vs_cap(100e9, None) is None, "no cap available = no check, not a refusal"
+print("an 8x equity/cap disagreement is refused; a 5% one is not")
+
+print("\nUNIT MISMATCH GUARD PINNED")

@@ -135,10 +135,13 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
         except (TypeError, ValueError):
             sh = 0
         size = f" — {sh:g} shares" if sh > 0 else ""
+        rest = (" The overlap figures below compare it against the rest of "
+                "your book." if held else
+                " It is also your only position, so there is nothing else "
+                "to compare it against.")
         add("warn", "You already own this exact stock",
             f"{ticker} is in the holdings you gave{size}. Buying more makes "
-            f"an existing bet bigger; nothing about it is new. The overlap "
-            f"figures below compare it against the REST of your book.")
+            f"an existing bet bigger; nothing about it is new.{rest}")
     if not held and self_pos is None:
         add("note", "No holdings given",
             "Paste your positions to find out whether this is a new bet or one "
