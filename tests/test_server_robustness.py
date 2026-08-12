@@ -703,3 +703,37 @@ finally:
         pass
 
 print("\nBOUNDED PUBLISHED FETCH PINNED")
+
+
+# ---- the alert channel must not recommend trades either ----
+# The website's pick was removed after the permutation test; the daily
+# Telegram/Discord push still said "buy ≈X, stop Y, target Z" — the same
+# falsified recommendation, by another door, into a channel with no
+# /limits link in sight. The message now sends the watchlist as a
+# watchlist, with the refutation attached.
+_saved_send = A._send_alert
+_saved_lp = A._load_published
+_sent_texts = []
+try:
+    A._send_alert = lambda text: (_sent_texts.append(text) or ["test"])
+    A._load_published = lambda *a, **k: None
+    A._state.update(results=[{"ticker": "ZZA", "price": 100.0, "stop": 94.0,
+                              "resistance": 118.0, "support": 96.0,
+                              "shares": 12, "risk_EUR": 100, "RR": 3.2,
+                              "score": 71, "earnings_in": ">45d"}],
+                    pending=[], status="done", results_ts=time.time())
+    c = A.app.test_client()
+    r = c.post("/alert")
+    assert r.status_code == 200, r.status_code
+    assert _sent_texts, "no alert text produced"
+    text = _sent_texts[-1]
+    assert "buy" not in text.lower(), text
+    assert "target" not in text.lower(), text
+    assert "Not a recommendation" in text and "random entry" in text, text
+    assert "ZZA" in text and "defended level" in text
+    print("the pushed alert is a watchlist with its refutation, not a buy signal")
+finally:
+    A._send_alert = _saved_send
+    A._load_published = _saved_lp
+
+print("\nALERT WORDING PINNED")
