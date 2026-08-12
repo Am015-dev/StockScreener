@@ -1,1 +1,207 @@
-​PLACEHOLDER
+# Scan on a schedule and publish the results, so the website never has to.
+#
+# Why this exists: a visitor pressing Run made the 512MB web instance
+# download and analyse thousands of stocks while also trying to serve the
+# page. That was slow, it caused out-of-memory restarts, and it meant an
+# empty page until the scan finished. Doing the work here instead means a
+# page load is a file read.
+#
+# It also helps with Yahoo's throttling. Runners get a fresh IP each time,
+# so the per-IP limits that blind fundamentals on a long-lived server reset
+# on every run.
+#
+# Results are committed to the `screener-data` branch, which nothing
+# deploys from — so publishing results never restarts the web service.
+#
+# NOTE ON MINUTES: scheduled workflows are free and unmetered on PUBLIC
+# repositories. On a private repo this consumes the monthly Actions
+# allowance, and hourly runs will exhaust it. Either make the repository
+# public, or lower the frequency below.
+name: Scheduled scan
+
+on:
+  schedule:
+    # Hourly while US markets are open, weekdays.
+    #
+    # This was halved to every two hours when the quota ran out: on a
+    # PRIVATE repository Actions minutes are metered, 2,000/month, and a
+    # five-minute scan nine times a weekday is about 1,000 of them before
+    # CI runs at all. Every scan then died in seven seconds with no logs,
+    # which is what a run that never started looks like.
+    #
+    # The repository is public now, so scheduled workflows are unmetered
+    # and the real fix is in place. Back to hourly — and the scan no
+    # longer triggers a redeploy, so an hourly scan no longer means an
+    # hourly restart of the website.
+    - cron: "5 13-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      universe_max:
+        description: "How many stocks to scan"
+        default: "1500"
+      presets:
+        description: "Comma-separated preset names (blank = all)"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scheduled-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      # Check out the DEPLOY branch, not the branch this file lives on.
+      #
+      # GitHub reads a `schedule:` trigger from the DEFAULT branch, and it
+      # runs the checkout it finds there. So every scheduled scan was
+      # running the default branch's copy of scripts/scheduled_scan.py — a
+      # copy that predates the credit model entirely. It cannot build
+      # credit.json or vol.json, and the publish step below force-pushes
+      # whatever it DID build, so it deleted both from the data branch on
+      # every run. The website lost its credit standings overnight, every
+      # night, and not one job ever reported a failure.
+      #
+      # This file is therefore kept in step with the deploy branch's copy
+      # of itself, and differs from it in exactly one thing: this ref. No
+      # application code is merged here — the schedule lives on this
+      # branch and the code it runs lives where the website's code lives.
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/pullback-uptrend-screener-vvlzeb
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # The journal and market databases are part of the published state:
+      # restoring them keeps the track record and simulation history across
+      # runs, since each runner starts from an empty disk.
+      - name: Restore published state
+        run: |
+          git fetch origin screener-data --depth=1 2>/dev/null || true
+          if git show origin/screener-data:state/journal.db > /tmp/journal.db 2>/dev/null; then
+            echo "restored journal database"
+          fi
+          if git show origin/screener-data:state/market.db > /tmp/market.db 2>/dev/null; then
+            echo "restored market database"
+          fi
+          # The credit book accumulates: each run refreshes what it can
+          # inside its budget and carries the rest forward, so coverage
+          # grows past what one run of SEC calls could ever reach.
+          if git show origin/screener-data:credit.json > /tmp/prev_credit.json 2>/dev/null; then
+            echo "restored $(python -c "import json;print(len(json.load(open('/tmp/prev_credit.json'))))" 2>/dev/null || echo '?') credit standings"
+          fi
+
+      - name: Run the preset scans
+        env:
+          JOURNAL_DB: /tmp/journal.db
+          MARKET_DB: /tmp/market.db
+          SCREENER_CACHE_DB: /tmp/cache.db
+        run: |
+          set +e
+          python scripts/scheduled_scan.py \
+            --out published \
+            --universe-max "${{ github.event.inputs.universe_max || '1500' }}" \
+            --presets "${{ github.event.inputs.presets || '' }}"
+          code=$?
+          set -e
+          # 75 means the data source was unavailable, already retried once.
+          # That recurs by nature and is not a defect, so it must not report
+          # as a failed job — an alert that cries wolf gets ignored, and then
+          # the real breakage gets ignored with it.
+          if [ $code -eq 75 ]; then
+            echo "UPSTREAM_UNAVAILABLE=1" >> $GITHUB_ENV
+            echo "::warning::Yahoo was unavailable for every preset; nothing published. The next run retries."
+            exit 0
+          fi
+          exit $code
+
+      # Also commit the results into the deployed branch, so a fresh web
+      # instance starts with data. Render wipes its disk on every deploy and
+      # a private repo cannot be read without a token, so without this the
+      # site is empty after each restart — which reads as "nothing shipped".
+      - name: Publish to the data branch
+        if: env.UPSTREAM_UNAVAILABLE != '1'
+        run: |
+          mkdir -p published/state
+          cp /tmp/journal.db published/state/journal.db 2>/dev/null || true
+          cp /tmp/market.db  published/state/market.db  2>/dev/null || true
+
+          # Carry forward anything this run did not produce.
+          #
+          # The push below force-pushes a FRESH repository, so the branch
+          # ends up being exactly what this directory contains — every file
+          # not written by this run is deleted from it. Overnight that
+          # removed credit.json and vol.json outright, and the site lost
+          # its credit standings and its volatility book, because the
+          # scheduled runs execute the scan script from the DEFAULT branch
+          # and that copy does not know how to build either of them.
+          #
+          # A publish must never be able to delete data it simply did not
+          # generate. Stale is a thing the page can say; missing is not.
+          git fetch origin screener-data --depth=1 2>/dev/null || true
+          for f in $(git ls-tree --name-only origin/screener-data 2>/dev/null \
+                     | grep '\.json$'); do
+            if [ ! -f "published/$f" ]; then
+              git show "origin/screener-data:$f" > "published/$f" \
+                && echo "carried forward $f (this run did not produce it)"
+            fi
+          done
+
+          cd published
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Scheduled scan $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push -q --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            HEAD:screener-data
+
+      # There WAS a step here that also committed the results into the
+      # deployed branch. It is gone. Committing to that branch makes Render
+      # redeploy, and a redeploy wipes the instance's memory — so every
+      # hour the site threw away the earnings calendar, the price book and
+      # the credit standings it had just been given, and served "still
+      # loading" while it fetched them all again.
+      #
+      # It existed because the repository was private and the data branch
+      # could not be read without a token. It is public now, and the
+      # instance reads the branch directly — verified on the live service,
+      # which reports each file as coming from the data branch.
+      #
+      # The published/*.json files already committed to the deploy branch
+      # are deliberately LEFT there. They go stale, and that is fine: they
+      # are only ever read when the network read fails, and deleting them
+      # is exactly what caused a twelve-minute outage the last time this
+      # was cleaned up on an inference rather than a measurement.
+
+      - name: Summary
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "### Scheduled scan" >> $GITHUB_STEP_SUMMARY
+          if [ ! -f published/index.json ]; then
+            echo "_no index published_" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          python - <<'PY' >> $GITHUB_STEP_SUMMARY
+          import json, pathlib
+          try:
+              d = json.loads(pathlib.Path("published/index.json").read_text())
+          except Exception as e:
+              print(f"_could not read the index: {e}_")
+              raise SystemExit(0)
+          for p in d.get("presets", []):
+              sim = " · simulation published" if p.get("has_simulation") else ""
+              print(f"- **{p['preset']}**: {p['n_results']} picks "
+                    f"from {p['universe_size']} stocks{sim}")
+          for f in d.get("failures", []):
+              print(f"- ⚠ **{f['preset']}** failed: {f['error']}")
+          PY
