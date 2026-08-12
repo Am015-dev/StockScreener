@@ -224,6 +224,13 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
     now = now or time.time()
     out: dict = {}
     for t, r in (prev or {}).items():
+        # "sic" arrived with the sector guard. An entry without it was
+        # built before financials were refused, and MOH — an insurer whose
+        # claims payable were read as debt coming due — was ranked fourth
+        # closest to trouble because of exactly such an entry. Pre-guard
+        # entries are re-measured rather than carried.
+        if "sic" not in r:
+            continue
         if now - float(r.get("built") or 0) <= CREDIT_MAX_AGE_S:
             out[t] = r
 
@@ -255,6 +262,17 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
         if not cik or not closes:
             continue
         try:
+            # sector first, and cheaply: a bank or insurer costs one small
+            # streamed read and is refused with its reason published, so a
+            # reader who asks about it gets the honest answer instead of a
+            # number the model cannot mean
+            sic = (out.get(t) or {}).get("sic") or _sic_of(cik)
+            if credit.is_financial(sic):
+                out[t] = {"ticker": t, "dd": None, "band": None,
+                          "sic": sic, "not_modelled": True, "built": now,
+                          "verdict": credit.NOT_MODELLED}
+                done += 1
+                continue
             bs = credit.fetch_balance_sheet(cik, _sec_get)
             sh = credit.shares_outstanding(cik, _sec_get)
             equity = sh["shares"] * float(closes[-1]) if sh.get("shares") else None
@@ -267,6 +285,7 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
             rep["shares"] = sh.get("shares")
             rep["shares_as_of"] = sh.get("as_of")
             rep["shares_tag"] = sh.get("tag")
+            rep["sic"] = sic
             rep["built"] = now
             if rep.get("dd") is not None:
                 out[t] = rep
@@ -302,6 +321,36 @@ def _sec_get(url: str, timeout: float = 20):
     if r.status_code != 200:
         raise RuntimeError(f"SEC {r.status_code}")
     return r.json()
+
+
+def _sic_of(cik: int) -> str | None:
+    """The company's SIC code, read from the head of its submissions file.
+
+    The submissions JSON runs to a megabyte for a large filer, but the
+    sic field sits in the first few hundred bytes — so this streams and
+    stops rather than downloading a filing history nobody asked for. A
+    regex on a truncated buffer instead of json.loads, deliberately: the
+    buffer is not valid JSON and never will be.
+    """
+    import re as _re
+    import requests
+    try:
+        r = requests.get(
+            f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json",
+            headers={"User-Agent": screener.SEC_UA}, timeout=20, stream=True)
+        if r.status_code != 200:
+            r.close()
+            return None
+        buf = b""
+        for chunk in r.iter_content(8192):
+            buf += chunk
+            if b'"sicDescription"' in buf or len(buf) > 65536:
+                break
+        r.close()
+        m = _re.search(rb'"sic"\s*:\s*"?(\d{2,4})"?', buf)
+        return m.group(1).decode() if m else None
+    except Exception:
+        return None
 
 
 def _sec_ciks() -> dict:

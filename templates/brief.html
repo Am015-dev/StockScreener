@@ -107,6 +107,14 @@
       style="background:none;border:none;color:var(--accent);text-decoration:underline;
              cursor:pointer;padding:0;font:inherit">edit</button></p>
 
+    <!-- There is NO pick on this page any more, and that is a result,
+         not a redesign. The headline used to name a ticker with a stop
+         and a target — a decision, presented as one. The permutation
+         test falsified the entry signal behind it on BOTH shipped rule
+         sets (balanced p = 0.50, wide-net p = 0.41): coin-flip entry
+         through identical exit code did as well or better. What remains
+         above the fold is what survived testing: the pre-trade check
+         and the credit report. -->
     <div class="card act">
       <p class="tiny" style="margin:0 0 .5rem">{{ b.date or "Undated" }}{% if b.market_label %} ·
         {{ b.market_label }}{% endif %}{% if b.fresh_phrase %} ·
@@ -115,34 +123,14 @@
       <p class="warn" style="margin:0 0 .6rem;font-size:.9rem">{{ b.overdue_note }}</p>
       {% elif b.stale %}
       <p class="warn" style="margin:0 0 .6rem;font-size:.9rem">These prices are
-        {{ b.fresh_phrase }}. Entry and stop levels have moved since — treat the
-        numbers below as a starting point to re-check, not as today's levels.</p>
+        {{ b.fresh_phrase }}. Levels shown anywhere below have moved since —
+        re-check before acting on any figure.</p>
       {% endif %}
-      {% if b.action %}
-      <p class="lead" style="margin-bottom:.7rem">Closest to the setup today:
-        <span class="tk">{{ b.action.ticker }}</span> at
-        {{ b.action.unit }}{{ b.action.price|num }}.</p>
-      <p>Stop <b>{{ b.action.unit }}{{ b.action.stop|num }}</b> — risks
-        <span class="loss">€{{ b.action.risk_eur|num }}</span> on
-        {{ b.action.shares }} shares.
-        Target <b>{{ b.action.unit }}{{ b.action.target|num }}</b> — pays
-        <span class="gain">€{{ b.action.reward_eur|num }}</span>.</p>
-      <p>{% if b.action.earnings_clear %}<span class="ok">No earnings due for 45 days.</span>
-        {% elif b.action.earnings %}<span class="warn">Earnings in {{ b.action.earnings }}.</span>
-        {% else %}<span class="warn">Earnings date not verified — check it yourself
-          before buying.</span>{% endif %}
-        {{ b.action.why|capitalize }}.</p>
-      {% else %}
-      <p class="lead" style="margin-bottom:.7rem">Nothing to do today.</p>
-      <p>No stock among the {{ b.scanned or 0 }} scanned met every check.</p>
-      {% endif %}
-      <p class="warn" style="margin:.8rem 0 0;font-size:.9rem">Research only — this pattern
-        tested no better than random entry. <a href="/limits" style="color:inherit">Why</a>.</p>
-    </div>
-
-    <div class="card">
-      <p style="margin:0 0 .6rem"><b>Thinking of buying something?</b> This is the part
-        that is worth having — it checks your idea against what you already own.</p>
+      <p class="lead" style="margin-bottom:.7rem">Thinking of buying something?</p>
+      <p style="margin:0 0 .6rem">Check it against what you already own — whether it
+        is a trade you are already in under another name, whether earnings are due,
+        how far the company sits from trouble on its debts, and whether it genuinely
+        spreads your money wider.</p>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap">
         <input id="ckTicker" placeholder="Ticker" autocomplete="off"
           style="flex:1 1 8rem;padding:.55rem .7rem;border:1px solid var(--line);
@@ -202,9 +190,20 @@
     </div>
 
     <details class="card" style="padding:.9rem 1.2rem">
-      <summary class="tiny" style="cursor:pointer">Show the working —
-        {{ b.n_qualified }} names, {{ b.n_blocked }} blocked, the track record</summary>
+      <summary class="tiny" style="cursor:pointer">The pattern screen —
+        {{ b.n_qualified }} names, {{ b.n_blocked }} blocked, and why it makes
+        no recommendation</summary>
       <div style="margin-top:1rem">
+        <p class="warn" style="margin:0 0 .9rem;font-size:.9rem"><b>This list is not
+          a recommendation, and that is a tested result, not a legal footnote.</b>
+          The entry pattern behind it was run against coin-flip entry on the same
+          stocks through identical exit code — twice, once per shipped rule set —
+          and random entry did as well or better both times (p = 0.50 and 0.41).
+          This pattern tested no better than random entry.
+          What remains true: these are liquid stocks near a price level buyers
+          previously defended, with earnings dates verified. A factual screen
+          output, useful as a watchlist to run through the check above — nothing
+          more. <a href="/limits" style="color:inherit">The full record</a>.</p>
         {% if b.watchlist %}
         <div class="wrap"><table class="wl" id="results-wl">
           <thead><tr><th>Stock</th><th class="r">Price</th><th class="r">Support</th>

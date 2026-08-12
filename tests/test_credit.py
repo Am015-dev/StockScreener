@@ -686,3 +686,22 @@ assert abs(_base["market_leverage"]
 print("leverage is measured against the whole business, consistently")
 
 print("\nFIGURE CONSISTENCY PINNED")
+
+
+# ---- banks and insurers are refused on sector, not measured wrongly ----
+# MOH, a health insurer, ranked fourth-closest-to-trouble on the live
+# site because its medical claims payable were read as debt coming due.
+# For a bank the deposits ARE the liabilities; for an insurer the claims
+# are funded by premiums already collected. The KMV literature excludes
+# financials for exactly this reason, and now so does this.
+assert credit.is_financial(6324)          # MOH: hospital & medical plans
+assert credit.is_financial("6022")        # state commercial banks
+assert credit.is_financial(6798)          # REITs
+assert not credit.is_financial(3711)      # motor vehicles
+assert not credit.is_financial(None)
+assert not credit.is_financial("")
+assert not credit.is_financial("n/a")
+assert "not modelled" in credit.NOT_MODELLED
+print("financials are recognised by SIC and refused with a reason")
+
+print("\nSECTOR GUARD PINNED")
