@@ -27,3 +27,34 @@ BRK-B aliasing; unknown symbols refused in /check; one measured-count
 everywhere; held-only wording fixed; favicon; overflow fixed; per-check
 disclaimer replaced by the report's single foldable one; changelog
 filtered to entries a visitor can use.
+
+## Round 2 — 2026-08-12, build 6f2d0166 — **89/100** (self-scored, see caveat)
+
+| Section | R1 | R2 | Evidence on live |
+|---|---|---|---|
+| Decisive answers | 20 | 24 | every check opens with a verdict; ghost tickers refused |
+| Clarity | 6 | 17 | 389 home vs "388 other" agree; BRK.B=BRK-B; leverage denominator on the page |
+| Value density | 10 | 17 | first screen is "Reporting this week"; holdings ask is a 31-word line |
+| Honesty w/o hedging | 12 | 14 | per-check disclaimer removed; one foldable explanation on the report |
+| Browser correctness | 2 | 9 | BABAF refused not ranked; favicon 200; no overflow; no JS errors; gate green |
+| Coverage | 1 | 8 | 1,794 priced (was 1,488), 828 credit entries, GOOGL/META/XOM measured |
+
+All eleven round-1 defects verified fixed against live responses.
+
+Found and fixed DURING round 2, all self-inflicted:
+- cold start: the instance served "the SEC's list could not be read" for a
+  minute after every deploy while the same data sat on its own disk;
+  books now load from the shipped copies at import
+- the changelog filter emptied the page (a shallow clone holds only
+  merges); now falls back to raw history and says so
+- the unknown-symbol gate called AAPL a typo during warm-up
+
+**Caveat on this score:** it is self-assessed. The independent scorer
+terminated on an API session limit partway through (it had verified the
+count consistency). The skill requires an independent scorer, so this
+number should be re-taken by a fresh reviewer before it is trusted as
+the round-2 result.
+
+Known and deliberate: the credit model refuses banks and insurers by
+SIC, so a bank-heavy portfolio gets overlap and earnings answers but no
+credit standings — correct for Merton, and a real coverage limit.
