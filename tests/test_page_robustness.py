@@ -124,3 +124,32 @@ finally:
     A._credit_book = _saved_cb
 
 print("\nCREDIT REPORT REACHABILITY PINNED")
+
+
+# ---- the page must not hide itself behind a question ----
+# This is what "I do not see any Moodys like report anywhere" actually
+# was. #main shipped display:none and only saving holdings or clicking
+# skip revealed it — and the skip lived in sessionStorage, so it was
+# forgotten when the tab closed. A visitor arriving on a phone saw one
+# question and a blank page under it: no brief, no pre-trade check, no
+# credit reports. Rendered it in a real browser to find that out, which
+# is the only way a display:none is visible at all.
+_html = c.get("/").get_data(as_text=True)
+
+assert '<div id="main">' in _html, \
+    "the page's own content must not ship hidden"
+assert 'id="main" style="display:none"' not in _html
+print("the page does not ship with its content hidden")
+
+# and nothing may hide it afterwards either
+_js = _html.split("<script")[-1]
+import re as _re2
+for _m in _re2.finditer(r'main\.style\.display\s*=\s*([^;\n]+)', _js):
+    assert _m.group(1).strip().strip('"') == "block", \
+        f"something can still hide the page: {_m.group(0)}"
+print("and no code path sets it back to hidden")
+
+# the dismissal has to outlive the tab, or the question returns forever
+assert 'localStorage.setItem("dipfinder_skipped"' in _js, \
+    "skip must persist across visits, not just the session"
+print("skipping the holdings question is remembered on the next visit")
