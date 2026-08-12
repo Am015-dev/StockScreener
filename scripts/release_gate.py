@@ -91,7 +91,22 @@ def main() -> int:
             print("\nGATE FAILED — the deploy never arrived")
             return 1
 
+    # A deploy restarts the instance, and the books load in background
+    # threads over the following minute or two. Sampling them exactly once
+    # at boot failed the first live gate run on "credit: 0" while the
+    # browser checks thirty seconds later found the book loaded and the
+    # reports rendering. Empty-at-boot is warm-up; empty after a grace
+    # period is an outage.
     loaded = pub.get("loaded") or {}
+    grace = time.time() + 240
+    while time.time() < grace and (loaded.get("prices", 0) <= 100
+                                   or loaded.get("credit", 0) < 5):
+        print(f"  books still warming ({loaded}) — waiting")
+        time.sleep(20)
+        try:
+            loaded = (get_json(f"{base}/published") or {}).get("loaded") or {}
+        except Exception:
+            pass
     check(loaded.get("prices", 0) > 100, "price book is loaded",
           str(loaded))
     check(loaded.get("credit", 0) >= 5, "credit book is loaded", str(loaded))
