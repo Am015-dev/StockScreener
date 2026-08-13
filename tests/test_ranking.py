@@ -16,7 +16,7 @@ import ranking                                                   # noqa: E402
 
 def cand(t, **kw):
     base = {"ticker": t, "name": f"{t} Inc", "price": 100.0,
-            "dollar_vol": 500e6, "annual_vol": 0.30, "dd": 6.0,
+            "market_value": 50e9, "annual_vol": 0.30, "dd": 6.0,
             "days_to_earnings": 60, "sector": "Technology"}
     base.update(kw)
     return base
@@ -25,7 +25,8 @@ def cand(t, **kw):
 # ---- 1. every hard filter excludes, and says why in words ----
 cases = [
     ("price", cand("LOW", price=2.0), "under the 5 floor"),
-    ("liquidity", cand("THIN", dollar_vol=3e6), "too thin to get out"),
+    ("size", cand("SMALL", market_value=4e8), "under the 2B floor"),
+    ("size unknown", cand("NOSIZE", market_value=None), "could not be established"),
     ("volatility", cand("WILD", annual_vol=1.4), "sane stop"),
     ("earnings", cand("SOON", days_to_earnings=4), "gaps straight through"),
     ("credit", cand("DEBT", dd=0.8), "balance sheet is the risk"),
@@ -109,6 +110,34 @@ print(f"{p['shares']} shares x {p['entry'] - p['stop']:.2f} per share = "
 blob = " ".join(str(v) for v in p.values()).lower()
 assert "target" not in blob, "the plan printed a price target"
 print("the plan states a typical move and never a target")
+
+# ---- 4b. a superlative belongs to one name only ----
+# The first draft told the reader that two different names each had "the
+# most room on its debts of anything that cleared today". Both cards were
+# worded from the same branch, and neither knew about the other.
+rows = ranking.score([cand("AAA", dd=9.0), cand("BBB", dd=8.0),
+                      cand("CCC", dd=7.0)])["ranked"]
+lines = [plan.thesis(r, rank=i) for i, r in enumerate(rows)]
+supers = [ln for ln in lines if "the most" in ln or "the calmest" in ln
+          or "moves least" in ln]
+assert len(supers) <= 1, f"more than one name claimed a superlative: {supers}"
+print(f"of {len(lines)} theses, {len(supers)} claims a superlative")
+
+# ---- 4c. a move too small to be worth its costs is thrown out ----
+# This was a scoring component and it was wrong there: rewarding a large
+# move against costs while also rewarding low volatility rewards two
+# opposite things, and on real data they cancelled — a name scoring 18/20
+# for being calm and 2/20 for barely moving came out ranked first on the
+# strength of neither.
+ok, why, _ = ranking.filters(cand("SLEEPY", annual_vol=0.02))
+assert not ok and "worth taking" in why, (ok, why)
+print(f"a name too quiet to pay for its own spread is excluded: {why[:58]}...")
+
+comps = ranking.score([cand("X")])["ranked"][0]["components"]
+assert "move against costs" not in comps, \
+    "the self-cancelling cost component is back in the score"
+assert sum(ranking.score([cand("X")])["ranked"][0]["component_max"].values()) == 100
+print("the score no longer contains two components that cancel each other")
 
 # ---- 5. the order is stable, so a refresh does not reshuffle it ----
 many = [cand(f"T{i}", annual_vol=0.3, dd=5.0) for i in range(12)]

@@ -29,12 +29,29 @@ from __future__ import annotations
 import math
 
 # ---- the hard filters. A name failing one is excluded, never scored ----
-MIN_DOLLAR_VOL = 20e6      # you have to be able to get out
+# Liquidity is the constraint that matters — you have to be able to get
+# out — but per-name share volume is not among the published books, and
+# inventing a number from market value and calling it "dollar volume"
+# would be dressing an assumption as a measurement. So the filter is
+# stated as what it is: a market-value floor, high enough that a US
+# listing above it is liquid in practice. When volume is published this
+# should be replaced by the real thing.
+MIN_MARKET_VALUE = 2e9
 MIN_PRICE = 5.0            # below this the spread is a real share of the move
 MAX_ANNUAL_VOL = 0.90      # above this a sane stop leaves a pointless position
 MIN_DD = 2.0               # distance to default: below this the balance sheet
                            # is the risk and no chart matters
 EARNINGS_BUFFER = 2        # sessions of clearance either side of the horizon
+
+# The typical move has to be worth catching. This started life as a
+# scoring component and was wrong there: rewarding a LARGE move against
+# costs while also rewarding LOW volatility is rewarding two opposite
+# things, and on real data the two nearly cancelled — a name scoring
+# 18/20 for being calm and 2/20 for barely moving came out ranked first
+# on the strength of neither. It is a threshold, not a preference. Below
+# it the trade is a way to pay a broker; above it, being calmer is
+# simply better, and the score can say so without contradicting itself.
+MIN_MOVE_OVER_COST = 8.0
 
 TRADING_DAYS = 252.0
 DEFAULT_HORIZON = 10
@@ -96,7 +113,7 @@ def filters(c: dict, horizon: int = DEFAULT_HORIZON) -> tuple:
     """
     flags = []
     px = c.get("price")
-    dv = c.get("dollar_vol")
+    mv = c.get("market_value")
     vol = c.get("annual_vol")
     dd = c.get("dd")
     dte = c.get("days_to_earnings")
@@ -104,15 +121,26 @@ def filters(c: dict, horizon: int = DEFAULT_HORIZON) -> tuple:
     if not px or px < MIN_PRICE:
         return False, f"trades at {px or 0:.2f}, under the {MIN_PRICE:.0f} floor " \
                       f"where the spread is a real share of the move", flags
-    if not dv or dv < MIN_DOLLAR_VOL:
-        return False, f"only about {(dv or 0) / 1e6:.0f}M traded a day — too " \
-                      f"thin to get out of at size", flags
+    if not mv:
+        return False, "how big the company is could not be established, so " \
+                      "there is no way to tell whether it can be traded at " \
+                      "size", flags
+    if mv < MIN_MARKET_VALUE:
+        return False, f"worth about {mv / 1e9:.1f}B — under the " \
+                      f"{MIN_MARKET_VALUE / 1e9:.0f}B floor, below which " \
+                      f"getting out at size stops being reliable", flags
     if vol is None:
         return False, "how much it moves could not be measured, and that is " \
                       "what sets the stop and the share count", flags
     if vol > MAX_ANNUAL_VOL:
         return False, f"moves {vol * 100:.0f}% a year — a sane stop would be so " \
                       f"far away the position stops being worth holding", flags
+    move = typical_move_pct(vol, horizon) or 0.0
+    ratio = move / ROUND_TRIP_COST_PCT if move else 0.0
+    if ratio < MIN_MOVE_OVER_COST:
+        return False, f"usually moves only {move:.1f}% in {horizon} sessions — " \
+                      f"about {ratio:.0f}x what the round trip costs, too " \
+                      f"little of the move left over to be worth taking", flags
     if dte is not None and dte <= horizon + EARNINGS_BUFFER:
         return False, f"reports in {dte} days, inside the {horizon}-session " \
                       f"hold — a report gaps straight through a stop", flags
@@ -159,43 +187,46 @@ def score(candidates: list, holdings: list | None = None,
     confirmed = _confirmed_shapes(patterns_report)
     active = bool(confirmed)
 
-    credit_v, vol_v, cost_v, fit_v, edge_v = {}, {}, {}, {}, {}
+    credit_v, vol_v, fit_v, edge_v = {}, {}, {}, {}
     for r in passed:
         t = r["ticker"]
         if r.get("dd") is not None:
             credit_v[t] = r["dd"]
-        # lower volatility ranks higher: the same money at risk buys a
-        # bigger, and therefore more meaningful, position
+        # Lower volatility ranks higher: the same money at risk buys a
+        # bigger, and therefore more meaningful, position. This is only
+        # safe to say because MIN_MOVE_OVER_COST has already thrown out
+        # the names that are so quiet the move is not worth catching —
+        # without that filter this preference would be pushing towards
+        # trades that cannot pay for themselves.
         vol_v[t] = -float(r["annual_vol"])
-        move = typical_move_pct(r["annual_vol"], horizon) or 0.0
-        cost_v[t] = move / ROUND_TRIP_COST_PCT
         mx = (corr_by_ticker or {}).get(t)
         fit_v[t] = 1.0 - abs(mx) if mx is not None else 1.0
         edge_v[t] = _edge_for(r, confirmed) if active else 0.0
 
     credit_p, vol_p = _pctile(credit_v), _pctile(vol_v)
-    cost_p, fit_p = _pctile(cost_v), _pctile(fit_v)
+    fit_p = _pctile(fit_v)
     edge_p = _pctile(edge_v) if active and len(set(edge_v.values())) > 1 else {}
 
     for r in passed:
         t = r["ticker"]
         # a name with no credit measurement gets the middle of the range
         # rather than the top: unknown is not the same as excellent
-        credit_pts = 20.0 * credit_p.get(t, 0.5)
-        vol_pts = 20.0 * vol_p.get(t, 0.5)
-        cost_pts = 20.0 * cost_p.get(t, 0.5)
+        credit_pts = 30.0 * credit_p.get(t, 0.5)
+        vol_pts = 30.0 * vol_p.get(t, 0.5)
         fit_pts = 20.0 * fit_p.get(t, 1.0)
         edge_pts = 20.0 * edge_p.get(t, 0.0) if active else 0.0
+        move = typical_move_pct(r["annual_vol"], horizon) or 0.0
         r["components"] = {
             "credit headroom": round(credit_pts, 1),
-            "how much it moves": round(vol_pts, 1),
-            "move against costs": round(cost_pts, 1),
+            "calm enough to size up": round(vol_pts, 1),
             "adds to what you own": round(fit_pts, 1),
             "confirmed pattern": round(edge_pts, 1),
         }
-        r["score"] = round(credit_pts + vol_pts + cost_pts + fit_pts + edge_pts, 1)
-        r["typical_move_pct"] = round(typical_move_pct(r["annual_vol"], horizon)
-                                      or 0.0, 1)
+        r["component_max"] = {"credit headroom": 30, "calm enough to size up": 30,
+                              "adds to what you own": 20, "confirmed pattern": 20}
+        r["score"] = round(credit_pts + vol_pts + fit_pts + edge_pts, 1)
+        r["typical_move_pct"] = round(move, 1)
+        r["move_over_cost"] = round(move / ROUND_TRIP_COST_PCT, 1) if move else None
 
     # ticker as the tie-break so the same inputs always give the same
     # order — a list that reshuffles on refresh cannot be acted on

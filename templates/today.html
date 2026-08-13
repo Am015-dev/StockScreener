@@ -1,0 +1,214 @@
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Today's Five</title>
+<style>
+  :root {
+    --bg:#faf9f7; --card:#fff; --line:#e3e1dc; --ink:#1a1917; --ink-2:#5c5a55;
+    --ink-3:#87857f; --accent:#2a78d6; --green:#157f5b; --amber:#97650a;
+    --red:#c8442c; --rail:#2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+      --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+      --amber:#d9a02c; --red:#e5705a; --rail:#5b9cf0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+    --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+    --amber:#d9a02c; --red:#e5705a; --rail:#5b9cf0;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:17px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:46rem; margin:0 auto; padding:2rem 1.15rem 4rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:1.4rem 1.35rem; margin:0 0 1.1rem; }
+  h1 { font-size:1.6rem; margin:0 0 .2rem; letter-spacing:-.02em; }
+  h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.09em;
+       color:var(--ink-3); margin:0 0 .8rem; font-weight:640; }
+  p { margin:0 0 .8rem; } p:last-child { margin-bottom:0; }
+  .lead { font-size:1.3rem; line-height:1.35; font-weight:640; margin:0 0 .7rem;
+          letter-spacing:-.015em; }
+  .tiny { color:var(--ink-3); font-size:.82rem; line-height:1.55; }
+  .muted { color:var(--ink-2); font-size:.93rem; }
+  a { color:var(--accent); }
+
+  .pick { border-left:3px solid var(--rail); }
+  .tk { font-size:1.5rem; font-weight:700; letter-spacing:-.02em;
+        font-variant-numeric:tabular-nums; }
+  .co { color:var(--ink-3); font-size:.86rem; }
+  .thesis { font-size:1.05rem; line-height:1.45; margin:.5rem 0 1rem; }
+  dl.plan { margin:0; display:grid; grid-template-columns:auto 1fr;
+            gap:.5rem .9rem; align-items:baseline; }
+  dl.plan dt { font-size:.7rem; text-transform:uppercase; letter-spacing:.07em;
+               color:var(--ink-3); font-weight:640; white-space:nowrap;
+               padding-top:.15rem; }
+  dl.plan dd { margin:0; font-size:.95rem; }
+  dl.plan dd b { font-variant-numeric:tabular-nums; }
+  .flag { display:inline-block; font-size:.72rem; font-weight:640;
+          padding:.1rem .45rem; border-radius:999px; margin:.15rem .25rem 0 0;
+          background:color-mix(in srgb, var(--amber) 16%, transparent);
+          color:var(--amber); }
+  .bars { display:grid; gap:.3rem; margin-top:.2rem; }
+  .bar { display:grid; grid-template-columns:9.5rem 1fr auto; gap:.6rem;
+         align-items:center; font-size:.82rem; }
+  .bar .t { color:var(--ink-2); }
+  .bar .track { height:6px; border-radius:3px;
+                background:color-mix(in srgb, var(--ink-3) 18%, transparent); }
+  .bar .fill { height:6px; border-radius:3px; background:var(--rail); }
+  .bar .v { color:var(--ink-3); font-variant-numeric:tabular-nums; }
+  ol.rules { margin:0; padding-left:1.2rem; }
+  ol.rules li { margin:0 0 .55rem; font-size:.95rem; }
+  ol.rules li:last-child { margin-bottom:0; }
+  ol.rules b { font-weight:680; }
+  details summary { cursor:pointer; }
+  table { width:100%; border-collapse:collapse; font-size:.88rem; }
+  th,td { text-align:left; padding:.4rem .3rem; border-bottom:1px solid var(--line); }
+  th { font-size:.68rem; text-transform:uppercase; letter-spacing:.07em;
+       color:var(--ink-3); font-weight:640; }
+  .scroll { overflow-x:auto; }
+
+  @media (max-width:560px) {
+    dl.plan { grid-template-columns:1fr; gap:.15rem; }
+    dl.plan dd { margin-bottom:.6rem; }
+    .bar { grid-template-columns:1fr auto; }
+    .bar .track { display:none; }
+  }
+</style>
+
+<div class="wrap">
+
+  <div class="card">
+    <h1>Today's Five</h1>
+    {% if picks %}
+    <p class="lead" style="margin-top:.5rem">{{ picks|length }} name{{ '' if picks|length == 1 else 's' }}
+      cleared everything, out of {{ res.universe }} looked at.</p>
+    <p class="muted">Each one below has an entry, a stop, and a share count
+      already worked out for {{ '%.0f'|format(budget) }} of risk. Nothing here
+      predicts a price. What it does is pick names that will not blow up on you
+      and size them so that being wrong costs a known amount.</p>
+    {% else %}
+    <p class="lead" style="margin-top:.5rem">Nothing cleared today.</p>
+    <p class="muted">{{ res.universe }} names were looked at and
+      {{ res.passed_filters }} got through the filters. That is a real answer:
+      no position is a position, and it is the one that costs nothing when the
+      alternative was a name that failed on liquidity, debts or a report due
+      inside the hold.</p>
+    {% endif %}
+  </div>
+
+  {% for p in picks %}
+  <div class="card pick">
+    <div style="display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap">
+      <span class="tk">{{ p.ticker }}</span>
+      {% if p.name and p.name != p.ticker %}<span class="co">{{ p.name }}</span>{% endif %}
+      <span class="tiny" style="margin-left:auto">{{ '%.0f'|format(p.score) }}/{{ '%.0f'|format(res.max_points_available) }}</span>
+    </div>
+    <p class="thesis">{{ p.thesis }}</p>
+
+    <dl class="plan">
+      <dt>Buy</dt><dd>{{ p.entry_text }}</dd>
+      <dt>Stop</dt><dd>{{ p.stop_text }}</dd>
+      <dt>Size</dt><dd>{{ p.size_text }}</dd>
+      <dt>Usual move</dt><dd>{{ p.typical_move_text }}
+        {%- if p.cost_text %} {{ p.cost_text }}{% endif %}</dd>
+      <dt>Get out</dt><dd>{{ p.time_stop_text }}</dd>
+      <dt>Earnings</dt><dd>{{ p.earnings_text }}</dd>
+      <dt>Wrong if</dt><dd>{{ p.wrong_if }}</dd>
+    </dl>
+
+    {% if p.flags %}
+    <p style="margin:.9rem 0 0">
+      {% for f in p.flags %}<span class="flag">{{ f }}</span>{% endfor %}</p>
+    {% endif %}
+
+    <details style="margin-top:.9rem">
+      <summary class="tiny">Why it ranks where it does</summary>
+      <div class="bars" style="margin-top:.7rem">
+        {% for k, v in p.components.items() %}
+        <div class="bar">
+          <span class="t">{{ k }}</span>
+          <span class="track"><span class="fill" style="width:{{ (v / (p.component_max.get(k) or 20) * 100)|round|int }}%"></span></span>
+          <span class="v">{{ '%.0f'|format(v) }}/{{ p.component_max.get(k) or 20 }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+  </div>
+  {% endfor %}
+
+  <div class="card">
+    <h2>How to trade this list</h2>
+    <ol class="rules">
+      <li><b>Risk 1% of your account on any one trade.</b> The share counts above
+        are worked out from that. It is the single most important number on this
+        page — it is what makes being wrong survivable.</li>
+      <li><b>At most eight positions open, and no more than a quarter of the
+        book in one sector.</b> Eight bad days in a row is bad luck; eight bad
+        days in the same sector is one bad decision made eight times.</li>
+      <li><b>Never add to a loser.</b> The stop is the exit. Moving it is how a
+        1% loss becomes a 10% loss.</li>
+      <li><b>Get out on whichever comes first</b> — the stop, the {{ horizon }}-session
+        deadline, or a report falling due.</li>
+      <li><b>Expect to be wrong about half the time.</b> That is normal and the
+        plan assumes it. The account grows because the losses are capped and the
+        sizes are right, not because the picks are clever.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>What decided this, and what did not</h2>
+    <p class="muted">Names are scored on four things, all of them arithmetic on
+      measured figures: how much room a company has on its debts, how violently
+      the share moves, how big its typical {{ horizon }}-session move is against the
+      {{ cost }}% it costs to trade, and how much it adds to a book you already
+      hold.</p>
+    {% if res.pattern_component_active %}
+    <p class="muted"><b>A price shape is contributing today.</b>
+      {{ res.confirmed_shapes|join(', ') }} — confirmed on data it was not chosen
+      on. <a href="/patterns">The measurement</a>.</p>
+    {% else %}
+    <p class="muted"><b>No price shape is contributing.</b> Twenty of the hundred
+      points are reserved for one, and they are sitting at zero for every name
+      because nothing has yet held up on data it was not chosen on — so today's
+      scores are out of {{ '%.0f'|format(res.max_points_available) }}, not 100.
+      <a href="/patterns">Everything that was tried, and how it failed</a>.</p>
+    {% endif %}
+    <p class="tiny">There is no price target anywhere on this page, deliberately.
+      A target is a forecast, and the one entry signal this project did test
+      against a null lost to a coin flip twice. "Usual move" is the same
+      arithmetic without the claim.</p>
+  </div>
+
+  {% if res.excluded %}
+  <details class="card">
+    <summary class="tiny">{{ res.excluded|length }} names were thrown out — and why</summary>
+    <p class="tiny" style="margin:.8rem 0">A screen that shows only what passed
+      is not evidence of anything. This is the rest of it.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Name</th><th>Thrown out because</th></tr></thead>
+        <tbody>
+        {% for e in res.excluded[:80] %}
+          <tr><td><b>{{ e.ticker }}</b></td><td>{{ e.why }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if res.excluded|length > 80 %}
+    <p class="tiny" style="margin-top:.7rem">{{ res.excluded|length - 80 }} more,
+      not shown.</p>
+    {% endif %}
+  </details>
+  {% endif %}
+
+  <p class="tiny" style="text-align:center;margin-top:1.4rem">
+    <a href="/brief">Today's brief</a> ·
+    <a href="/patterns">Patterns</a> ·
+    <a href="/full">Full board</a> ·
+    <a href="/limits">Limits</a> ·
+    <a href="/changelog">Changelog</a>
+  </p>
+</div>

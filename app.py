@@ -30,7 +30,9 @@ import market_clock
 import portfolio_import
 import analysis
 import patterns
+import plan
 import pretrade
+import ranking
 import screener
 
 app = Flask(__name__)
@@ -1696,6 +1698,95 @@ def favicon():
            ' fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>')
     return Response(svg, mimetype="image/svg+xml",
                     headers={"Cache-Control": "public, max-age=604800"})
+
+
+def _today_candidates(horizon: int) -> list:
+    """Every liquid name the instance knows about, ready to be ranked.
+
+    Built from the books already in memory — prices, volatility, credit,
+    the earnings calendar — so this costs no outbound call. Deliberately
+    NOT built from the pattern screen's output: that screen's entry rule
+    is the one this project falsified, and ranking its survivors would
+    smuggle a dead signal back in through the candidate list.
+    """
+    series = pretrade._series_of(_price_book()) or {}
+    vols = _vol_book() or {}
+    creds = _credit_view() or {}
+    earn, _complete = _published_earnings()
+    out = []
+    for t, closes in series.items():
+        c = [x for x in (closes or []) if x]
+        if len(c) < 20:
+            continue
+        rep = creds.get(t) or {}
+        px = c[-1]
+        # `equity` in a credit report is shares x price — the company's
+        # market value, restated against the latest close. It is the only
+        # size figure published per name, and size is standing in for
+        # liquidity here because share volume is not published at all.
+        mv = rep.get("equity")
+        # vol.json holds {vol, obs, as_of} per name, not a bare float —
+        # and a thin estimate is worse than none, because it sets both the
+        # stop and the share count
+        v = vols.get(t) or {}
+        av = v.get("vol") if isinstance(v, dict) else v
+        if isinstance(v, dict) and (v.get("obs") or 0) < 60:
+            av = None
+        out.append({
+            "ticker": t,
+            "name": rep.get("name") or t,
+            "price": px,
+            "market_value": mv if (mv and mv > 0) else None,
+            "annual_vol": av,
+            "dd": rep.get("dd"),
+            "is_financial": bool(rep.get("missing") == "financial"
+                                 or rep.get("not_modelled") == "financial"),
+            "days_to_earnings": (earn or {}).get(t),
+            "sector": rep.get("sector"),
+        })
+    return out
+
+
+@app.route("/today")
+def today_page():
+    """The five names, with the plan for each — the point of the whole site.
+
+    Everything else here measures. This decides. It is the page a reader
+    opens in the morning, acts on in two minutes, and closes.
+
+    What it will not do is imply a forecast. There is no price target and
+    no buy rating, because the one entry signal this project tested
+    against a null lost to a coin flip twice. What is on offer is a
+    shortlist that will not blow up, sized so that being wrong costs a
+    known amount — which is the part that actually compounds.
+    """
+    horizon = ranking.DEFAULT_HORIZON
+    try:
+        budget = float(request.args.get("risk") or 100.0)
+    except (TypeError, ValueError):
+        budget = 100.0
+    budget = min(max(budget, 1.0), 1e7)
+
+    cands = _today_candidates(horizon)
+    holdings = []
+    corr = None
+    res = ranking.score(cands, holdings=holdings,
+                        patterns_report=_published_get("patterns.json"),
+                        risk_budget=budget, horizon=horizon,
+                        corr_by_ticker=corr)
+    picks = []
+    for row in res["ranked"][:5]:
+        p = plan.trade_plan(row, risk_budget=budget, horizon=horizon)
+        if not p.get("usable"):
+            continue
+        p["thesis"] = plan.thesis(row, horizon, rank=len(picks))
+        p["score"] = row["score"]
+        p["components"] = row["components"]
+        p["component_max"] = row.get("component_max") or {}
+        picks.append(p)
+    return render_template("today.html", picks=picks, res=res,
+                           budget=budget, horizon=horizon,
+                           cost=ranking.ROUND_TRIP_COST_PCT)
 
 
 @app.route("/patterns")
