@@ -55,9 +55,13 @@
   .bar { display:grid; grid-template-columns:9.5rem 1fr auto; gap:.6rem;
          align-items:center; font-size:.82rem; }
   .bar .t { color:var(--ink-2); }
-  .bar .track { height:6px; border-radius:3px;
+  /* display:block matters — these are spans, and an inline box ignores
+     both the height and the fill's width, so every bar rendered at the
+     same full length whatever the score was */
+  .bar .track { display:block; height:6px; border-radius:3px; overflow:hidden;
                 background:color-mix(in srgb, var(--ink-3) 18%, transparent); }
-  .bar .fill { height:6px; border-radius:3px; background:var(--rail); }
+  .bar .fill { display:block; height:6px; border-radius:3px;
+               background:var(--rail); min-width:0; }
   .bar .v { color:var(--ink-3); font-variant-numeric:tabular-nums; }
   ol.rules { margin:0; padding-left:1.2rem; }
   ol.rules li { margin:0 0 .55rem; font-size:.95rem; }
