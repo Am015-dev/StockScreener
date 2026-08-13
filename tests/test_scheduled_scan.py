@@ -338,6 +338,50 @@ print(f"{_per:.0f} bytes per ticker — about {_per * 1500 / 1024:.0f}KB for a f
 print("\nVOLATILITY BOOK PINNED")
 
 
+# ---- dollar volume: the real liquidity figure /today used to proxy ----
+# A US name (no ticker suffix) and a London name (.L, quoted in pence —
+# the same convention _eur_to_listing already assumes everywhere else in
+# this codebase). Both trade the same 1,000,000 shares/day; the London
+# price is set so its GBP value equals the US name's USD value, so a
+# correct conversion should land the two ADVs within the same ballpark —
+# a forgotten pence-to-pounds step would instead inflate the London
+# figure 100x.
+_liq_days = 40
+_lidx = _pd.bdate_range(end=_pd.Timestamp.today(), periods=_liq_days)
+_us_price = _np.full(_liq_days, 100.0)          # $100/share
+_uk_price = _np.full(_liq_days, 100.0 / 0.85 * 100.0)  # ~11,765p = ~£117.65
+_liq_frame = _pd.concat({
+    "USDX": _pd.DataFrame({"Open": _us_price, "High": _us_price, "Low": _us_price,
+                           "Close": _us_price, "Volume": _np.full(_liq_days, 1e6)},
+                          index=_lidx),
+    "GBPX.L": _pd.DataFrame({"Open": _uk_price, "High": _uk_price, "Low": _uk_price,
+                             "Close": _uk_price, "Volume": _np.full(_liq_days, 1e6)},
+                            index=_lidx),
+}, axis=1)
+screener._cache.update(ohlc=_liq_frame, universe=["USDX", "GBPX.L"])
+_liq = scheduled_scan.dollar_volume_book()
+assert set(_liq) == {"USDX", "GBPX.L"}, _liq
+_us_adv, _uk_adv = _liq["USDX"]["adv_usd"], _liq["GBPX.L"]["adv_usd"]
+assert _us_adv > 0 and _uk_adv > 0, _liq
+# both names trade the same $/£-equivalent value in shares — the ratio
+# must stay near 1, not near 100 (the pence-as-pounds bug) or 0.01
+ratio = _uk_adv / _us_adv
+assert 0.5 < ratio < 2.0, \
+    f"USD ${_us_adv:,.0f} vs London-derived ${_uk_adv:,.0f} (ratio {ratio:.2f}) " \
+    f"— a pence/pounds conversion bug would show up as ~100x here"
+print(f"USD ADV ${_us_adv:,.0f}/day vs GBp-quoted ADV ${_uk_adv:,.0f}/day "
+      f"(ratio {ratio:.2f}) — no 100x pence/pounds inflation")
+assert all("days" in v and "as_of" in v for v in _liq.values())
+
+# absence, not zero, when there is nothing to measure
+screener._cache.update(ohlc=None, universe=[])
+assert scheduled_scan.dollar_volume_book() == {}, \
+    "no cached OHLC must publish an empty book, not a fabricated one"
+print("no cached OHLC: empty liquidity book, not a fabricated one")
+
+print("\nLIQUIDITY BOOK PINNED")
+
+
 # ---- the credit book: built here, because the SEC refuses the web host ----
 # Measured: every SEC call from the Render instance times out, while the
 # same request from another address answers in 0.3s. The scan already runs

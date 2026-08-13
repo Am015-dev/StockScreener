@@ -41,6 +41,28 @@ ok, why, flags = ranking.filters(cand("GOOD"))
 assert ok and not why, (ok, why)
 print("a clean name passes every filter")
 
+# ---- real dollar volume, when published, is the gate — not the proxy ----
+ok, why, flags = ranking.filters(cand("THIN", adv_usd=10e6))
+assert not ok and "50M floor" in why and "$10M" in why, why
+print(f"measured liquidity below the floor excludes with the real figure: {why}")
+
+ok, why, flags = ranking.filters(cand("LIQUID", adv_usd=200e6))
+assert ok, (ok, why)
+assert not any("proxied" in f for f in flags), \
+    f"a name with real measured liquidity must not carry the proxy flag: {flags}"
+print("measured liquidity above the floor passes with no proxy flag")
+
+# ---- absent liquidity data falls back to market value — flagged, not silent ----
+ok, why, flags = ranking.filters(cand("PROXIED"))   # no adv_usd in the fixture
+assert ok, (ok, why)
+assert any("proxied by market value" in f for f in flags), \
+    f"a name ranked on the market-value fallback must say so: {flags}"
+print(f"no published liquidity: falls back to market value, flagged: {flags}")
+
+# a name below the market-value floor AND with no ADV still excludes on size
+# (the pre-existing "size" case above already covers this — market_value=4e8,
+# no adv_usd — confirming the fallback path's exclusion still works unchanged)
+
 # ---- 2. a missing measurement is flagged, never silently passed ----
 ok, why, flags = ranking.filters(cand("NOCRED", dd=None))
 assert ok and "credit not measured" in flags, (ok, flags)

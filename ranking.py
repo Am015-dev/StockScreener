@@ -30,12 +30,15 @@ import math
 
 # ---- the hard filters. A name failing one is excluded, never scored ----
 # Liquidity is the constraint that matters — you have to be able to get
-# out — but per-name share volume is not among the published books, and
-# inventing a number from market value and calling it "dollar volume"
-# would be dressing an assumption as a measurement. So the filter is
-# stated as what it is: a market-value floor, high enough that a US
-# listing above it is liquid in practice. When volume is published this
-# should be replaced by the real thing.
+# out. Real 30-day average dollar volume is published (liquidity.json,
+# built from the same OHLCV the scan already downloads) and is gated on
+# when a name has it. $50M/day is not invented for this page: it is the
+# floor the loosest published preset (wide-net) already enforces, so
+# /today never ranks a name the site's own screener would call illiquid.
+# A name liquidity.json has no figure for (FX could not be established,
+# or it never traded in the scanned window) falls back to the market-value
+# floor below — flagged as a proxy, never treated as the same measurement.
+MIN_DOLLAR_VOLUME = 50e6
 MIN_MARKET_VALUE = 2e9
 MIN_PRICE = 5.0            # below this the spread is a real share of the move
 MAX_ANNUAL_VOL = 0.90      # above this a sane stop leaves a pointless position
@@ -115,6 +118,7 @@ def filters(c: dict, horizon: int = DEFAULT_HORIZON,
     flags = []
     px = c.get("price")
     mv = c.get("market_value")
+    adv = c.get("adv_usd")
     vol = c.get("annual_vol")
     dd = c.get("dd")
     dte = c.get("days_to_earnings")
@@ -122,14 +126,25 @@ def filters(c: dict, horizon: int = DEFAULT_HORIZON,
     if not px or px < MIN_PRICE:
         return False, f"trades at {px or 0:.2f}, under the {MIN_PRICE:.0f} floor " \
                       f"where the spread is a real share of the move", flags
-    if not mv:
+    if adv is not None:
+        # measured, not proxied — the case liquidity.json exists to reach
+        if adv < MIN_DOLLAR_VOLUME:
+            return False, f"trades about ${adv / 1e6:.0f}M a day — under the " \
+                          f"${MIN_DOLLAR_VOLUME / 1e6:.0f}M floor, below which " \
+                          f"getting out at size stops being reliable", flags
+    elif not mv:
         return False, "how big the company is could not be established, so " \
                       "there is no way to tell whether it can be traded at " \
                       "size", flags
-    if mv < MIN_MARKET_VALUE:
+    elif mv < MIN_MARKET_VALUE:
         return False, f"worth about {mv / 1e9:.1f}B — under the " \
                       f"{MIN_MARKET_VALUE / 1e9:.0f}B floor, below which " \
                       f"getting out at size stops being reliable", flags
+    else:
+        # unmeasured must never pass as if it were measured — the market
+        # value floor is a stand-in, and the reader is told so
+        flags.append("liquidity proxied by market value — volume not "
+                      "published for this name")
     if vol is None:
         return False, "how much it moves could not be measured, and that is " \
                       "what sets the stop and the share count", flags

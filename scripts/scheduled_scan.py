@@ -251,6 +251,58 @@ def volatility_book(max_tickers: int = 2000, min_obs: int = 120) -> dict:
     return out
 
 
+def dollar_volume_book(max_tickers: int = 2000, days: int = 30) -> dict:
+    """Real 30-day average dollar volume per ticker, in USD — from the
+    same OHLCV frame the scan already downloaded, no extra fetch.
+
+    This is what /today's liquidity filter used to fall back to a
+    market-cap proxy for, because volume was never published anywhere.
+    A ticker absent here means its FX rate could not be established, or
+    it never traded in the window — never a zero, and never silently
+    treated as measured; the app keeps the market-cap fallback, flagged,
+    for exactly that case.
+    """
+    out: dict = {}
+    skipped = 0
+    try:
+        data = screener._cache.get("ohlc")
+        if data is None:
+            return out
+        available = set(getattr(data.columns, "levels", [[]])[0])
+        ordered = [t for t in (screener._cache.get("universe") or [])
+                   if t in available]
+        for t in available:
+            if t not in ordered:
+                ordered.append(t)
+        usd_rate = screener._fx_rates().get("USD") or 1.08
+        for t in ordered[:max_tickers]:
+            try:
+                frame = data[t][["Close", "Volume"]].dropna()
+                if len(frame) < 5:
+                    continue
+                tail = frame.tail(days)
+                # in the listing's own quoted unit (GBp for a London line,
+                # like everywhere else this codebase handles currency)
+                dv_native = float((tail["Close"] * tail["Volume"]).mean())
+                if not dv_native or dv_native <= 0:
+                    continue
+                dv_usd = screener._to_eur(dv_native, t) * usd_rate
+                if not dv_usd or dv_usd <= 0:
+                    skipped += 1
+                    continue
+                last = frame.index[-1]
+                out[t] = {"adv_usd": round(dv_usd, 0), "days": len(tail),
+                          "as_of": str(getattr(last, "date", lambda: last)())}
+            except Exception:
+                continue
+    except Exception:
+        pass
+    if skipped:
+        print(f"liquidity book: {skipped} ticker(s) skipped (FX unavailable)",
+              file=sys.stderr)
+    return out
+
+
 # How long a MEASUREMENT is worth carrying. This used to be two days,
 # because the distance is a market value against a balance sheet and the
 # market value went stale. The site now re-solves each entry against the
@@ -744,6 +796,24 @@ def main() -> int:
             print(f"volatility book skipped: {type(e).__name__}: {e}",
                   file=sys.stderr)
 
+    # Real dollar volume, from the same OHLCV the scan already downloaded —
+    # what /today's liquidity filter fell back to a market-cap proxy for
+    # because no volume book existed. Reads screener._cache["ohlc"], which
+    # the scan populates regardless of whether Polygon supplied the
+    # published price/vol books above (Polygon widens THOSE; the pick-
+    # finding scan itself still runs on Yahoo's frame).
+    liq = {}
+    if index:
+        try:
+            liq = dollar_volume_book()
+            if liq:
+                (out / "liquidity.json").write_text(json.dumps(liq))
+                kb = (out / "liquidity.json").stat().st_size / 1024
+                print(f"published liquidity book: {len(liq)} tickers ({kb:.0f} KB)")
+        except Exception as e:
+            print(f"liquidity book skipped: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+
     # Credit standings for the board, built here because the SEC refuses
     # the web instance's address outright.
     creds = {}
@@ -825,6 +895,7 @@ def main() -> int:
         "price_book": ({"n": len(book["series"]), "days": 60}
                        if book else None),
         "vol_book": {"n": len(vols)} if vols else None,
+        "liquidity_book": {"n": len(liq)} if liq else None,
         "credit_book": {"n": len(creds)} if creds else None,
         "regime": regime or None,
     }, default=str))

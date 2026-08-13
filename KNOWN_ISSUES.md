@@ -213,11 +213,15 @@ rather than taken on trust.
   from the stocks you could have picked. The cost is that a very common
   shape can never show a large number. This biases towards finding
   nothing, which is the safe direction.
-- **Liquidity on /today is proxied by market value, not volume.** No
-  per-name share volume is published, and inventing a dollar-volume
-  figure from market cap would dress an assumption as a measurement. The
-  filter is stated as what it is — a $2B floor — and should be replaced
-  with real volume when it is available.
+- **Liquidity on /today is measured where it can be, proxied where it
+  can't.** The scan publishes a real 30-day average dollar volume per
+  ticker (`liquidity.json`, from the same price/volume bars it already
+  downloads), and /today gates on it directly — a $50M/day floor, the
+  same one the loosest published preset already enforces. A ticker
+  liquidity.json has no figure for (an FX rate could not be established,
+  or it never traded in the scanned window) falls back to a $2B
+  market-value floor instead, and carries a stated flag saying so —
+  never silently treated as a real measurement of the same thing.
 - **/today ranks on survivability, not on direction.** Nothing in the
   score forecasts a price. Two of its four components — how little a name
   overlaps what you hold, and whether a confirmed pattern is firing —
