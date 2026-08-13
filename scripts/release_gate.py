@@ -22,6 +22,7 @@ would have seen.
 """
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -113,13 +114,31 @@ def main() -> int:
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
-        b = p.chromium.launch()
+        # The runner installs its own browser and this finds it. A
+        # developer box may instead have one pinned to a different
+        # Playwright build, and the default launch then dies on a version
+        # number rather than on anything about the site — which makes the
+        # gate look broken when it is the environment that differs.
+        try:
+            b = p.chromium.launch()
+        except Exception as e:                                # noqa: BLE001
+            alt = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+            if not os.path.exists(alt):
+                raise
+            print(f"  (default chromium unavailable: {type(e).__name__}; "
+                  f"using {alt})")
+            b = p.chromium.launch(executable_path=alt)
         pg = b.new_page(viewport={"width": 390, "height": 844})
         js_errors: list[str] = []
         pg.on("pageerror", lambda e: js_errors.append(str(e)))
 
-        # ---- the front page, as a first-time phone visitor ----
-        pg.goto(base + "/", wait_until="load", timeout=90000)
+        # ---- the brief, as a first-time phone visitor ----
+        # This was the front page and is now /brief; Today's Five took the
+        # root. These assertions are about the brief's own furniture — the
+        # pre-trade check, the credit lookup, the collapsed pattern list —
+        # so they follow it rather than staying pointed at a URL that no
+        # longer serves any of them.
+        pg.goto(base + "/brief", wait_until="load", timeout=90000)
         pg.wait_for_timeout(1500)
         body = pg.inner_text("body")
 
