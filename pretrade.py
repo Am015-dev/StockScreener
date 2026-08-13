@@ -54,7 +54,7 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
           risk_eur: float | None = None, reward_eur: float | None = None,
           friction_pct: float | None = None,
           earn_window_days: int = 45, gate_days: int = 10,
-          warming: bool = False) -> dict:
+          warming: bool = False, single_source: bool = False) -> dict:
     """Everything the reader cannot work out from a free screener.
 
     price_book: {ticker: [daily closes]} — published by the scheduled scan,
@@ -103,14 +103,19 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
 
     # ---- 1. earnings, verified or blocking ----
     days = (earnings or {}).get(ticker)
+    single_note = (" This date came from Yahoo's per-ticker calendar alone — "
+                   "no bulk calendar covers this listing to cross-check it."
+                   if single_source else "")
     if days is not None:
         if days <= gate_days:
             add("block", f"Earnings in {days} days",
                 "A report can gap the price straight through your stop-loss, so "
-                "the stop will not protect you. Wait until it has been published.")
+                "the stop will not protect you. Wait until it has been "
+                f"published.{single_note}")
         else:
             add("ok", f"No earnings for {days} days",
-                "Nothing scheduled can gap the price through your stop before then.")
+                "Nothing scheduled can gap the price through your stop before "
+                f"then.{single_note}")
     elif cal_complete:
         add("ok", f"No earnings due for at least {earn_window_days} days",
             "Checked against the published market calendar for every trading day "

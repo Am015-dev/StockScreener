@@ -1289,9 +1289,21 @@ def check_trade():
         # the calendar the scan published — same data, already built, so
         # a fresh deploy answers instead of asking the reader to wait out
         # a warm-up they cannot see
-        earn, complete, _single_source = _published_earnings()
+        earn, complete, single_source = _published_earnings()
         if earn:
             warming = False
+    else:
+        # The live-built calendar above is Nasdaq's US-only bulk feed and
+        # is warm on nearly every request, so this branch — not the one
+        # above — is what actually runs almost always. Without this merge
+        # a EU ticker's date from the published `eu` book never reached
+        # /check at all: earn was never empty, so the fallback that reads
+        # it never fired, and every EU pre-trade check answered "could not
+        # be verified" even when the scheduled runner had a Yahoo date.
+        pub_earn, _pub_complete, single_source = _published_earnings()
+        for t, d in pub_earn.items():
+            if t not in earn:
+                earn[t] = d
 
     row = next((r for r in (_state.get("results") or [])
                 if (r.get("ticker") or "").upper() == ticker), None)
@@ -1329,6 +1341,7 @@ def check_trade():
     res = pretrade.check(
         ticker, holdings, book, earn, complete_for_ticker,
         warming=warming or not book,
+        single_source=ticker in single_source,
         risk_eur=(row or {}).get("risk_EUR"),
         reward_eur=((row["risk_EUR"] * row["RR"]) if row and row.get("risk_EUR")
                     and row.get("RR") else None),

@@ -190,3 +190,18 @@ for each gap before writing code.
   test itself (`tests/test_today_gate.py` reused an identical `ts=9e9`
   sentinel across two fixture loads, so `_credit_view()`'s cache key
   never changed) is logged in `MISTAKES.md`.
+  **Two more real bugs surfaced verifying this live, both logged in
+  `MISTAKES.md`**: `app.py::_published_earnings()`'s 2-to-3-tuple rewrite
+  dropped the staleness gate that used to fold into `complete` (caught by
+  `tests/test_server_robustness.py`'s pre-existing pin, not by anything
+  written for this feature); and `/check` never actually reached the `eu`
+  book at all, because its earnings lookup prefers a separate, US-only,
+  disk-cached live calendar (`screener._earnings_calendar`) and only
+  fell back to `_published_earnings()` when that live map was completely
+  empty — never true on a warm instance. Confirmed against production
+  (`POST /check {"ticker":"TYT.L"}` blocked as unverified despite a
+  published date) before fixing: `/check` now merges the `eu` book in
+  regardless of whether the live US calendar is warm, and
+  `pretrade.check()` takes a `single_source` flag so the pre-trade
+  check's earnings finding carries the same caveat `/today` and `/full`
+  already did.
