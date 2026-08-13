@@ -71,7 +71,10 @@ def main() -> int:
                     help="how many names to test, after ranking")
     ap.add_argument("--candidates", type=int, default=800,
                     help="how many to fetch history for, before ranking")
-    ap.add_argument("--span", default="1y",
+    # Two years, because the search gets the first half and the
+    # confirmation gets the second. One year would leave each half with
+    # about sixty scoreable days: enough to run, too thin to believe.
+    ap.add_argument("--span", default="2y",
                     help="how much history to ask for (1y, 2y, 5y)")
     ap.add_argument("--horizons", default="3,5,10")
     ap.add_argument("--seeds", type=int, default=300)
@@ -101,11 +104,16 @@ def main() -> int:
     # The binding constraint is distinct calendar DAYS, not observations:
     # 51 sessions of warm-up, the forward horizon, and MIN_DAYS of firing
     # on top. Below that every pattern is refused and the run is wasted.
-    need = patterns.sessions_needed(max(horizons or [patterns.DEFAULT_HORIZON]))
+    # ...and TWICE that, because the history is split: the shapes are
+    # searched for in the first half and confirmed on the second, so each
+    # half has to stand on its own.
+    need = 2 * patterns.sessions_needed(max(horizons
+                                            or [patterns.DEFAULT_HORIZON]))
     if len(dates) < need:
         log(f"only {len(dates)} sessions; {need} are needed for a horizon of "
-            f"{max(horizons)} ({patterns.MIN_DAYS} distinct firing days after "
-            f"51 of warm-up). Nothing measurable — not publishing a result.")
+            f"{max(horizons)} — {patterns.MIN_DAYS} distinct firing days after "
+            f"51 of warm-up, in EACH half of a split history. Nothing "
+            f"measurable — not publishing a result.")
         return 0
 
     # Ranked at the START of the window. Ranking on the last day would be
