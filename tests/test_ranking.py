@@ -54,6 +54,24 @@ ok, why, flags = ranking.filters(cand("NODATE", days_to_earnings=None))
 assert ok and "earnings date unverified" in flags, flags
 print("an unknown report date is flagged rather than assumed clear")
 
+# ...but absence from a COMPLETE calendar is the all-clear, not a gap.
+# The calendar is built by walking every trading day in the next 45, so a
+# name that never appears has nothing scheduled in them. Flagging that as
+# "unverified" put a warning badge on all five live picks and told the
+# reader to go and check the one thing the tool had already checked.
+ok, why, flags = ranking.filters(cand("NODATE", days_to_earnings=None),
+                                 cal_complete=True)
+assert ok and "earnings date unverified" not in flags, flags
+print("absence from a complete calendar is the all-clear, not a warning")
+
+p = plan.trade_plan(dict(cand("NODATE", days_to_earnings=None),
+                         cal_complete=True, annual_vol=0.3), risk_budget=100)
+assert "Nothing scheduled" in p["earnings_text"], p["earnings_text"]
+p2 = plan.trade_plan(dict(cand("NODATE", days_to_earnings=None),
+                          annual_vol=0.3), risk_budget=100)
+assert "check before entering" in p2["earnings_text"], p2["earnings_text"]
+print("  and the plan says which of the two it is, in words")
+
 # ...and it scores in the MIDDLE, not at the top. Unknown must never be
 # worth more than measured-and-good, which is the failure that turns a
 # data gap into a recommendation.

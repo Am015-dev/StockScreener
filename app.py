@@ -1781,15 +1781,16 @@ def today_page():
     # once and wasteful on every request, and this is the front page on a
     # free instance that also has to serve everything else. The inputs
     # only change when a book is refreshed, so key on exactly that.
+    earn, cal_complete = _published_earnings()
     key = (_book["ts"], _vols["ts"], _creds["ts"], _earn_pub["ts"],
-           round(budget, 2), horizon)
+           round(budget, 2), horizon, cal_complete)
     if _today_memo["key"] == key:
         res = _today_memo["res"]
     else:
         res = ranking.score(_today_candidates(horizon), holdings=[],
                             patterns_report=_published_get("patterns.json"),
                             risk_budget=budget, horizon=horizon,
-                            corr_by_ticker=None)
+                            corr_by_ticker=None, cal_complete=cal_complete)
         _today_memo.update(key=key, res=res)
 
     # A stop does not protect you across a report — the price gaps
@@ -1799,7 +1800,6 @@ def today_page():
     # through. Five confident-looking plans with the one check that
     # matters silently switched off is precisely the failure this project
     # keeps having, so the list is withheld instead.
-    earn, cal_complete = _published_earnings()
     if not earn:
         return render_template("today.html", picks=[], res=res, budget=budget,
                                horizon=horizon, cost=ranking.ROUND_TRIP_COST_PCT,
@@ -1807,6 +1807,7 @@ def today_page():
 
     picks = []
     for row in res["ranked"][:5]:
+        row = dict(row, cal_complete=cal_complete)
         p = plan.trade_plan(row, risk_budget=budget, horizon=horizon)
         if not p.get("usable"):
             continue
