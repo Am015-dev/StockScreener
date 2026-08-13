@@ -141,6 +141,45 @@ finally:
 print("\nCREDIT REPORT REACHABILITY PINNED")
 
 
+# ---- a confirmed downtrend must reach the page that ranks buy plans ----
+# screener.run() has always computed and gated on market regime
+# (require_market_uptrend) internally, but only ever logged the verdict —
+# the web instance never saw it, so /today could rank five buy plans during
+# a confirmed downtrend with nothing on the page saying the backdrop had
+# turned. Pin all four states: silent on uptrend, silent when unmeasured
+# (nothing published yet), and a plain-language notice — not a gauge, not a
+# score change — on a confirmed downtrend, for exactly the region that is
+# down.
+_saved_regime = A._regime_pub.copy()
+try:
+    A._regime_pub.update(data=None, ts=0.0)
+    A._today_memo["key"] = None
+    _html = c.get("/").get_data(as_text=True)
+    assert "Market backdrop" not in _html, "nothing published yet must stay silent"
+    print("no regime published: the page says nothing, rather than guessing")
+
+    A._regime_pub.update(data={"as_of": "2026-08-13", "US": False, "EU": True},
+                         ts=time.time())
+    A._today_memo["key"] = None
+    _html = c.get("/").get_data(as_text=True)
+    assert "Market backdrop" in _html, "a confirmed US downtrend must surface"
+    assert "S&amp;P 500" in _html or "S&P 500" in _html
+    assert "Euro Stoxx" not in _html, "an uptrend region must stay silent"
+    print("US in a confirmed downtrend: the page says so, and only about the US")
+
+    A._regime_pub.update(data={"as_of": "2026-08-13", "US": True, "EU": True},
+                         ts=time.time())
+    A._today_memo["key"] = None
+    _html = c.get("/").get_data(as_text=True)
+    assert "Market backdrop" not in _html, "both regions uptrend must stay silent"
+    print("both regions uptrend: no flag for the normal case")
+finally:
+    A._regime_pub.update(_saved_regime)
+    A._today_memo["key"] = None
+
+print("\nMARKET REGIME REACHABILITY PINNED")
+
+
 # ---- the page must not hide its content behind a question ----
 # "I do not see any Moodys like report anywhere" was a display:none gate
 # that only an answer or a skip revealed — and the skip lived in

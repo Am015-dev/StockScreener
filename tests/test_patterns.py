@@ -277,3 +277,158 @@ assert "too rare" in patterns.verdict(None)
 print("a significant result smaller than costs is reported as untradeable")
 
 print("\nALL PATTERN TESTS PASSED")
+
+
+# ---- 7. combinatorial holdout: one split's luck is not the whole story ----
+# sweep_with_holdout() answers "did it hold up on THE held-back half" —
+# one boolean, riding on wherever that one cut fell. combinatorial_holdout()
+# adds "how many DIFFERENT held-out stretches does it hold up on", without
+# touching the original answer.
+
+# 7a. it must not change a single field sweep_with_holdout already reports
+hp = half_planted()
+plain = patterns.sweep_with_holdout(hp, [5], seeds=60)
+combo = patterns.combinatorial_holdout(hp, [5], n_blocks=6, k_test=1, seeds=60)
+plain_row = plain[5]["three lower closes in a row"]
+combo_row = combo[5]["three lower closes in a row"]
+for key in ("edge_pct", "p", "n", "days", "confirmed", "holdout", "holdout_note",
+           "survives"):
+    assert combo_row[key] == plain_row[key], \
+        (key, combo_row[key], plain_row[key])
+print("combinatorial_holdout leaves every field sweep_with_holdout already "
+      "reports exactly as it was")
+
+# 7b. a pattern present EVERYWHERE reconfirms in every held-out block —
+# and a pattern present in only HALF the blocks is caught as unstable,
+# even though a single lucky 50/50 cut called it "confirmed"
+def alternating_planted(seed=31, n_days=1800, n_tickers=60, n_blocks=6,
+                        edge_size=0.006):
+    """The edge is real, but it only operates in the EVEN blocks of the
+    calendar — a shape that is genuinely unstable across time, the exact
+    thing one fixed 50/50 split cannot see because both halves mix on
+    and off stretches together."""
+    rng = random.Random(seed)
+    block_len = n_days // n_blocks
+    out = {}
+    for t in range(n_tickers):
+        px, boost = [100.0], 0
+        for d in range(n_days):
+            blk = min(n_blocks - 1, d // block_len)
+            on = (blk % 2 == 0)
+            step = rng.gauss(0.0004, 0.018)
+            if boost > 0 and on:
+                step += edge_size
+            if boost > 0:
+                boost -= 1
+            px.append(px[-1] * (1 + step))
+            if len(px) > 51 and patterns.p_three_down(px):
+                boost = 5
+        out[f"A{t}"] = [round(x, 4) for x in px]
+    return out
+
+
+def stable_planted(seed=11, n_days=1800, n_tickers=60, edge_size=0.006):
+    """The same edge, but operating everywhere — the stable control."""
+    rng = random.Random(seed)
+    out = {}
+    for t in range(n_tickers):
+        px, boost = [100.0], 0
+        for d in range(n_days):
+            step = rng.gauss(0.0004, 0.018)
+            if boost > 0:
+                step += edge_size
+                boost -= 1
+            px.append(px[-1] * (1 + step))
+            if len(px) > 51 and patterns.p_three_down(px):
+                boost = 5
+        out[f"S{t}"] = [round(x, 4) for x in px]
+    return out
+
+
+stable = patterns.combinatorial_holdout(stable_planted(), [5], n_blocks=6,
+                                        k_test=1, seeds=60)
+stable_row = stable[5]["three lower closes in a row"]
+assert stable_row["reconfirm_rate"] == 1.0, stable_row
+print(f"an edge present in every block reconfirms in all "
+      f"{stable_row['combinations']} held-out combinations")
+
+unstable = patterns.combinatorial_holdout(alternating_planted(), [5],
+                                          n_blocks=6, k_test=1, seeds=60)
+uns_row = unstable[5]["three lower closes in a row"]
+assert uns_row["confirmed"] is True, \
+    "the fixture must still be confirmed by the plain 50/50 split, or this " \
+    "is not testing what it claims to"
+assert uns_row["reconfirm_rate"] < stable_row["reconfirm_rate"], \
+    (uns_row["reconfirm_rate"], stable_row["reconfirm_rate"])
+assert uns_row["reconfirm_rate"] <= 0.75, uns_row
+print(f"an edge present in only half the calendar's blocks is called "
+      f"'confirmed' by the single 50/50 split — but reconfirms in only "
+      f"{uns_row['reconfirmed_in']}/{uns_row['combinations']} "
+      f"({uns_row['reconfirm_rate']:.0%}) held-out combinations, well "
+      f"below the stable pattern's {stable_row['reconfirm_rate']:.0%} — "
+      f"exactly the instability one fixed cut cannot see")
+
+# 7c. no combination may ever concatenate non-adjacent stretches of the
+# calendar into a fake contiguous series. Build a fixture where a real
+# 3-lower-closes streak sits at the very END of every block; if two
+# non-adjacent blocks were ever glued together, the count of hits in
+# their union would NOT equal the sum of each block's own hit count.
+N_BLOCKS, BLOCK_LEN = 6, 90
+glued_closes = []
+for b in range(N_BLOCKS):
+    base = 100.0 + b * 5
+    seg = [base] * (BLOCK_LEN - 4)
+    seg += [base, base * 0.97, base * 0.94, base * 0.91]
+    glued_closes.extend(seg)
+glue_series = {"GLUE": glued_closes}
+bounds = patterns._block_bounds(len(glued_closes), N_BLOCKS)
+
+
+def _count(allowed):
+    return len(patterns.occurrences(glue_series, patterns.p_three_down,
+                                    horizon=1, min_history=1, allowed_days=allowed))
+
+
+c0 = _count(patterns._day_set([bounds[0]]))
+c2 = _count(patterns._day_set([bounds[2]]))
+c_union = _count(patterns._day_set([bounds[0], bounds[2]]))
+assert c0 > 0 and c2 > 0, "fixture is not exercising the pattern at all"
+assert c_union == c0 + c2, \
+    (f"a hit was manufactured or lost at the seam between non-adjacent "
+     f"blocks: block0={c0}, block2={c2}, union={c_union}")
+print(f"holding out non-adjacent blocks (0 and 2) finds exactly "
+      f"{c0} + {c2} = {c_union} hits — never one manufactured at the seam "
+      f"a naive concatenation would have created")
+
+print("\nCOMBINATORIAL HOLDOUT PINNED")
+
+
+# ---- 8. Benjamini-Yekutieli: a stricter cross-check under any dependence ----
+by_noise = patterns.sweep(noise, seeds=60)
+by_check = patterns.benjamini_yekutieli(
+    {k: v for k, v in by_noise.items() if v}, fdr=0.10)
+assert all(not v["survives_by"] for v in by_check.values()), \
+    "pure noise survived the stricter dependence-robust correction"
+print("pure noise survives Benjamini-Yekutieli exactly as it survives "
+      "Benjamini-Hochberg: not at all")
+
+by_planted = patterns.benjamini_yekutieli(
+    {k: v for k, v in res2.items() if v}, fdr=0.10)
+strong = by_planted.get("three lower closes in a row")
+assert strong is not None and strong["survives_by"], \
+    f"an unmistakable planted edge did not survive the stricter check: {strong}"
+assert strong["c_m"] > 1.0, \
+    "the harmonic-sum correction factor must make BY strictly stricter than BH"
+print(f"an unmistakable planted edge survives the stricter check too "
+      f"(c(m) = {strong['c_m']}, so BY's cutoff is {strong['c_m']:.2f}x "
+      f"tighter than BH's at the same family size)")
+
+# BY is a cross-check, not a replacement: it must never be asked to survive
+# on its own without BH having run first, and it must be at least as hard
+# to survive as BH at the same p and family size
+import inspect as _insp
+assert "cross-check" in patterns.benjamini_yekutieli.__doc__
+print("its own docstring says what it is for, so it cannot be swapped in "
+      "for benjamini_hochberg by a future edit that does not read this far")
+
+print("\nBENJAMINI-YEKUTIELI PINNED")

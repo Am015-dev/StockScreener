@@ -766,6 +766,26 @@ def main() -> int:
         except Exception as e:
             print(f"credit book skipped: {type(e).__name__}: {e}", file=sys.stderr)
 
+    # Market regime (SPY / Euro Stoxx 50 vs 200-day SMA). Every preset run
+    # above already computed and gated on this via require_market_uptrend,
+    # but only ever logged it — the web instance never saw the verdict, so
+    # /today could rank five buy plans during a confirmed downtrend with
+    # nothing on the page saying so. screener._get_benchmarks() caches for
+    # an hour, so this is free after any preset ran with the gate on.
+    regime = {}
+    try:
+        bench = screener._get_benchmarks()
+        regime = {region: screener.market_uptrend(close)
+                 for region, close in bench.items()}
+        if any(v is not None for v in regime.values()):
+            (out / "regime.json").write_text(json.dumps(
+                {"as_of": time.strftime("%Y-%m-%d", time.gmtime()), **regime}))
+            print("published market regime: "
+                  + ", ".join(f"{r}={v}" for r, v in regime.items()))
+    except Exception as e:
+        print(f"market regime not published: {type(e).__name__}: {e}",
+              file=sys.stderr)
+
     # The earnings calendar, as the gates used it. The instance rebuilds
     # this exact map from ~32 sequential Nasdaq calls after every deploy,
     # and while it does, every pre-trade check answers "calendar is still
@@ -790,6 +810,7 @@ def main() -> int:
                        if book else None),
         "vol_book": {"n": len(vols)} if vols else None,
         "credit_book": {"n": len(creds)} if creds else None,
+        "regime": regime or None,
     }, default=str))
 
     if not index:

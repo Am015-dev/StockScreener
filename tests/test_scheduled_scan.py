@@ -51,6 +51,13 @@ def fake_run(p, progress=print, on_partial=None):
 
 
 screener.run_screener = fake_run
+# The publisher now also asks for benchmark closes to publish market regime
+# (screener._get_benchmarks). Left unmocked that is a real Yahoo call from
+# every one of this file's subprocesses — this file's whole point is that
+# the logic is verified without a network round trip, so it is stubbed
+# empty here, the same as run_screener above. The regime-specific test
+# further down replaces this one line with real synthetic closes.
+screener._get_benchmarks = lambda progress=print: {{}}
 import runpy
 import backtest as _bt
 
@@ -139,6 +146,34 @@ rel = json.loads((OUT / "relaxed.json").read_text())
 assert bal["scan_hash"] != rel["scan_hash"], "presets must be distinguishable"
 assert bal["params_used"]["min_rr"] > rel["params_used"]["min_rr"]
 print("presets are distinct filter sets, filed under different hashes")
+
+# ---- market regime is published alongside the picks ----
+# screener.run() has always computed and gated on this internally
+# (require_market_uptrend) but never published the verdict, so /today could
+# rank five buy plans during a confirmed downtrend with nothing anywhere
+# saying the backdrop had turned. Real synthetic closes here (not the empty
+# stub the other runs use): 200 rising points for US, 200 falling points
+# for EU, so market_uptrend has an unambiguous answer for each.
+REGIME = STUB.replace(
+    "screener._get_benchmarks = lambda progress=print: {}",
+    "_us_close = pd.Series([float(x) for x in range(200, 400)])\n"
+    "_eu_close = pd.Series([float(x) for x in range(400, 200, -1)])\n"
+    "screener._get_benchmarks = lambda progress=print: "
+    "{'US': _us_close, 'EU': _eu_close}")
+assert "_eu_close" in REGIME, "regime stub not wired"
+OUT6 = Path(TMP) / "published6"
+s6 = Path(TMP) / "drive_regime.py"
+s6.write_text(REGIME.replace(str(OUT), str(OUT6)))
+p6 = subprocess.run([sys.executable, str(s6)], env=env, capture_output=True,
+                    text=True, timeout=300)
+assert p6.returncode == 0, p6.stderr
+reg = json.loads((OUT6 / "regime.json").read_text())
+assert reg["US"] is True, reg      # ends 200 points above its own start
+assert reg["EU"] is False, reg     # ends 200 points below its own start
+idx6 = json.loads((OUT6 / "index.json").read_text())
+assert idx6["regime"] == {"US": True, "EU": False}, idx6["regime"]
+print("market regime (US uptrend, EU downtrend) published to regime.json, "
+      "and carried into index.json")
 
 # ---- when every preset fails, publish nothing and exit non-zero ----
 ALL_FAIL = STUB.replace('if p["min_rr"] == 2.0:', "if True:")

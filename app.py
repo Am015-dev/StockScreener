@@ -1024,6 +1024,46 @@ def _earnings_book(fetch: bool = False) -> dict:
     return data
 
 
+_regime_pub = {"ts": 0.0, "data": None}
+
+
+def _regime_book(fetch: bool = False) -> dict:
+    """Market regime (SPY / Euro Stoxx 50 vs 200-day SMA), computed by the scan.
+
+    screener.run() already computes and gates on this internally
+    (require_market_uptrend) but never published the verdict — so a name
+    could clear every filter during a confirmed downtrend with nothing
+    anywhere saying the backdrop itself had turned. This is one JSON file
+    with two booleans, not a fourth outbound call from this instance.
+    """
+    if not fetch:
+        return _regime_pub["data"] or {}
+    data = _published_get("regime.json")
+    if not data:
+        print(f"[warm] market regime: refresh returned nothing, keeping "
+              f"{_regime_pub['data']}", flush=True)
+        return _regime_pub["data"] or {}
+    _regime_pub.update(data=data, ts=time.time())
+    print(f"[warm] market regime: "
+          f"{', '.join(f'{k}={v}' for k, v in data.items() if k != 'as_of')}",
+          flush=True)
+    return data
+
+
+def _regime_notes(regime: dict) -> list:
+    """Plain-language notice for each region confirmed BELOW its 200-day
+    average — silent on uptrend and silent when unmeasured, matching the
+    rest of this page's rule of never flagging the normal case. A reader
+    is told when the backdrop is working against every name on the list,
+    not shown a gauge for it.
+    """
+    labels = {"US": "The S&P 500 (SPY)", "EU": "The Euro Stoxx 50"}
+    return [f"{labels.get(region, region)} is below its 200-day average — a "
+            f"defensive stretch. The usual playbook is smaller size and "
+            f"faster exits; nothing below enforces that for you."
+            for region in ("US", "EU") if regime.get(region) is False]
+
+
 def _published_earnings() -> tuple[dict, bool]:
     """(ticker -> trading days to report, complete) — re-based to today,
     exactly as screener does for its own stored copy, and refused when
@@ -1806,6 +1846,7 @@ def today_page():
     # free instance that also has to serve everything else. The inputs
     # only change when a book is refreshed, so key on exactly that.
     earn, cal_complete = _published_earnings()
+    regime_notes = _regime_notes(_regime_book())
     key = (_book["ts"], _vols["ts"], _creds["ts"], _earn_pub["ts"],
            _patterns_pub["ts"], round(budget, 2), horizon, cal_complete)
     if _today_memo["key"] == key:
@@ -1829,7 +1870,7 @@ def today_page():
         return render_template("today.html", picks=[], res=res, budget=budget,
                                horizon=horizon, cost=ranking.ROUND_TRIP_COST_PCT,
                                blocked="the earnings calendar could not be read",
-                               credit_index=credit_index)
+                               credit_index=credit_index, regime_notes=regime_notes)
 
     picks = []
     for row in res["ranked"][:5]:
@@ -1845,7 +1886,7 @@ def today_page():
     return render_template("today.html", picks=picks, res=res,
                            budget=budget, horizon=horizon,
                            cost=ranking.ROUND_TRIP_COST_PCT,
-                           credit_index=credit_index)
+                           credit_index=credit_index, regime_notes=regime_notes)
 
 
 @app.route("/patterns")
@@ -2133,7 +2174,8 @@ def _warm_books():
     for label, fn in (("price book", _price_book), ("volatility book", _vol_book),
                       ("credit book", _credit_book),
                       ("earnings calendar (published)", _earnings_book),
-                      ("pattern sweep", _patterns_book)):
+                      ("pattern sweep", _patterns_book),
+                      ("market regime", _regime_book)):
         try:
             fn(fetch=True)
         except Exception as e:

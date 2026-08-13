@@ -181,18 +181,29 @@ LIBRARY = {
 # --------------------------------------------------------------------
 
 def occurrences(series: dict, fn, horizon: int = DEFAULT_HORIZON,
-                min_history: int = 51) -> list:
+                min_history: int = 51, allowed_days: frozenset | None = None) -> list:
     """[(date_index, ticker, forward_return)] wherever the shape appears.
 
     Forward return is measured from the close on the signal day to the
     close `horizon` sessions later — the same convention for the pattern
     and for the null, which is what makes them comparable.
+
+    `allowed_days`, if given, restricts which signal-day INDICES may
+    become a hit — used by combinatorial_holdout() to search on some
+    calendar days and confirm on others. The window each candidate is
+    judged on is still built from the real, unbroken series regardless:
+    this filters which days get counted, it never reassembles the price
+    history itself, so a search fold spanning two non-adjacent stretches
+    of the calendar can never manufacture a pattern out of the seam
+    between them.
     """
     hits = []
     for t, closes in (series or {}).items():
         c = [x if (x and x > 0) else None for x in (closes or [])]
         n = len(c)
         for i in range(min_history, n - horizon):
+            if allowed_days is not None and i not in allowed_days:
+                continue
             if c[i] is None or c[i + horizon] is None:
                 continue
             # The window must be CONTIGUOUS. Dropping missing sessions
@@ -250,7 +261,8 @@ def trailing_vol(closes: list, window: int = 20) -> list:
 def test_pattern(series: dict, fn, horizon: int = DEFAULT_HORIZON,
                  seeds: int = 200, min_hits: int = 30,
                  min_days: int = MIN_DAYS, vol_buckets: int = 5,
-                 match_volatility: bool = True) -> dict | None:
+                 match_volatility: bool = True,
+                 allowed_days: frozenset | None = None) -> dict | None:
     """Measure one pattern against a matched null, BY DAY.
 
     Two things are matched, and both were learned from being wrong.
@@ -286,10 +298,16 @@ def test_pattern(series: dict, fn, horizon: int = DEFAULT_HORIZON,
     biases towards finding nothing, which is the safe direction to be
     wrong in.
 
+    `allowed_days`, if given, restricts BOTH the pattern's own hits and
+    the comparison pool to those day indices — so a search fold and a
+    confirm fold drawn from the same underlying series never leak into
+    each other's benchmark. See occurrences() for why this never
+    reassembles the price history itself.
+
     Returns None when there are too few DAYS to say anything, however
     many stock-days that adds up to.
     """
-    hits = occurrences(series, fn, horizon)
+    hits = occurrences(series, fn, horizon, allowed_days=allowed_days)
     if len(hits) < min_hits:
         return None
     by_day: dict = {}
@@ -304,6 +322,8 @@ def test_pattern(series: dict, fn, horizon: int = DEFAULT_HORIZON,
         c = [x if (x and x > 0) else None for x in (closes or [])]
         vol = trailing_vol(c)
         for i in range(51, len(c) - horizon):
+            if allowed_days is not None and i not in allowed_days:
+                continue
             if c[i] is not None and c[i + horizon] is not None:
                 raw.setdefault(i, []).append(
                     (t, _ret(c[i + horizon], c[i]), vol[i]))
@@ -556,6 +576,127 @@ def sweep_with_holdout(series: dict, horizons: list, seeds: int = 200,
                     f"did NOT hold up on data it was not chosen on "
                     f"({chk['edge_pct']:+.2f}%, p = {p_words(chk['p'])})")
             out[h][name] = r
+    return out
+
+
+def _block_bounds(n: int, n_blocks: int) -> list:
+    """n_blocks contiguous [lo, hi) index ranges covering [0, n)."""
+    edges = [round(n * i / n_blocks) for i in range(n_blocks + 1)]
+    return list(zip(edges[:-1], edges[1:]))
+
+
+def _day_set(ranges: list) -> frozenset:
+    return frozenset(i for lo, hi in ranges for i in range(lo, hi))
+
+
+def combinatorial_holdout(series: dict, horizons: list, n_blocks: int = 6,
+                          k_test: int = 1, seeds: int = 200,
+                          library: dict | None = None, progress=None,
+                          fdr: float = 0.10, confirm_p: float = 0.05) -> dict:
+    """sweep_with_holdout(), plus proof the confirmation is not one split's luck.
+
+    A single 50/50 cut answers "did this pattern hold up on the second
+    half" — and that verdict rides on the luck of exactly where the cut
+    fell. This keeps that answer (the fields sweep_with_holdout already
+    returns are untouched: same `confirmed`, same `holdout`, same
+    headline edge/p/days) and adds a second, independent question: does
+    the pattern reconfirm across MANY different held-out stretches, not
+    just the one this run happened to draw?
+
+    The full history is cut into `n_blocks` contiguous stretches. For
+    every way of choosing `k_test` of them as a held-out set — n_blocks
+    choose k_test combinations, 6 at the defaults — whatever survived the
+    ORIGINAL search is re-measured with that combination held out and the
+    rest as the comparison pool. `reconfirm_rate` is the fraction of
+    combinations where it reconfirmed.
+
+    No combination ever concatenates non-adjacent stretches into a fake
+    contiguous series: occurrences() and test_pattern() take the real,
+    unbroken series and an `allowed_days` set that only decides which day
+    INDICES may become observations, so a search fold spanning blocks 1,
+    3 and 4 can never manufacture a pattern out of the seam between
+    session 100 (end of block 1) and session 201 (start of block 3).
+
+    Costs roughly `n_blocks choose k_test` re-measurements of whatever
+    survived the original search — at the defaults, 6 — not a full
+    re-search of the whole library, because only candidates that already
+    survived sweep_with_holdout's own search are re-checked here.
+    """
+    from itertools import combinations
+    base = sweep_with_holdout(series, horizons, seeds=seeds, library=library,
+                              progress=progress, fdr=fdr, confirm_p=confirm_p)
+
+    lens = [len(v) for v in (series or {}).values() if v]
+    n = max(lens) if lens else 0
+    lib = library or LIBRARY
+    combos = list(combinations(range(n_blocks), k_test)) if n_blocks >= 2 else []
+    block_ranges = _block_bounds(n, n_blocks) if combos else []
+
+    out: dict = {}
+    for h, rows in base.items():
+        out[h] = {}
+        for name, r in rows.items():
+            if not r or not r.get("survives") or not combos:
+                out[h][name] = r
+                continue
+            reconfirmed, attempted = 0, 0
+            for test_idx in combos:
+                test_days = _day_set([block_ranges[b] for b in test_idx])
+                search_days = _day_set([block_ranges[b]
+                                        for b in range(n_blocks) if b not in test_idx])
+                chk = test_pattern(series, lib[name], horizon=h, seeds=seeds,
+                                   allowed_days=test_days)
+                if chk is None:
+                    continue
+                attempted += 1
+                if chk["edge_pct"] > 0 and chk["p"] <= confirm_p:
+                    reconfirmed += 1
+            r = dict(r)
+            if attempted == 0:
+                r["reconfirm_rate"] = None
+                r["combinations"] = 0
+                r["reconfirmed_in"] = 0
+            else:
+                r["reconfirm_rate"] = round(reconfirmed / attempted, 3)
+                r["combinations"] = attempted
+                r["reconfirmed_in"] = reconfirmed
+                if progress:
+                    progress(f"  {name} @ {h}d: reconfirmed in {reconfirmed}/"
+                             f"{attempted} held-out combinations "
+                             f"({r['reconfirm_rate']:.0%})")
+            out[h][name] = r
+    return out
+
+
+def benjamini_yekutieli(results: dict, fdr: float = 0.10) -> dict:
+    """A stricter cross-check on benjamini_hochberg()'s survivors.
+
+    Plain BH assumes the tests are independent, or at least positively
+    dependent in a specific (PRDS) sense. Patterns here can share
+    overlapping day-level nulls — two shapes that both fire heavily in a
+    volatile week draw comparison pools from the same days — which is a
+    form of dependence BH does not promise to handle. Benjamini-Yekutieli
+    (2001) is the same procedure with the cutoff divided by the harmonic
+    sum c(m) = sum(1/i for i in 1..m), and it is valid under ANY
+    dependence structure. It is not run in place of benjamini_hochberg —
+    it is stricter by construction and would throw away real findings as
+    a matter of course — but a pattern that survives BH and NOT this is
+    worth a second look before it is called confirmed.
+    """
+    items = [(k, v) for k, v in results.items() if v and v.get("p") is not None]
+    if not items:
+        return {}
+    items.sort(key=lambda kv: kv[1]["p"])
+    m = len(items)
+    c_m = sum(1.0 / i for i in range(1, m + 1))
+    cutoff = 0.0
+    for i, (_, v) in enumerate(items, start=1):
+        if v["p"] <= (i / m) * fdr / c_m:
+            cutoff = v["p"]
+    out = {}
+    for k, v in items:
+        out[k] = dict(v, survives_by=bool(cutoff and v["p"] <= cutoff),
+                      family_size=m, fdr=fdr, c_m=round(c_m, 3))
     return out
 
 

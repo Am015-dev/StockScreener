@@ -49,6 +49,36 @@ dd = credit.distance_to_default(V, sV, D, r)
 assert dd is not None and 4.0 < dd < 5.0, dd
 print(f"distance to default on that firm: {dd:.2f} standard deviations")
 
+# ---- a highly-levered, genuinely volatile firm must not go unmeasured ----
+# The fixed-point recursion above is fast and right almost everywhere, but a
+# grid search found it gives up (returns None) once leverage climbs past
+# ~18-38x combined with equity volatility near VOL_MAX (1.5). That is
+# exactly the distress case this report exists to surface, and "cannot
+# assess" is the wrong answer for it — a Newton fallback with a numerical
+# Jacobian picks up where the recursion quits. Pin the specific grid that
+# used to come back None, and prove the solution it returns is a real root
+# by feeding it back through the same two equations rather than trusting
+# the solver's own convergence check.
+_leverage_grid = [(dp, vol) for dp in (20, 25, 40, 50, 75, 100)
+                  for vol in (1.40, 1.49, 1.50)]
+for dp, vol in _leverage_grid:
+    got = credit.solve_merton(1.0, dp, vol)
+    assert got is not None, f"default_point={dp} equity_vol={vol} still unsolved"
+    V, sV = got
+    assert V > 0 and sV > 0, (dp, vol, got)
+    # round-trip: an equity option on (V, sV) must price back to what went in
+    rt = sV * math.sqrt(T)
+    d1 = (math.log(V / dp) + (r + sV * sV / 2) * T) / rt
+    d2 = d1 - rt
+    e_implied = V * N(d1) - dp * math.exp(-r * T) * N(d2)
+    se_implied = N(d1) * sV * V / e_implied
+    assert abs(e_implied - 1.0) < 1e-6, (dp, vol, e_implied)
+    assert abs(se_implied - vol) < 1e-6, (dp, vol, se_implied)
+    dd_lev = credit.distance_to_default(V, sV, dp, r)
+    assert dd_lev is not None and dd_lev < 2.5, (dp, vol, dd_lev)
+print(f"{len(_leverage_grid)} high-leverage/high-volatility combinations that used to "
+      f"return None now solve, round-trip exactly, and read as distressed")
+
 # ---- leverage and volatility move it the right way ----
 base = credit.distance_to_default(1000.0, 0.20, 400.0)
 assert credit.distance_to_default(1000.0, 0.20, 800.0) < base, "more debt must be worse"
@@ -731,3 +761,71 @@ assert credit.equity_vs_cap(100e9, None) is None, "no cap available = no check, 
 print("an 8x equity/cap disagreement is refused; a 5% one is not")
 
 print("\nUNIT MISMATCH GUARD PINNED")
+
+
+# ---- delisting evidence: real EDGAR filing histories, not synthetic ones ----
+# The two fixtures below are real subsets of what data.sec.gov actually
+# returned for these two CIKs (fetched and verified against the live API
+# before this was written) — not invented data, because the failure mode
+# this guards against was found by querying the real API, not by
+# imagining one.
+def fake_submissions(forms: list, dates: list, tickers: list | None = None):
+    def get_json(url):
+        assert "submissions/CIK" in url, url
+        return {"tickers": tickers or [], "filings": {"recent": {
+            "form": forms, "filingDate": dates}}}
+    return get_json
+
+
+# Twitter, Inc. (CIK 1418091): went private in the Musk acquisition.
+# Real filing history, in order — an exchange notice, then deregistration
+# nine days later, then nothing that looks like an operating company.
+TWITTER_FORMS = ["10-Q", "8-K", "25-NSE", "4", "4", "SC 13D", "15-12G", "3"]
+TWITTER_DATES = ["2022-07-26", "2022-10-27", "2022-10-28", "2022-10-31",
+                 "2022-10-31", "2022-10-31", "2022-11-07", "2022-11-08"]
+tw = credit.delisting_filing(1418091, fake_submissions(TWITTER_FORMS, TWITTER_DATES))
+assert tw is not None
+assert tw["form"] == "15-12G", tw
+assert tw["filed"] == "2022-11-07", tw
+assert tw["effective"] == "2022-11-07", "a Form 15 is effective on filing, not +10 days"
+assert tw["likely_primary_delisting"] is True, \
+    "no periodic report follows the deregistration — this IS a primary delisting"
+print(f"Twitter's real filing history: {tw['form']} filed {tw['filed']}, "
+      f"read as a primary delisting")
+
+# American Electric Power (CIK 4904): a real, still-trading utility that
+# ALSO has Form 25-NSE filings on record — for a security other than its
+# common stock. This is the exact case that made "presence of a Form 25"
+# insufficient on its own: three of them, and a 10-K every year regardless.
+AEP_FORMS = ["10-K", "25-NSE", "10-Q", "10-Q", "10-Q", "10-K",
+            "25-NSE", "10-Q", "10-K", "10-Q"]
+AEP_DATES = ["2023-02-15", "2023-08-14", "2023-11-01", "2024-05-01",
+            "2024-08-01", "2025-02-14", "2025-08-13", "2025-11-03",
+            "2026-02-13", "2026-05-01"]
+aep = credit.delisting_filing(4904, fake_submissions(AEP_FORMS, AEP_DATES))
+assert aep is not None
+assert aep["form"] == "25-NSE" and aep["filed"] == "2025-08-13", aep
+assert aep["likely_primary_delisting"] is False, \
+    "a 10-K/10-Q followed the delisting filing — AEP is still an operating company"
+print(f"AEP's real filing history: {aep['form']} filed {aep['filed']}, but a "
+      f"10-Q followed on {AEP_DATES[7]} — read as NOT a primary delisting, "
+      f"which is the correct answer for a company still filing 10-Ks in 2026")
+
+# a filer with nothing delisting-shaped on record answers None, not a guess
+clean = credit.delisting_filing(320193, fake_submissions(
+    ["10-K", "10-Q", "8-K"], ["2026-01-01", "2026-04-01", "2026-05-01"]))
+assert clean is None
+print("a filer with no delisting-family filing on record answers None")
+
+# the Form 25 effective-date rule: filing date + 10 BUSINESS days, per
+# 17 CFR 240.12d2-2 — not 10 calendar days, which would land on a weekend
+# here and misstate the actual effective date by two days
+form25 = credit.delisting_filing(1, fake_submissions(["25"], ["2026-03-02"]))
+assert form25["effective"] == "2026-03-16", form25
+# 2026-03-02 is a Monday; +10 business days lands on 2026-03-16, a Monday —
+# crossing two weekends, which +10 calendar days (2026-03-12) would miss
+print(f"a bare Form 25 filed {form25['filed']} (a Monday) is effective "
+      f"{form25['effective']}, 10 BUSINESS days later — not the 10 calendar "
+      f"days that would land two weekends early")
+
+print("\nDELISTING EVIDENCE PINNED")

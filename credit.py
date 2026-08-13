@@ -35,7 +35,7 @@ nothing.
 from __future__ import annotations
 
 import math
-from datetime import date
+from datetime import date, timedelta
 from statistics import NormalDist
 
 _N = NormalDist().cdf
@@ -212,22 +212,25 @@ def equity_volatility(closes) -> float | None:
     return vol
 
 
-def solve_merton(equity: float, default_point: float, equity_vol: float,
-                 rf: float = 0.0375, T: float = HORIZON_YEARS,
-                 iters: int = 300) -> tuple[float, float] | None:
-    """Back out asset value and asset volatility from observable equity.
-
-    Equity is a call option on the firm's assets struck at its debt, so
-    two equations in two unknowns:
-        E   = V*N(d1) - D*exp(-rT)*N(d2)
-        sE*E = N(d1)*sV*V
-    Solved by fixed-point iteration. Returns None if it will not converge
-    — a non-converging solve means the inputs are inconsistent, and a
-    number produced anyway would be arithmetic rather than measurement.
-    """
-    if not (equity > 0 and default_point > 0 and equity_vol and equity_vol > 0):
+def _merton_residual(V: float, sV: float, equity: float, default_point: float,
+                     equity_vol: float, rf: float, T: float
+                     ) -> tuple[float, float] | None:
+    """The two equations, as (f1, f2) that are zero at the true (V, sV)."""
+    if sV <= 1e-9 or V <= 0:
         return None
-    V, sV = equity + default_point, equity_vol * equity / (equity + default_point)
+    rt = sV * math.sqrt(T)
+    d1 = (math.log(V / default_point) + (rf + sV * sV / 2) * T) / rt
+    d2 = d1 - rt
+    nd1, nd2 = _N(d1), _N(d2)
+    f1 = V * nd1 - default_point * math.exp(-rf * T) * nd2 - equity
+    f2 = nd1 * sV * V - equity_vol * equity
+    return f1, f2
+
+
+def _solve_merton_fixed_point(equity: float, default_point: float, equity_vol: float,
+                              rf: float, T: float, V: float, sV: float, iters: int
+                              ) -> tuple[float, float] | None:
+    """Bharath & Shumway's direct recursion — fast, and right most of the time."""
     for _ in range(iters):
         if sV <= 1e-9 or V <= 0:
             return None
@@ -242,7 +245,80 @@ def solve_merton(equity: float, default_point: float, equity_vol: float,
         if abs(V_new - V) / max(V, 1.0) < 1e-10 and abs(sV_new - sV) < 1e-12:
             return V_new, sV_new
         V, sV = V_new, sV_new
-    return None      # did not converge — say so rather than round it off
+    return None      # did not converge here — the fallback gets a turn
+
+
+def _solve_merton_newton(equity: float, default_point: float, equity_vol: float,
+                         rf: float, T: float, V: float, sV: float,
+                         iters: int = 200) -> tuple[float, float] | None:
+    """Damped 2-D Newton, tried only after the fixed point gives up.
+
+    High leverage combined with equity volatility near VOL_MAX is where the
+    fixed-point recursion above stops converging — but a real, well-behaved
+    root still exists there (a highly-levered, genuinely volatile firm is
+    exactly the distress case this report exists to catch). A numerical
+    Jacobian and a halving step keep this from diverging the way the plain
+    recursion does; it is tried second because it costs more per step and
+    the fixed point is right on the overwhelming majority of real inputs.
+    """
+    h = 1e-6
+    for _ in range(iters):
+        f = _merton_residual(V, sV, equity, default_point, equity_vol, rf, T)
+        if f is None:
+            return None
+        f1, f2 = f
+        tol = 1e-9 * max(equity, 1.0)
+        if abs(f1) < tol and abs(f2) < tol:
+            return V, sV
+        fV = _merton_residual(V * (1 + h), sV, equity, default_point, equity_vol, rf, T)
+        fS = _merton_residual(V, sV + h, equity, default_point, equity_vol, rf, T)
+        if fV is None or fS is None:
+            return None
+        dV_step = h * V
+        a = (fV[0] - f1) / dV_step   # df1/dV
+        c = (fV[1] - f2) / dV_step   # df2/dV
+        b = (fS[0] - f1) / h         # df1/dsV
+        d = (fS[1] - f2) / h         # df2/dsV
+        det = a * d - b * c
+        if abs(det) < 1e-14:
+            return None
+        delta_V = (f1 * d - f2 * b) / det
+        delta_S = (a * f2 - c * f1) / det
+        step = 1.0
+        while True:
+            V_new, sV_new = V - step * delta_V, sV - step * delta_S
+            if V_new > 0 and sV_new > 1e-9:
+                break
+            step *= 0.5
+            if step < 1e-6:
+                return None
+        V, sV = V_new, sV_new
+    return None
+
+
+def solve_merton(equity: float, default_point: float, equity_vol: float,
+                 rf: float = 0.0375, T: float = HORIZON_YEARS,
+                 iters: int = 300) -> tuple[float, float] | None:
+    """Back out asset value and asset volatility from observable equity.
+
+    Equity is a call option on the firm's assets struck at its debt, so
+    two equations in two unknowns:
+        E   = V*N(d1) - D*exp(-rT)*N(d2)
+        sE*E = N(d1)*sV*V
+    Tried first by fixed-point iteration (fast, right almost always); a
+    damped Newton solve is tried second, only on the inputs that defeat
+    the fixed point, before this gives up and returns None. Both failing
+    means the inputs are inconsistent, and a number produced anyway would
+    be arithmetic rather than measurement.
+    """
+    if not (equity > 0 and default_point > 0 and equity_vol and equity_vol > 0):
+        return None
+    V0 = equity + default_point
+    sV0 = equity_vol * equity / (equity + default_point)
+    got = _solve_merton_fixed_point(equity, default_point, equity_vol, rf, T, V0, sV0, iters)
+    if got is not None:
+        return got
+    return _solve_merton_newton(equity, default_point, equity_vol, rf, T, V0, sV0)
 
 
 def distance_to_default(asset_value: float, asset_vol: float,
@@ -836,3 +912,71 @@ def shares_outstanding(cik: int, get_json, today: str | None = None) -> dict:
         return {"shares": float(best["val"]), "as_of": best["end"],
                 "tag": f"{tax}:{tag}", "stale_as_of": None}
     return out
+
+
+def _add_days(iso_date: str, days: int) -> str:
+    d = date(*(int(p) for p in iso_date.split("-"))) + timedelta(days=days)
+    return d.isoformat()
+
+
+def _add_business_days(iso_date: str, days: int) -> str:
+    d = date(*(int(p) for p in iso_date.split("-")))
+    added = 0
+    while added < days:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            added += 1
+    return d.isoformat()
+
+
+# Exchange-initiated removal (17 CFR 240.12d2-2): the exchange, or the
+# issuer on the exchange's behalf, notifies the SEC the listing is ending.
+DELISTING_FORMS = {"25", "25-NSE"}
+# Issuer-initiated deregistration: the company itself asks the SEC to end
+# its reporting obligations, usually because it went private or merged.
+DEREGISTRATION_FORMS = {"15", "15-12G", "15-15D"}
+
+
+def delisting_filing(cik: int, get_json) -> dict | None:
+    """The most recent EDGAR evidence that this filer's PRIMARY listing ended.
+
+    get_json(url) -> dict, or raises. Returns None when there is no
+    delisting-family filing on record, which for the overwhelming
+    majority of companies is the right answer, not a gap.
+
+    A Form 25/25-NSE or Form 15 family filing is real evidence, but on
+    its own it claims more than it can support: American Electric Power
+    (CIK 4904) has three of them on file — 2020, 2022, 2023 — and is a
+    still-trading utility that filed a 10-K in 2026. A company can
+    delist ONE class of security (a bond series, a warrant, a preferred
+    share) while its common stock keeps trading, and the submissions
+    endpoint names the FORM, not which security it covered. Treating
+    presence alone as "this company delisted" would have put a real,
+    currently-traded utility on that list.
+
+    So this also checks for a 10-K or 10-Q filed in the year after the
+    newest delisting-family filing. A filer that keeps its periodic
+    reports coming is still a going concern under SEC reporting,
+    whatever it delisted — that is what separates AEP's history (three
+    Form 25-NSEs, and 10-Ks every year regardless) from Twitter's (a
+    Form 25-NSE, a Form 15-12G nine days later, and no 10-K or 10-Q
+    since). `likely_primary_delisting` is False whenever a periodic
+    report follows, and only True when the delisting-family filing is
+    followed by silence.
+    """
+    d = get_json(f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json")
+    recent = ((d or {}).get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+    dates = recent.get("filingDate") or []
+    relevant = DELISTING_FORMS | DEREGISTRATION_FORMS
+    hits = sorted(((f, dt) for f, dt in zip(forms, dates) if f in relevant),
+                 key=lambda h: h[1])
+    if not hits:
+        return None
+    form, filed = hits[-1]
+    effective = _add_business_days(filed, 10) if form in DELISTING_FORMS else filed
+    cutoff = _add_days(filed, 365)
+    still_filing = any(f in ("10-K", "10-Q") and filed < dt <= cutoff
+                       for f, dt in zip(forms, dates))
+    return {"form": form, "filed": filed, "effective": effective,
+           "likely_primary_delisting": not still_filing}
