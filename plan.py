@@ -70,11 +70,13 @@ def trade_plan(row: dict, risk_budget: float = 100.0,
                            f"trade becomes an investment by accident."),
         "days_to_earnings": row.get("days_to_earnings"),
         "earnings_text": (
-            f"Reports in {row['days_to_earnings']} sessions."
+            (f"Reports in {row['days_to_earnings']} sessions."
+             + (" (from Yahoo, not cross-checked against a second source.)"
+                if row.get("earnings_single_source") else ""))
             if row.get("days_to_earnings") is not None else
             "Nothing scheduled in the next 45 sessions — checked against the "
             "published calendar for every trading day in that window."
-            if row.get("cal_complete") else
+            if row.get("cal_covered") else
             "No report date confirmed — check before entering."),
         "wrong_if": (f"It closes below {currency}{rf['stop_price']:.2f}. That is "
                      f"the whole thesis; there is no version of this where you "

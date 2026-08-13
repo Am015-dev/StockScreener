@@ -320,6 +320,43 @@ CREDIT_MAX_AGE_S = 10 * 86400
 CREDIT_REFRESH_S = 20 * 3600
 
 
+def eu_earnings_book(budget_s: float = 180.0, cap: int = 300) -> dict:
+    """Per-ticker earnings dates for EU listings, read from Yahoo alone.
+
+    The bulk calendar screener._earnings_calendar() reads (Nasdaq) is
+    US-only, so a European pick has never had a corroborated earnings
+    date — it got Yahoo's per-ticker answer, or nothing, and the page
+    never said which. This makes that single-source answer explicit,
+    walking the EU names in the scan's own universe (what /today's
+    candidate list actually draws from) within a time budget, on the
+    runner's fresh IP — the same reason the credit book and the bulk
+    calendar itself run here rather than on the web instance.
+
+    Absence from the returned map proves nothing: a name not answered
+    here (budget ran out, or Yahoo had nothing) must still be treated as
+    unverified by the caller, never as clear.
+    """
+    out: dict = {}
+    t0 = time.time()
+    universe = screener._cache.get("universe") or []
+    eu = [t for t in universe if "." in t][:cap]
+    n_tried = 0
+    for t in eu:
+        if time.time() - t0 > budget_s:
+            break
+        n_tried += 1
+        try:
+            days = screener._get_days_to_earnings(t)
+        except Exception:
+            days = None
+        if days is not None:
+            out[t] = days
+    print(f"EU earnings book: {len(out)} of {n_tried} EU names answered "
+          f"({len(eu)} candidates in the universe, {budget_s:.0f}s budget)",
+          file=sys.stderr)
+    return out
+
+
 def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
                 max_names: int = 120, budget_s: float = 420.0,
                 now: float | None = None, caps: dict | None = None) -> dict:
@@ -882,11 +919,27 @@ def main() -> int:
     try:
         cal, cal_ok = screener._earnings_calendar(build=False)
         if cal:
-            (out / "earnings.json").write_text(json.dumps(
-                {"as_of": time.strftime("%Y-%m-%d", time.gmtime()),
-                 "complete": bool(cal_ok), "map": cal}))
+            payload = {"as_of": time.strftime("%Y-%m-%d", time.gmtime()),
+                       "complete": bool(cal_ok), "map": cal}
+            # EU listings have no bulk calendar — Yahoo per-ticker alone,
+            # walked here (fresh runner IP) within a time budget, and
+            # published under its own key so the web instance can label
+            # it single-source rather than reading like a corroborated
+            # US date.
+            try:
+                eu = eu_earnings_book()
+                if eu:
+                    payload["eu"] = {
+                        "as_of": time.strftime("%Y-%m-%d", time.gmtime()),
+                        "source": "yahoo per-ticker", "map": eu}
+            except Exception as e:
+                print(f"EU earnings book not published: {type(e).__name__}: {e}",
+                      file=sys.stderr)
+            (out / "earnings.json").write_text(json.dumps(payload))
             print(f"published earnings calendar: {len(cal)} companies, "
-                  f"{'complete' if cal_ok else 'INCOMPLETE'}")
+                  f"{'complete' if cal_ok else 'INCOMPLETE'}"
+                  + (f"; {len(payload.get('eu', {}).get('map', {}))} EU names "
+                     f"(single source)" if payload.get("eu") else ""))
     except Exception as e:
         print(f"earnings calendar not published: {type(e).__name__}: {e}",
               file=sys.stderr)

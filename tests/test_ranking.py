@@ -76,22 +76,46 @@ ok, why, flags = ranking.filters(cand("NODATE", days_to_earnings=None))
 assert ok and "earnings date unverified" in flags, flags
 print("an unknown report date is flagged rather than assumed clear")
 
-# ...but absence from a COMPLETE calendar is the all-clear, not a gap.
-# The calendar is built by walking every trading day in the next 45, so a
-# name that never appears has nothing scheduled in them. Flagging that as
-# "unverified" put a warning badge on all five live picks and told the
-# reader to go and check the one thing the tool had already checked.
-ok, why, flags = ranking.filters(cand("NODATE", days_to_earnings=None),
-                                 cal_complete=True)
+# ...but absence from a calendar that actually COVERS this name is the
+# all-clear, not a gap. The US bulk calendar is built by walking every
+# trading day in the next 45, so a US name that never appears has
+# nothing scheduled. Flagging that as "unverified" put a warning badge
+# on all five live picks and told the reader to go and check the one
+# thing the tool had already checked.
+ok, why, flags = ranking.filters(cand("NODATE", days_to_earnings=None,
+                                      cal_covered=True))
 assert ok and "earnings date unverified" not in flags, flags
-print("absence from a complete calendar is the all-clear, not a warning")
+print("absence from a calendar that covers this name is the all-clear, not a warning")
+
+# The bug this replaced: a EU name's absence from the (US-only) bulk
+# calendar must NEVER read as its own all-clear, no matter how complete
+# that calendar is globally — cal_covered is per-candidate specifically
+# so a global flag can never leak into a name it was never asked about.
+ok, why, flags = ranking.filters(cand("EUNAME", days_to_earnings=None,
+                                      cal_covered=False))
+assert ok and "earnings date unverified" in flags, \
+    f"a name the calendar does not cover must stay unverified: {flags}"
+print("a EU-shaped name (cal_covered=False) stays unverified even with data present elsewhere")
+
+# a EU name WITH a Yahoo-sourced date is flagged single-source, not silent
+ok, why, flags = ranking.filters(cand("EUDATED", days_to_earnings=30,
+                                      earnings_single_source=True))
+assert ok, (ok, why)
+assert any("one source (Yahoo)" in f for f in flags), \
+    f"a single-source earnings date must say so: {flags}"
+print(f"a EU name with a Yahoo-only date is flagged single-source: {flags}")
 
 p = plan.trade_plan(dict(cand("NODATE", days_to_earnings=None),
-                         cal_complete=True, annual_vol=0.3), risk_budget=100)
+                         cal_covered=True, annual_vol=0.3), risk_budget=100)
 assert "Nothing scheduled" in p["earnings_text"], p["earnings_text"]
 p2 = plan.trade_plan(dict(cand("NODATE", days_to_earnings=None),
                           annual_vol=0.3), risk_budget=100)
 assert "check before entering" in p2["earnings_text"], p2["earnings_text"]
+p3 = plan.trade_plan(dict(cand("EUDATED", days_to_earnings=30),
+                          earnings_single_source=True, annual_vol=0.3),
+                     risk_budget=100)
+assert "not cross-checked" in p3["earnings_text"], p3["earnings_text"]
+print("the trade plan's earnings text carries the single-source caveat too")
 print("  and the plan says which of the two it is, in words")
 
 # ...and it scores in the MIDDLE, not at the top. Unknown must never be

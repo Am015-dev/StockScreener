@@ -104,13 +104,17 @@ rather than taken on trust.
 
 ## Coverage
 
-- **The earnings calendar is US-only.** It comes from Nasdaq's published
-  per-date calendar. Non-US listings — London, Paris, Zurich, Frankfurt,
-  Milan, Copenhagen — cannot have their earnings dates verified from it,
-  so with strict gates on they are **blocked, not published**. That is
-  correct behaviour and a real coverage loss: for a European book, the
-  tool currently finds US stocks. Fixing it needs a second calendar
-  source.
+- **The bulk earnings calendar is US-only** (Nasdaq's published per-date
+  calendar); non-US listings — London, Paris, Zurich, Frankfurt, Milan,
+  Copenhagen — have never had a date corroborated by it. **Non-US dates
+  are read from Yahoo's per-ticker calendar instead, on the scheduled
+  runner — one source, not two.** A US pick's date is checked against
+  the complete bulk calendar (optionally cross-checked against Finnhub
+  too); a European pick's date rests on Yahoo alone, and every place it
+  renders — `/today`, `/full`, the pre-trade check — says so plainly
+  (flagged "single source", never presented as if corroborated). A
+  European name Yahoo cannot supply a date for is still **blocked, not
+  published** — absence from one source proves nothing.
 - **Universe is US main-market tickers plus ten European markets**, US
   names from the SEC's company_tickers_exchange file and EU names from
   per-market screens, ordered by size; the scheduled scan takes the

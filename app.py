@@ -1092,24 +1092,51 @@ def _regime_notes(regime: dict) -> list:
             for region in ("US", "EU") if regime.get(region) is False]
 
 
-def _published_earnings() -> tuple[dict, bool]:
-    """(ticker -> trading days to report, complete) — re-based to today,
-    exactly as screener does for its own stored copy, and refused when
-    older than three days rather than served stale."""
+def _published_earnings() -> tuple[dict, bool, set]:
+    """(ticker -> trading days to report, complete, single_source) —
+    re-based to today, exactly as screener does for its own stored copy,
+    refused when older than three days rather than served stale.
+
+    `complete` is a claim about the US bulk calendar only — it says
+    nothing about EU names. `single_source` names every ticker whose
+    date came from the EU book (Yahoo per-ticker alone, no bulk
+    calendar corroboration), so a caller can tell a US date (backed by a
+    complete calendar) apart from a European one (backed by one source)
+    even though both live in the same returned map.
+    """
     book = _earnings_book()
     m, as_of = book.get("map") or {}, book.get("as_of")
-    if not m or not as_of:
-        return {}, False
-    try:
-        import datetime as _d
-        shift = (_d.date.today()
-                 - _d.date.fromisoformat(str(as_of))).days
-    except (TypeError, ValueError):
-        return {}, False
-    if shift > 3:
-        return {}, False           # stale enough to be wrong about "clear"
-    cal = {t: d - shift for t, d in m.items() if d - shift >= 0}
-    return cal, bool(book.get("complete"))
+    cal: dict = {}
+    fresh = False
+    if m and as_of:
+        try:
+            import datetime as _d
+            shift = (_d.date.today()
+                     - _d.date.fromisoformat(str(as_of))).days
+            if shift <= 3:          # stale enough to be wrong about "clear"
+                cal = {t: d - shift for t, d in m.items() if d - shift >= 0}
+                fresh = True
+        except (TypeError, ValueError):
+            pass
+
+    single_source: set = set()
+    eu = book.get("eu") or {}
+    eu_map, eu_as_of = eu.get("map") or {}, eu.get("as_of")
+    if eu_map and eu_as_of:
+        try:
+            import datetime as _d
+            eu_shift = (_d.date.today()
+                       - _d.date.fromisoformat(str(eu_as_of))).days
+            if eu_shift <= 3:
+                for t, d in eu_map.items():
+                    dd = d - eu_shift
+                    if dd >= 0 and t not in cal:   # US source never overridden
+                        cal[t] = dd
+                        single_source.add(t)
+        except (TypeError, ValueError):
+            pass
+
+    return cal, fresh and bool(book.get("complete")), single_source
 
 
 _credit_view_memo = {"key": None, "data": {}}
@@ -1262,7 +1289,7 @@ def check_trade():
         # the calendar the scan published — same data, already built, so
         # a fresh deploy answers instead of asking the reader to wait out
         # a warm-up they cannot see
-        earn, complete = _published_earnings()
+        earn, complete, _single_source = _published_earnings()
         if earn:
             warming = False
 
@@ -1294,8 +1321,13 @@ def check_trade():
             "book_size": len(pretrade._series_of(book)),
             "ms": round((time.time() - _t_start) * 1000),
             "in_todays_scan": False})
+    # `complete` is a claim about the US bulk calendar only — this
+    # ticker's absence from it is the all-clear only when the calendar
+    # actually covers listings like it, never for a non-US symbol just
+    # because the (US) calendar happened to load complete.
+    complete_for_ticker = complete and screener._region(ticker) == "US"
     res = pretrade.check(
-        ticker, holdings, book, earn, complete,
+        ticker, holdings, book, earn, complete_for_ticker,
         warming=warming or not book,
         risk_eur=(row or {}).get("risk_EUR"),
         reward_eur=((row["risk_EUR"] * row["RR"]) if row and row.get("risk_EUR")
@@ -1316,7 +1348,7 @@ def check_trade():
             dates=[d for d, c in zip((book or {}).get("dates") or [], raw) if c],
             vol=v.get("vol") or (rep or {}).get("equity_vol"),
             credit_rep=rep, earnings_days=(earn or {}).get(ticker),
-            cal_complete=complete,
+            cal_complete=complete_for_ticker,
             risk_budget=float((row or {}).get("risk_EUR") or 100.0))
     except Exception as e:                                  # noqa: BLE001
         print(f"[check] analysis for {ticker}: {type(e).__name__}: {e}",
@@ -1858,7 +1890,7 @@ def _today_candidates(horizon: int) -> list:
     vols = _vol_book() or {}
     creds = _credit_view() or {}
     liq = _liq_book() or {}
-    earn, _complete = _published_earnings()
+    earn, cal_complete, earn_single_source = _published_earnings()
     out = []
     for t, closes in series.items():
         c = [x for x in (closes or []) if x]
@@ -1892,6 +1924,11 @@ def _today_candidates(horizon: int) -> list:
             "is_financial": bool(rep.get("missing") == "financial"
                                  or rep.get("not_modelled") == "financial"),
             "days_to_earnings": (earn or {}).get(t),
+            # absence-from-calendar is only the all-clear for a name the
+            # (complete) US bulk calendar actually covers — an EU name's
+            # absence proves nothing, however complete that calendar is
+            "cal_covered": bool(cal_complete) and screener._region(t) == "US",
+            "earnings_single_source": t in earn_single_source,
             "sector": rep.get("sector"),
         })
     return out
@@ -1922,7 +1959,7 @@ def today_page():
     # once and wasteful on every request, and this is the front page on a
     # free instance that also has to serve everything else. The inputs
     # only change when a book is refreshed, so key on exactly that.
-    earn, cal_complete = _published_earnings()
+    earn, cal_complete, _earn_single_source = _published_earnings()
     regime_notes = _regime_notes(_regime_book())
     key = (_book["ts"], _vols["ts"], _creds["ts"], _earn_pub["ts"],
            _patterns_pub["ts"], round(budget, 2), horizon, cal_complete)
@@ -1932,7 +1969,7 @@ def today_page():
         res = ranking.score(_today_candidates(horizon), holdings=[],
                             patterns_report=_patterns_book(),
                             risk_budget=budget, horizon=horizon,
-                            corr_by_ticker=None, cal_complete=cal_complete)
+                            corr_by_ticker=None)
         _today_memo.update(key=key, res=res)
 
     # A stop does not protect you across a report — the price gaps
@@ -1951,7 +1988,8 @@ def today_page():
 
     picks = []
     for row in res["ranked"][:5]:
-        row = dict(row, cal_complete=cal_complete)
+        # row already carries its own cal_covered/earnings_single_source
+        # from _today_candidates() — per-candidate, not the global flag
         p = plan.trade_plan(row, risk_budget=budget, horizon=horizon)
         if not p.get("usable"):
             continue

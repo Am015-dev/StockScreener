@@ -168,5 +168,25 @@ for each gap before writing code.
   converted at a guessed rate — `KNOWN_ISSUES.md` says "read when they
   report in USD," not "IFRS covered," because the non-USD majority is
   still refused, honestly.
-- Remaining item from the plan (EU earnings verification) is tracked for
-  a follow-up round; this entry covers what shipped in this pass.
+- **EU earnings verification** — **built, not borrowed**; reuses the
+  Yahoo per-ticker client the project already ships (`investpy` is dead,
+  Investing.com blocked it; paid calendars were out of scope).
+  `scripts/scheduled_scan.py::eu_earnings_book()` walks EU tickers on the
+  runner's fresh IP within a time budget and publishes their dates under
+  `earnings.json`'s new `eu` key, separately labelled from the US bulk
+  calendar. **A real fail-open bug was found and closed in the same
+  change**: `ranking.py::filters()` keyed the "absence is the all-clear"
+  logic on a single global `cal_complete` flag, so once the (US-only)
+  bulk calendar loaded, every candidate absent from it — European names
+  included — read as verified-clear. It now reads a per-candidate
+  `cal_covered` (true only for a US name under a complete calendar) and
+  `earnings_single_source` (true for a name whose date came from the EU
+  book alone), so a EU name's absence never borrows the US calendar's
+  completeness, and a EU name WITH a date is labelled single-source
+  everywhere it renders (`/today`'s flag pills and earnings text,
+  `/full`'s flag tooltip, the pre-trade check). The now-fully-superseded
+  `cal_complete` parameter was removed from `ranking.filters()`/`score()`
+  rather than left as dead, ignored input. A stale-memo bug in the new
+  test itself (`tests/test_today_gate.py` reused an identical `ts=9e9`
+  sentinel across two fixture loads, so `_credit_view()`'s cache key
+  never changed) is logged in `MISTAKES.md`.

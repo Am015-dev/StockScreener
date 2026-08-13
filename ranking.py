@@ -107,13 +107,17 @@ def typical_move_pct(annual_vol: float | None,
     return v * math.sqrt(horizon / TRADING_DAYS) * 100
 
 
-def filters(c: dict, horizon: int = DEFAULT_HORIZON,
-            cal_complete: bool = False) -> tuple:
+def filters(c: dict, horizon: int = DEFAULT_HORIZON) -> tuple:
     """(passes, reason, flags) for one candidate.
 
     The reason is written to be read by a person, because it is
     published. A screen that shows only what passed is not evidence of
     anything, and the excluded list is where most of the information is.
+
+    Earnings coverage is read per-candidate (`cal_covered`,
+    `earnings_single_source`), not from a global flag — a global "the US
+    calendar is complete" must never read as clearance for a name that
+    calendar was never asked about.
     """
     flags = []
     px = c.get("price")
@@ -160,14 +164,18 @@ def filters(c: dict, horizon: int = DEFAULT_HORIZON,
     if dte is not None and dte <= horizon + EARNINGS_BUFFER:
         return False, f"reports in {dte} days, inside the {horizon}-session " \
                       f"hold — a report gaps straight through a stop", flags
-    if dte is None and not cal_complete:
+    # Absence from a COMPLETE calendar is the all-clear, not a gap — but
+    # only for a name that calendar actually covers. The US bulk calendar
+    # is built by walking every trading day in the next 45; a US name
+    # that never appears in it has nothing scheduled. A EU name's absence
+    # proves nothing (there is no EU bulk calendar), however complete the
+    # US one is — treating cal_complete as a global all-clear here is
+    # exactly the failure that put "no report due" on European names
+    # nobody had actually checked.
+    if dte is None and not c.get("cal_covered"):
         flags.append("earnings date unverified")
-    # Absence from a COMPLETE calendar is the all-clear, not a gap: the
-    # calendar is built by walking every trading day in the next 45 and
-    # a name that never appears has nothing scheduled in them. Flagging
-    # that as "unverified" put a warning badge on all five names and
-    # told the reader to go and check the one thing the tool had
-    # already checked properly.
+    elif dte is not None and c.get("earnings_single_source"):
+        flags.append("earnings date from one source (Yahoo) — not cross-checked")
 
     if c.get("is_financial"):
         # the Merton model reads a bank's balance sheet as a company's and
@@ -187,8 +195,7 @@ def score(candidates: list, holdings: list | None = None,
           patterns_report: dict | None = None,
           risk_budget: float = 100.0,
           horizon: int = DEFAULT_HORIZON,
-          corr_by_ticker: dict | None = None,
-          cal_complete: bool = False) -> dict:
+          corr_by_ticker: dict | None = None) -> dict:
     """Rank what survives the filters. Pure — no I/O, no network.
 
     Returns every candidate, ranked, each carrying the arithmetic that
@@ -198,7 +205,7 @@ def score(candidates: list, holdings: list | None = None,
     universe = len(candidates or [])
     passed, excluded = [], []
     for c in (candidates or []):
-        ok, why, flags = filters(c, horizon, cal_complete)
+        ok, why, flags = filters(c, horizon)
         row = dict(c, flags=flags)
         if ok:
             passed.append(row)
