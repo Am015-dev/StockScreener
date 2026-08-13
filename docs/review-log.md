@@ -137,7 +137,19 @@ for each gap before writing code.
   broken wheel on Render degrades to the old behaviour rather than a
   500. `KNOWN_THROUGH` now moves forward on every process start instead
   of sitting fixed at a date someone has to remember to extend.
-- Remaining items from the plan (real dollar-volume liquidity, IFRS
-  credit coverage via borrowed `ifrs-full` tag knowledge, EU earnings
-  verification) are tracked for follow-up rounds; this entry covers what
-  shipped in this pass.
+- **Real dollar-volume liquidity on /today** — **built, not borrowed**;
+  no library needed. `scripts/scheduled_scan.py::dollar_volume_book()`
+  computes 30-day average dollar volume per ticker from the same OHLCV
+  frame the scan already downloads (`screener._cache["ohlc"]`), converts
+  through the existing `_to_eur`/FX-rate machinery so a GBp-quoted London
+  line is not read as pounds (verified in `tests/test_scheduled_scan.py`
+  with a synthetic `.L` fixture — a forgotten pence conversion would show
+  up as a ~100x inflated figure, and the test asserts it stays within
+  2x). `ranking.py::filters()` gates on it directly at $50M/day — not an
+  invented number, it is the floor the loosest published preset
+  (wide-net) already enforces — falling back to the pre-existing $2B
+  market-value proxy, flagged, for the names `liquidity.json` has no
+  figure for.
+- Remaining items from the plan (IFRS credit coverage via borrowed
+  `ifrs-full` tag knowledge, EU earnings verification) are tracked for
+  follow-up rounds; this entry covers what shipped in this pass.

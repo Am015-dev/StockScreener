@@ -1028,6 +1028,30 @@ def _earnings_book(fetch: bool = False) -> dict:
     return data
 
 
+_liq_pub = {"ts": 0.0, "data": None}
+
+
+def _liq_book(fetch: bool = False) -> dict:
+    """Published 30-day average dollar volume per ticker, computed by the
+    scan from the same OHLCV frame it already downloads.
+
+    Real liquidity, not the market-cap proxy /today's filter fell back to
+    because volume was never published anywhere. A ticker absent here
+    (FX could not be established, or it never traded in the window) keeps
+    the market-cap fallback — flagged, never silently treated as measured.
+    """
+    if not fetch:
+        return _liq_pub["data"] or {}
+    data = _published_get("liquidity.json")
+    if not data:
+        print(f"[warm] liquidity book: refresh returned nothing, keeping "
+              f"{len(_liq_pub['data'] or {})}", flush=True)
+        return _liq_pub["data"] or {}
+    _liq_pub.update(data=data, ts=time.time())
+    print(f"[warm] liquidity book: {len(data)} tickers", flush=True)
+    return data
+
+
 _regime_pub = {"ts": 0.0, "data": None}
 
 
@@ -1164,6 +1188,10 @@ def _book_refresher():
             _credit_book(fetch=True)
         except Exception as e:
             print(f"[warm] credit book refresh failed: {e}", flush=True)
+        try:
+            _liq_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] liquidity book refresh failed: {e}", flush=True)
         # The books are local file reads on this deployment, so refreshing
         # them is nearly free — and the scan publishes hourly, so an
         # instance that only looked once an hour could sit half an hour
@@ -1828,6 +1856,7 @@ def _today_candidates(horizon: int) -> list:
     series = pretrade._series_of(_price_book()) or {}
     vols = _vol_book() or {}
     creds = _credit_view() or {}
+    liq = _liq_book() or {}
     earn, _complete = _published_earnings()
     out = []
     for t, closes in series.items():
@@ -1837,9 +1866,11 @@ def _today_candidates(horizon: int) -> list:
         rep = creds.get(t) or {}
         px = c[-1]
         # `equity` in a credit report is shares x price — the company's
-        # market value, restated against the latest close. It is the only
-        # size figure published per name, and size is standing in for
-        # liquidity here because share volume is not published at all.
+        # market value, restated against the latest close. Kept as the
+        # fallback liquidity proxy for names liquidity.json has no figure
+        # for (FX could not be established, or the name never traded in
+        # the window) — ranking.filters() flags that fallback, never
+        # treats it as a measurement of the same thing.
         mv = rep.get("equity")
         # vol.json holds {vol, obs, as_of} per name, not a bare float —
         # and a thin estimate is worse than none, because it sets both the
@@ -1848,11 +1879,13 @@ def _today_candidates(horizon: int) -> list:
         av = v.get("vol") if isinstance(v, dict) else v
         if isinstance(v, dict) and (v.get("obs") or 0) < 60:
             av = None
+        adv = (liq.get(t) or {}).get("adv_usd")
         out.append({
             "ticker": t,
             "name": rep.get("name") or t,
             "price": px,
             "market_value": mv if (mv and mv > 0) else None,
+            "adv_usd": adv if (adv and adv > 0) else None,
             "annual_vol": av,
             "dd": rep.get("dd"),
             "is_financial": bool(rep.get("missing") == "financial"
@@ -2218,7 +2251,8 @@ def _warm_books():
                       ("credit book", _credit_book),
                       ("earnings calendar (published)", _earnings_book),
                       ("pattern sweep", _patterns_book),
-                      ("market regime", _regime_book)):
+                      ("market regime", _regime_book),
+                      ("liquidity book", _liq_book)):
         try:
             fn(fetch=True)
         except Exception as e:
@@ -2532,7 +2566,8 @@ def published_route():
                                 "suppressed": bool(os.environ.get("SKIP_WARM"))},
                     "loaded": {"prices": len(pretrade._series_of(_price_book())),
                                "vol": len(_vol_book()),
-                               "credit": len(_credit_book())}})
+                               "credit": len(_credit_book()),
+                               "liquidity": len(_liq_book())}})
 
 
 @app.route("/published/refresh", methods=["POST"])
