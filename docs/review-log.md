@@ -122,8 +122,22 @@ for each gap before writing code.
   number by construction) as a third return value, shown on click.
   **Built, not borrowed** — nothing on GitHub fits a bespoke scoring
   formula's own weights.
-- Remaining items from the plan (`exchange_calendars` for the trading
-  calendar, real dollar-volume liquidity, IFRS credit coverage via
-  borrowed `ifrs-full` tag knowledge, EU earnings verification) are
-  tracked for follow-up rounds; this entry covers what shipped in this
-  pass.
+- **`exchange_calendars`** (github.com/gerrymanoim/exchange_calendars)
+  — **adopted**, replacing `market_clock.py`'s hand-typed HOLIDAYS table
+  (a fixed 20-entry dict, hard-coded through 24 Dec 2027, no half-day
+  handling — the module's own docstring had previously rejected
+  `pandas_market_calendars` as "a poor trade on a 512MB instance" for
+  a fact that small; that judgement is reversed here because the gap
+  (half-days silently treated as full sessions) turned out to matter and
+  the library's cost is bounded to near-zero by scoping the calendar to
+  a ~2.5-year window instead of its full multi-decade history — measured
+  in `tests/test_memory.py`, negligible incremental RSS on top of the
+  pandas/numpy the process already carries). Every `market_clock.py`
+  function falls back to the original table if the import fails, so a
+  broken wheel on Render degrades to the old behaviour rather than a
+  500. `KNOWN_THROUGH` now moves forward on every process start instead
+  of sitting fixed at a date someone has to remember to extend.
+- Remaining items from the plan (real dollar-volume liquidity, IFRS
+  credit coverage via borrowed `ifrs-full` tag knowledge, EU earnings
+  verification) are tracked for follow-up rounds; this entry covers what
+  shipped in this pass.

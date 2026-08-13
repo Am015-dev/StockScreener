@@ -146,4 +146,21 @@ assert len(final) > 0, "simulation must still run with a cold cache"
 
 print(f"\npeak RSS {peak:.0f} MB (ceiling {RSS_CEILING_MB}) · "
       f"databases {stored / 1e6:.0f} MB")
+
+# ---- exchange_calendars adoption must not move the needle ----
+# It replaced market_clock.py's hand-typed HOLIDAYS table; the whole
+# point of bounding the calendar to a ~2.5 year window (never the
+# library's full multi-decade history, never its minute-level APIs) is
+# that this costs single-digit MB, not the tens a naive full-range
+# calendar would cost.
+CLOCK_RSS_CEILING_MB = 40
+before = rss_mb()
+import market_clock
+cal = market_clock._calendar()
+after = rss_mb()
+delta = after - before
+print(f"market_clock + exchange_calendars import: RSS {before:.0f} -> "
+      f"{after:.0f} MB (+{delta:.0f} MB), calendar {'built' if cal else 'unavailable'}")
+assert delta < CLOCK_RSS_CEILING_MB, \
+    f"exchange_calendars adoption cost {delta:.0f}MB, expected under {CLOCK_RSS_CEILING_MB}MB"
 print("ALL MEMORY TESTS PASSED")

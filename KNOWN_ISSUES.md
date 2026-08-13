@@ -114,11 +114,20 @@ rather than taken on trust.
   earlier version of this page wrongly called the universe US-only while
   the blocked list on the front page was visibly full of Paris and
   London listings.)
-- **Half-day sessions are treated as full sessions.** The freshness
-  counter is correct on those days; the closing time is not.
-- **The trading calendar is hard-coded through 24 December 2027.** Past
-  that the page reports the market state as "unknown" rather than
-  assuming every weekday trades.
+- **Half-day sessions now close at the right time.** `market_clock.py`
+  is backed by `exchange_calendars` (adopted over the hand-typed holiday
+  table it used to carry), which knows early closes — Black Friday,
+  Christmas Eve — and reports the market as closed from 1pm ET on those
+  days instead of 4pm. If that library fails to import on a given
+  instance, the module falls back to its old table, which still treats a
+  half day as a full session; the freshness counter (sessions passed) is
+  correct either way, only the closing-time label can be off on the
+  fallback path.
+- **The trading calendar is known roughly 18 months past the last
+  deploy**, not a fixed date — the calendar is rebuilt each time the
+  process starts, bounded to a window around "now" to keep the memory
+  cost trivial. Past that window the page reports the market state as
+  "unknown" rather than assuming every weekday trades.
 
 ## Data sources and what breaks
 
