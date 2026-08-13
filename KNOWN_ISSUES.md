@@ -71,9 +71,13 @@ rather than taken on trust.
   real and comparable; converting it to a percentage requires a
   proprietary default database. The textbook substitute returns
   0.000000% for companies that do sometimes default, so it is not used.
-- **IFRS filers are not covered.** SEC XBRL under `us-gaap` only, so
-  foreign private issuers filing under `ifrs-full` (BTI and similar)
-  report as unmeasurable.
+- **IFRS filers (20-F, `ifrs-full`) are read when they report in USD** —
+  Shell, AstraZeneca, Novartis and similar. A filer that reports only in
+  another currency — GBP, EUR, JPY; BTI is among them — is refused **with
+  the currency named**, because converting a balance sheet at a guessed
+  rate would be a number the model does not mean. `us-gaap` still wins
+  when a filer tags both taxonomies, so which route answers does not flip
+  between runs.
 - **Volatilities that are not volatilities are refused.** Thinly traded
   secondary listings (OTC ADRs, London IOB lines) publish closes that
   sit still for days and jump — the standard deviation of that is a fact

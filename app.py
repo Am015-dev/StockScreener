@@ -1682,7 +1682,8 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     v = (_vol_book() or {}).get(ticker) or {}
     rep = credit.report(ticker, equity, closes, bs["current_liabilities"],
                         bs["total_liabilities"], as_of=bs.get("as_of"),
-                        vol=v.get("vol"), vol_obs=v.get("obs"))
+                        vol=v.get("vol"), vol_obs=v.get("obs"),
+                        currency_refused=bs.get("currency_only"))
     rep["ok"] = True
     rep["source"] = bs.get("source")
     rep["endpoint"] = bs.get("source_endpoint")

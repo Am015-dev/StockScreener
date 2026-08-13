@@ -517,3 +517,68 @@ finally:
     A._credit_book = _saved_book
 
 print("\nLIVE SECTOR GATE PINNED")
+
+
+# ---- an IFRS filer (20-F) reached through the live path ----
+_saved_sec = A._sec_json
+_saved_cik2 = A._cik_for
+_saved_identity2 = A._company_identity
+_saved_book2 = A._credit_book
+try:
+    IFRS_CIK = 999001
+
+    def ifrs_sec(url, timeout=15):
+        if "companyfacts" in url:
+            raise RuntimeError("companyfacts not needed for this fixture")
+        if "ifrs-full/CurrentLiabilities.json" in url:
+            return {"units": {"USD": [{"form": "20-F", "end": PERIOD, "val": 6e10}]}}
+        if "ifrs-full/NoncurrentLiabilities.json" in url:
+            return {"units": {"USD": [{"form": "20-F", "end": PERIOD, "val": 12e10}]}}
+        if url.endswith("EntityCommonStockSharesOutstanding.json"):
+            return {"units": {"shares": [{"form": "20-F", "end": FILED,
+                                          "val": SHARES}]}}
+        return {"units": {}}   # every us-gaap concept: empty
+
+    A._sec_json = ifrs_sec
+    A._cik_for = lambda t, timeout=8.0: IFRS_CIK
+    A._company_identity = lambda cik, timeout=10.0: {
+        "sic": "2911", "sic_desc": "Petroleum Refining", "name": "Shell-Shaped Co"}
+    A._credit_book = lambda fetch=False: {}
+    A._price_book = lambda fetch=False: {"SHLX": PRICES}
+    A._creds.update(data={}, ts=0.0)
+    A._sec_health.update(fails=0, until=0.0)
+    rep = A._credit_for("SHLX")
+    assert rep["dd"] is not None, rep
+    assert rep["source"] == "ifrs-full: current + noncurrent", rep
+    print(f"an IFRS filer reached live is measured via ifrs-full: {rep['source']}")
+
+    # and a GBP-only IFRS filer refuses with the currency named, not the
+    # generic "missing balance sheet"
+    def ifrs_gbp_sec(url, timeout=15):
+        if "companyfacts" in url:
+            raise RuntimeError("companyfacts not needed for this fixture")
+        if "ifrs-full/CurrentLiabilities.json" in url:
+            return {"units": {"GBP": [{"form": "20-F", "end": PERIOD, "val": 6e10}]}}
+        if "ifrs-full/Liabilities.json" in url:
+            return {"units": {"GBP": [{"form": "20-F", "end": PERIOD, "val": 18e10}]}}
+        if url.endswith("EntityCommonStockSharesOutstanding.json"):
+            return {"units": {"shares": [{"form": "20-F", "end": FILED,
+                                          "val": SHARES}]}}
+        return {"units": {}}
+
+    A._sec_json = ifrs_gbp_sec
+    A._price_book = lambda fetch=False: {"BTIX": PRICES}
+    A._creds.update(data={}, ts=0.0)
+    rep_gbp = A._credit_for("BTIX")
+    assert rep_gbp["dd"] is None, rep_gbp
+    assert "GBP" in (rep_gbp.get("verdict") or ""), rep_gbp
+    print(f"a GBP-only IFRS filer reached live refuses with the currency "
+          f"named: {rep_gbp['verdict']}")
+finally:
+    A._sec_json = _saved_sec
+    A._cik_for = _saved_cik2
+    A._company_identity = _saved_identity2
+    A._credit_book = _saved_book2
+    A._price_book = lambda fetch=False: {t: PRICES for t in LEVERAGE}
+
+print("\nIFRS LIVE PATH PINNED")

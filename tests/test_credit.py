@@ -215,6 +215,84 @@ assert credit.balance_sheet(mismatch)["total_liabilities"] is None, \
     "figures from different period ends must not be subtracted from each other"
 print("two dates are never subtracted from one another to manufacture a total")
 
+# ---- IFRS filers (20-F, ifrs-full) ----
+# A GBP-only filer (BTI-shaped): the tags exist, but never in USD. This
+# must read as a specific, named refusal — not indistinguishable from a
+# company that never filed a balance sheet at all.
+bti_shaped = {"facts": {"ifrs-full": {
+    "CurrentLiabilities": {"units": {"GBP": [
+        {"form": "20-F", "end": "2025-12-31", "val": 12e9}]}},
+    "NoncurrentLiabilities": {"units": {"GBP": [
+        {"form": "20-F", "end": "2025-12-31", "val": 30e9}]}},
+    "Liabilities": {"units": {"GBP": [
+        {"form": "20-F", "end": "2025-12-31", "val": 42e9}]}}}}}
+bs_bti = credit.balance_sheet(bti_shaped)
+assert bs_bti["total_liabilities"] is None, bs_bti
+assert bs_bti["current_liabilities"] is None, bs_bti
+assert bs_bti.get("currency_only") == "GBP", bs_bti
+rep_bti = credit.report("BTI", 8e10, rising, None, None,
+                        currency_refused=bs_bti.get("currency_only"))
+assert rep_bti["dd"] is None, rep_bti
+assert "GBP" in rep_bti["verdict"], rep_bti["verdict"]
+assert "missing balance sheet" not in rep_bti["verdict"].lower(), \
+    "a currency refusal must read as a specific fact, not the generic gap"
+print(f"a GBP-only IFRS filer refuses with the currency named: "
+      f"{rep_bti['verdict']}")
+
+# A USD-reporting IFRS filer (Shell-shaped): direct route, ifrs-full.
+shel_shaped = {"facts": {"ifrs-full": {
+    "CurrentLiabilities": {"units": {"USD": [
+        {"form": "20-F", "end": "2025-12-31", "val": 60e9}]}},
+    "Liabilities": {"units": {"USD": [
+        {"form": "20-F", "end": "2025-12-31", "val": 180e9}]}}}}}
+bs_shel = credit.balance_sheet(shel_shaped)
+assert bs_shel["total_liabilities"] == 180e9, bs_shel
+assert bs_shel["taxonomy"] == "ifrs-full", bs_shel
+assert bs_shel["source"] == "ifrs-full: Liabilities", bs_shel
+print(f"a USD-reporting IFRS filer is measured: {bs_shel['source']}")
+
+# the sum-of-halves route, for a filer that tags current+noncurrent but
+# not a combined total (common under ifrs-full)
+shel_halves = {"facts": {"ifrs-full": {
+    "CurrentLiabilities": {"units": {"USD": [
+        {"form": "20-F", "end": "2025-12-31", "val": 60e9}]}},
+    "NoncurrentLiabilities": {"units": {"USD": [
+        {"form": "20-F", "end": "2025-12-31", "val": 120e9}]}}}}}
+bs_halves = credit.balance_sheet(shel_halves)
+assert bs_halves["total_liabilities"] == 180e9, bs_halves
+assert bs_halves["source"] == "ifrs-full: current + noncurrent", bs_halves
+print("an IFRS filer with no combined total is read as current + noncurrent")
+
+# period-end mismatch refuses under ifrs-full exactly as it does under
+# us-gaap — the discipline is not taxonomy-specific
+shel_mismatch = {"facts": {"ifrs-full": {
+    "CurrentLiabilities": {"units": {"USD": [
+        {"form": "20-F", "end": "2025-12-31", "val": 60e9}]}},
+    "NoncurrentLiabilities": {"units": {"USD": [
+        {"form": "20-F", "end": "2024-12-31", "val": 120e9}]}}}}}
+assert credit.balance_sheet(shel_mismatch)["total_liabilities"] is None, \
+    "an ifrs-full mismatch must refuse, the same as a us-gaap one"
+print("a period-end mismatch under ifrs-full refuses too, not just us-gaap")
+
+# taxonomy precedence: a dual-tagger (both present) reads us-gaap — a
+# filer must not flip which route answers between runs
+dual = {"facts": {
+    "us-gaap": {
+        "LiabilitiesCurrent": {"units": {"USD": [
+            {"form": "10-K", "end": "2025-12-31", "val": 10e9}]}},
+        "Liabilities": {"units": {"USD": [
+            {"form": "10-K", "end": "2025-12-31", "val": 20e9}]}}},
+    "ifrs-full": {
+        "CurrentLiabilities": {"units": {"USD": [
+            {"form": "20-F", "end": "2025-12-31", "val": 99e9}]}},
+        "Liabilities": {"units": {"USD": [
+            {"form": "20-F", "end": "2025-12-31", "val": 199e9}]}}},
+}}
+bs_dual = credit.balance_sheet(dual)
+assert bs_dual["taxonomy"] == "us-gaap" and bs_dual["total_liabilities"] == 20e9, \
+    bs_dual
+print("a filer tagged under both taxonomies reads us-gaap, not ifrs-full")
+
 print("\nALL CREDIT-MODEL TESTS PASSED")
 
 # ---- fetching: the cheap endpoint is an optimisation, not the truth ----
@@ -295,6 +373,35 @@ assert bs["total_liabilities"] is None
 assert credit.default_point(bs["current_liabilities"],
                             bs["total_liabilities"]) is None
 print("half a balance sheet yields no default point — the missing half is not assumed")
+
+# ---- IFRS at the fetch level: cheap concepts before the 3.7MB fallback ----
+# A filer with nothing in us-gaap (empty companyconcept responses) but
+# real ifrs-full data (current + noncurrent, no combined total — the
+# common IFRS shape) must be answered by the five small ifrs-full
+# concept calls, never by paying for companyfacts.
+calls = []
+ifrs_concept = {
+    "LiabilitiesCurrent": {"USD": []},
+    "Liabilities": {"USD": []},
+    "LiabilitiesAndStockholdersEquity": {"USD": []},
+    "StockholdersEquity": {"USD": []},
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest": {"USD": []},
+    "CurrentLiabilities": {"USD": CUR},
+    "NoncurrentLiabilities": {"USD": [
+        {"form": "20-F", "end": "2026-06-27", "val": 126e9}]},
+    "Equity": {"USD": []},
+    "EquityAndLiabilities": {"USD": []},
+}
+bs = credit.fetch_balance_sheet(99999, fake_sec(ifrs_concept, calls=calls))
+assert bs["total_liabilities"] == 149e9 + 126e9, bs
+assert bs["taxonomy"] == "ifrs-full", bs
+assert bs["source_endpoint"] == CONCEPT
+assert not any(FACTS in c for c in calls), \
+    "ifrs-full concepts answered cheaply — companyfacts must not be fetched"
+assert any("ifrs-full" in c for c in calls), \
+    "the ifrs-full concepts must actually have been tried"
+print(f"a us-gaap-empty, ifrs-full-populated filer answers from the cheap "
+      f"ifrs-full concepts alone, in {len(calls)} calls — companyfacts untouched")
 
 print("\nALL SEC-FETCH TESTS PASSED")
 
