@@ -8,9 +8,16 @@ Monday. An age counter that keeps ticking through a weekend measures
 the wrong thing — what matters is how many *sessions* have passed, and
 the answer over a weekend is zero.
 
-This module is deliberately dependency-free and self-contained. Adding
-pandas_market_calendars for a fact this small would be a poor trade on
-a 512MB instance.
+Backed by exchange_calendars (github.com/gerrymanoim/exchange_calendars)
+when it is importable, with every function falling back to the original
+hand-typed HOLIDAYS table below if it is not — a broken wheel on Render
+must degrade to the old behaviour, never a 500. The calendar is built
+once, bounded to a roughly two-year window around "now" (never the
+library's full multi-decade history, and never its minute-level APIs),
+so the memory cost on a 512MB instance is a few hundred rows, not a
+astronomical almanac. This replaced an earlier "adding a calendar
+library for a fact this small is a poor trade" judgement in this same
+docstring — see docs/review-log.md for why that call was reversed.
 """
 from __future__ import annotations
 
@@ -20,10 +27,46 @@ import datetime as _dt
 OPEN_H, OPEN_M = 9, 30
 CLOSE_H, CLOSE_M = 16, 0
 
-# Full-day closures. Half-days (1pm close) are deliberately not modelled:
-# treating a half day as a full session is correct for every question this
-# module is asked ("has a session happened since?"), and a wrong half-day
-# rule would be worse than none.
+_CAL = None
+_CAL_TRIED = False
+
+
+def _calendar():
+    """The bounded XNYS calendar, or None if the library is unavailable.
+
+    Built once per process. The window is deliberately short — this
+    module only ever gets asked about "now" and recent scan timestamps,
+    never historical dates — so a few hundred sessions is plenty and
+    keeps the memory cost trivial on a 512MB instance.
+    """
+    global _CAL, _CAL_TRIED
+    if _CAL_TRIED:
+        return _CAL
+    _CAL_TRIED = True
+    try:
+        import exchange_calendars as _xcals
+        today = _dt.date.today()
+        _CAL = _xcals.get_calendar(
+            "XNYS",
+            start=(today - _dt.timedelta(days=400)).isoformat(),
+            end=(today + _dt.timedelta(days=550)).isoformat(),
+        )
+    except Exception:
+        _CAL = None
+    return _CAL
+
+
+def _in_cal_range(cal, d: _dt.date) -> bool:
+    return cal is not None and cal.first_session.date() <= d <= cal.last_session.date()
+
+
+# Full-day closures. This is the fallback table, used whenever the
+# calendar library above did not load or a date falls outside its
+# bounded window — the calendar answers everything within its range,
+# including half-days, which this table still cannot model on its own
+# (treating a half day as a full session is the correct fallback for
+# "has a session happened since?", the only question the pure-Python
+# path is ever asked to answer without the library).
 HOLIDAYS = {
     # 2026
     _dt.date(2026, 1, 1): "New Year's Day",
@@ -49,11 +92,15 @@ HOLIDAYS = {
     _dt.date(2027, 12, 24): "Christmas Day (observed)",
 }
 
-# The last date the holiday table covers. Past this the module reports that
+# The last date this module will answer about. Past this it reports that
 # it does not know, rather than quietly assuming every weekday is a session
 # — a screener that invents a trading calendar will eventually tell someone
-# the market is open on Christmas.
-KNOWN_THROUGH = max(HOLIDAYS)
+# the market is open on Christmas. When the calendar library loaded, this is
+# its actual last built session (which moves forward on every process
+# restart); otherwise it falls back to the last entry in the hand-typed
+# table above.
+KNOWN_THROUGH = (_calendar().last_session.date() if _calendar() is not None
+                  else max(HOLIDAYS))
 
 
 def _eastern_offset(d: _dt.date) -> int:
@@ -72,12 +119,18 @@ def _eastern_offset(d: _dt.date) -> int:
 
 
 def is_session(d: _dt.date) -> bool:
-    """Is this date a regular full trading session?"""
+    """Is this date a regular trading session?"""
+    cal = _calendar()
+    if _in_cal_range(cal, d):
+        return bool(cal.is_session(d.isoformat()))
     return d.weekday() < 5 and d not in HOLIDAYS
 
 
 def previous_session(d: _dt.date) -> _dt.date:
     """The most recent trading session on or before this date."""
+    cal = _calendar()
+    if _in_cal_range(cal, d):
+        return cal.date_to_session(d.isoformat(), direction="previous").date()
     while not is_session(d):
         d -= _dt.timedelta(days=1)
     return d
@@ -115,18 +168,46 @@ def state(now_utc: _dt.datetime | None = None) -> dict:
     off = _eastern_offset(now.date())
     et = now - _dt.timedelta(hours=off)
     today = et.date()
+    cal = _calendar()
+
+    def _cal_close_utc_ts(d: _dt.date) -> float | None:
+        """This session's real close as a UTC epoch, from the calendar's
+        schedule — this is what makes a half-day close at 1pm ET instead
+        of 4pm. None when the calendar is unavailable or d is outside it,
+        in which case every caller below falls back to the fixed hour."""
+        if not _in_cal_range(cal, d):
+            return None
+        try:
+            row = cal.schedule.loc[_dt.datetime(d.year, d.month, d.day)]
+        except KeyError:
+            return None
+        return row["close"].timestamp()
 
     def close_ts(d: _dt.date) -> float:
+        exact = _cal_close_utc_ts(d)
+        if exact is not None:
+            return exact
         o = _eastern_offset(d)
         return _dt.datetime(d.year, d.month, d.day, CLOSE_H, CLOSE_M,
                             tzinfo=_dt.timezone.utc).timestamp() + o * 3600
+
+    def close_minutes_et(d: _dt.date) -> int:
+        """ET minutes-since-midnight this session closes — 780 (1pm) on a
+        half day, the regular 960 (4pm) otherwise or without the library."""
+        exact = _cal_close_utc_ts(d)
+        if exact is None:
+            return CLOSE_H * 60 + CLOSE_M
+        close_et = (_dt.datetime.fromtimestamp(exact, _dt.timezone.utc)
+                    - _dt.timedelta(hours=_eastern_offset(d)))
+        return close_et.hour * 60 + close_et.minute
 
     def open_ts(d: _dt.date) -> float:
         o = _eastern_offset(d)
         return _dt.datetime(d.year, d.month, d.day, OPEN_H, OPEN_M,
                             tzinfo=_dt.timezone.utc).timestamp() + o * 3600
 
-    # beyond the holiday table, say so rather than guess
+    # beyond what the calendar (or the fallback table) covers, say so
+    # rather than guess
     if today > KNOWN_THROUGH:
         return {"state": "unknown", "is_open": False, "holiday": None,
                 "last_close_ts": None, "next_open_ts": None,
@@ -135,7 +216,16 @@ def state(now_utc: _dt.datetime | None = None) -> dict:
                          f"undated rather than guessing."}
 
     minutes = et.hour * 60 + et.minute
-    open_min, close_min = OPEN_H * 60 + OPEN_M, CLOSE_H * 60 + CLOSE_M
+    open_min = OPEN_H * 60 + OPEN_M
+    close_min = close_minutes_et(today)
+    early_close = close_min < CLOSE_H * 60 + CLOSE_M
+    if early_close:
+        h24, m = close_min // 60, close_min % 60
+        h12 = h24 - 12 if h24 > 12 else (12 if h24 == 0 else h24)
+        ampm = "pm" if h24 >= 12 else "am"
+        early_suffix = f" (early close today, {h12}:{m:02d}{ampm} ET)"
+    else:
+        early_suffix = ""
 
     def next_session_after(d: _dt.date) -> _dt.date:
         d += _dt.timedelta(days=1)
@@ -148,18 +238,18 @@ def state(now_utc: _dt.datetime | None = None) -> dict:
             prev = previous_session(today - _dt.timedelta(days=1))
             return {"state": "premarket", "is_open": False, "holiday": None,
                     "last_close_ts": close_ts(prev), "next_open_ts": open_ts(today),
-                    "label": f"US markets open at 9:30am ET — these are "
+                    "label": f"US markets open at 9:30am ET{early_suffix} — these are "
                              f"{prev.strftime('%A')}'s closing prices."}
         if minutes < close_min:
             return {"state": "open", "is_open": True, "holiday": None,
                     "last_close_ts": close_ts(previous_session(today - _dt.timedelta(days=1))),
                     "next_open_ts": None,
-                    "label": "US markets are open — prices are moving now."}
+                    "label": f"US markets are open{early_suffix} — prices are moving now."}
         nxt = next_session_after(today)
         return {"state": "afterhours", "is_open": False, "holiday": None,
                 "last_close_ts": close_ts(today),
                 "next_open_ts": open_ts(nxt) if nxt <= KNOWN_THROUGH else None,
-                "label": "US markets have closed for the day — these are "
+                "label": f"US markets have closed for the day{early_suffix} — these are "
                          "today's closing prices."}
 
     prev = previous_session(today)
@@ -168,6 +258,19 @@ def state(now_utc: _dt.datetime | None = None) -> dict:
     while nxt <= KNOWN_THROUGH and not is_session(nxt):
         nxt = next_session_after(nxt)
     holiday = HOLIDAYS.get(today)
+    if not holiday and today.weekday() < 5 and _in_cal_range(cal, today):
+        # a weekday closure past the hand-typed table's coverage — the
+        # calendar library knows years the fixed table was never updated
+        # for, and naming the holiday beats a bare "closed, unexplained"
+        try:
+            names = cal.regular_holidays.holidays(
+                _dt.datetime(today.year, today.month, today.day),
+                _dt.datetime(today.year, today.month, today.day),
+                return_name=True)
+            if len(names):
+                holiday = str(names.iloc[0])
+        except Exception:
+            pass
     if holiday:
         label = (f"US markets are closed for {holiday} — these are "
                  f"{prev.strftime('%A')}'s closing prices.")

@@ -93,7 +93,12 @@ assert mc.sessions_between(dt.date(2026, 8, 7), dt.date(2026, 8, 7)) == 0
 print("session arithmetic: weekends and holidays skipped, same-day is zero")
 
 # ---- past the known calendar the module must refuse to guess ----
-beyond = dt.datetime(2028, 3, 1, 15, 0, tzinfo=U)
+# dynamic, not a fixed date — the calendar's actual bound moves forward
+# on every process start (or falls back to the hand-typed table's fixed
+# end), so "beyond" must always be computed relative to it, not pinned to
+# a date that could eventually fall INSIDE a future bound
+beyond_date = mc.KNOWN_THROUGH + dt.timedelta(days=60)
+beyond = dt.datetime(beyond_date.year, beyond_date.month, beyond_date.day, 15, 0, tzinfo=U)
 st = mc.state(beyond)
 assert st["state"] == "unknown", st
 assert st["last_close_ts"] is None
@@ -108,6 +113,54 @@ print(f"past {mc.KNOWN_THROUGH}: reports 'unknown' and fails closed rather than 
 assert len(mc.HOLIDAYS) >= 18, len(mc.HOLIDAYS)
 assert mc.KNOWN_THROUGH >= dt.date(2027, 12, 1), mc.KNOWN_THROUGH
 print(f"{len(mc.HOLIDAYS)} holidays known through {mc.KNOWN_THROUGH}")
+
+# ---- half-days: the reason exchange_calendars replaced the fixed table ----
+# Only meaningful when the library actually loaded — the hand-typed
+# HOLIDAYS table has never modelled half-days and is not expected to.
+if mc._calendar() is not None:
+    # the day after Thanksgiving, 27 Nov 2026, closes at 1pm ET (13:00),
+    # not the regular 4pm — 13:30 ET must already read as afterhours
+    black_friday_1330et = dt.datetime(2026, 11, 27, 18, 30, tzinfo=U)
+    st = mc.state(black_friday_1330et)
+    assert st["state"] == "afterhours", st
+    assert "early close" in st["label"], st["label"]
+    print(f"day-after-Thanksgiving half day: {st['label']!r}")
+
+    # Christmas Eve 2026, also a half day
+    xmas_eve_1330et = dt.datetime(2026, 12, 24, 18, 30, tzinfo=U)
+    st = mc.state(xmas_eve_1330et)
+    assert st["state"] == "afterhours", st
+    print("Christmas Eve half day: also reads afterhours by 1:30pm ET")
+
+    # a half day still counts as exactly one session — staleness must not
+    # double-count it or skip it
+    thu_before = dt.datetime(2026, 11, 26, 21, 0, tzinfo=U).timestamp()  # Thanksgiving close (n/a, holiday)
+    wed_close = dt.datetime(2026, 11, 25, 21, 0, tzinfo=U).timestamp()   # Wed 25 Nov close
+    f = mc.staleness(wed_close, dt.datetime(2026, 11, 30, 15, 0, tzinfo=U))  # Monday after
+    assert f["sessions"] == 1, f   # only Fri 27 Nov traded between them (Thu was Thanksgiving)
+    print(f"the half day counts as exactly one session: {f['sessions']}")
+else:
+    print("exchange_calendars not importable in this environment — "
+          "half-day pins skipped, fallback path exercised below instead")
+
+# ---- the fallback path, forced, must reproduce the pre-library behaviour ----
+_saved_cal, _saved_tried = mc._CAL, mc._CAL_TRIED
+try:
+    mc._CAL, mc._CAL_TRIED = None, True   # pretend the import failed
+    assert mc.is_session(dt.date(2026, 8, 7))
+    assert not mc.is_session(dt.date(2026, 8, 8))
+    assert not mc.is_session(dt.date(2026, 9, 7))          # Labor Day
+    assert mc.previous_session(dt.date(2026, 8, 9)) == dt.date(2026, 8, 7)
+    st = mc.state(dt.datetime(2026, 8, 7, 18, 0, tzinfo=U))
+    assert st["state"] == "open", st
+    # the fallback cannot see half-days — this is the documented gap
+    st = mc.state(dt.datetime(2026, 11, 27, 18, 30, tzinfo=U))
+    assert st["state"] == "open", \
+        "the fallback path treats a half day as a full session — expected"
+finally:
+    mc._CAL, mc._CAL_TRIED = _saved_cal, _saved_tried
+print("fallback path (library unavailable) reproduces the original "
+      "weekday/holiday logic, including its known half-day blind spot")
 
 print("\nALL MARKET-CLOCK TESTS PASSED")
 
