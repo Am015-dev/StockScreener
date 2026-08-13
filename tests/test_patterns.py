@@ -224,6 +224,44 @@ bh2 = patterns.benjamini_hochberg(
 assert bh2["a"]["survives"] and not bh2["b"]["survives"]
 print("a strong result in a small family still survives the correction")
 
+# ---- 5b. an edge that only existed in the first half is caught ----
+# The failure that has ended more strategies than bad statistics ever
+# did: the shape really was there, and it was still nothing but the
+# window. Plant a genuine edge in the FIRST half only, then let the
+# search find it and the held-back half refuse to confirm it.
+def half_planted(seed=31, n_days=520, n_tickers=60):
+    rng = random.Random(seed)
+    out = {}
+    for t in range(n_tickers):
+        px, boost = [100.0], 0
+        for d in range(n_days):
+            step = rng.gauss(0.0004, 0.018)
+            # the edge is real, and it stops existing halfway through
+            if boost > 0 and d < n_days // 2:
+                step += 0.0035
+            if boost > 0:
+                boost -= 1
+            px.append(px[-1] * (1 + step))
+            if len(px) > 51 and patterns.p_three_down(px):
+                boost = 5
+        out[f"H{t}"] = [round(x, 4) for x in px]
+    return out
+
+
+hp = half_planted()
+found = patterns.sweep_with_holdout(hp, [5], seeds=60)
+row5 = found[5]["three lower closes in a row"]
+assert row5 and row5.get("survives"), \
+    f"the search did not even find the planted first-half edge: {row5}"
+assert row5.get("confirmed") is False, \
+    f"an edge that stopped existing halfway through was confirmed: {row5}"
+assert "did NOT hold up" in row5["holdout_note"], row5
+print(f"an edge present only in the first half is found ("
+      f"{row5['edge_pct']:+.2f}%) and then refused by the held-back half "
+      f"({row5['holdout']['edge_pct']:+.2f}%)")
+assert "not a finding" in patterns.verdict(row5), patterns.verdict(row5)
+print("  and its verdict says so instead of quoting the flattering number")
+
 # ---- 6. costs are stated, so 'real but not tradeable' is visible ----
 v = patterns.verdict({"survives": True, "edge_pct": 0.10, "horizon": 5,
                       "n": 100, "p": 0.01, "after_costs_pct": -0.10,

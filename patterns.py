@@ -480,6 +480,85 @@ def sweep_many(series: dict, horizons: list, seeds: int = 200,
     return out
 
 
+def split(series: dict, at: float = 0.5) -> tuple:
+    """Cut every stock's history at the same session, into two books.
+
+    The same calendar split for every name, because the whole method
+    compares stocks against each other on a shared day.
+    """
+    lens = [len(v) for v in (series or {}).values() if v]
+    if not lens:
+        return {}, {}
+    n = max(lens)
+    cut = int(n * at)
+    early = {t: v[:cut] for t, v in series.items() if v}
+    late = {t: v[cut:] for t, v in series.items() if v}
+    return early, late
+
+
+def sweep_with_holdout(series: dict, horizons: list, seeds: int = 200,
+                       library: dict | None = None, progress=None,
+                       fdr: float = 0.10, confirm_p: float = 0.05) -> dict:
+    """Find candidates on the first half, then confirm on the second.
+
+    Everything else in this module protects against getting a wrong
+    answer from one body of data. This protects against the other
+    failure, the one that has ended more strategies than bad statistics
+    ever did: the shape really was there, in that window, and it was
+    still nothing but the window.
+
+    So the library is swept on the FIRST half of the history, exactly as
+    before. Whatever survives that is then measured once more on the
+    SECOND half — data it was not chosen on. That second test is a
+    single pre-specified question per candidate, not a search, so it
+    needs no multiplicity correction; it only needs to agree.
+
+    Only a shape that survives both is called confirmed. A shape that
+    looked wonderful in the first half and vanished in the second is
+    reported with both numbers, which is far more useful to a reader
+    than either one alone.
+    """
+    early, late = split(series)
+    if progress:
+        progress(f"searching the first half ({max((len(v) for v in early.values()), default=0)} "
+                 f"sessions), holding back the second "
+                 f"({max((len(v) for v in late.values()), default=0)})")
+    found = sweep_many(early, horizons, seeds=seeds, library=library,
+                       progress=progress, fdr=fdr)
+
+    lib = library or LIBRARY
+    out: dict = {}
+    for h, rows in found.items():
+        out[h] = {}
+        for name, r in rows.items():
+            if not r or not r.get("survives"):
+                out[h][name] = r
+                continue
+            if progress:
+                progress(f"confirming {name} @ {h}d on held-back data")
+            chk = test_pattern(late, lib[name], horizon=h, seeds=seeds)
+            r = dict(r)
+            if not chk:
+                r["holdout"] = None
+                r["confirmed"] = False
+                r["holdout_note"] = ("did not appear often enough in the "
+                                     "held-back half to re-test")
+            else:
+                r["holdout"] = {"edge_pct": chk["edge_pct"], "p": chk["p"],
+                                "n": chk["n"], "days": chk["days"],
+                                "after_costs_pct": chk["after_costs_pct"]}
+                r["confirmed"] = bool(chk["edge_pct"] > 0
+                                      and chk["p"] <= confirm_p)
+                r["holdout_note"] = (
+                    f"held up on data it was not chosen on "
+                    f"({chk['edge_pct']:+.2f}%, p = {p_words(chk['p'])})"
+                    if r["confirmed"] else
+                    f"did NOT hold up on data it was not chosen on "
+                    f"({chk['edge_pct']:+.2f}%, p = {p_words(chk['p'])})")
+            out[h][name] = r
+    return out
+
+
 def sweep(series: dict, horizon: int = DEFAULT_HORIZON, seeds: int = 200,
           library: dict | None = None, progress=None) -> dict:
     """Test every pattern in the library at ONE horizon, then correct.
@@ -527,8 +606,23 @@ def verdict(row: dict | None) -> str:
         return (f"a real difference of {row['edge_pct']:+.2f}% over "
                 f"{row['horizon']} sessions — but round-trip costs of "
                 f"{ROUND_TRIP_COST_PCT}% eat it, so it is not tradeable.")
+    # Surviving the search is not the same as being real. If the shape was
+    # re-tested on data it was not chosen on, that answer outranks
+    # everything above it — a number that vanishes out of sample was the
+    # window, not the market.
+    if "confirmed" in row and not row.get("confirmed"):
+        return (f"{row['edge_pct']:+.2f}% over {row['horizon']} sessions while "
+                f"it was being looked for — but it "
+                f"{row.get('holdout_note', 'was not confirmed')}. Treat it as "
+                f"a property of that window, not a finding.")
+    tail = ""
+    if row.get("confirmed"):
+        hold = row.get("holdout") or {}
+        tail = (f" It was then re-tested on data it was not chosen on and "
+                f"held up ({hold.get('edge_pct', 0):+.2f}%, p = "
+                f"{p_words(hold.get('p'))}).")
     return (f"{row['edge_pct']:+.2f}% over {row['horizon']} sessions against "
             f"buying a random stock that was moving just as much, on the same "
             f"days ({row['n']} occurrences on {row.get('days', '?')} separate "
             f"days, p = {p_words(row.get('p'))}), "
-            f"{row['after_costs_pct']:+.2f}% after costs.")
+            f"{row['after_costs_pct']:+.2f}% after costs.{tail}")
