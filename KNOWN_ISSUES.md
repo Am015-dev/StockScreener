@@ -210,9 +210,14 @@ rather than taken on trust.
   filter is stated as what it is — a $2B floor — and should be replaced
   with real volume when it is available.
 - **/today ranks on survivability, not on direction.** Nothing in the
-  score forecasts a price, and twenty of its hundred points sit unused at
-  zero because no price shape has yet held up on data it was not chosen
-  on. The page says so and reports scores out of 80.
+  score forecasts a price. Two of its four components — how little a name
+  overlaps what you hold, and whether a confirmed pattern is firing —
+  only count once they have actually been earned; today neither has
+  (no portfolio is ever supplied to this page, and nothing on
+  `/patterns` has yet held up on data it was not chosen on), so every
+  score is out of 60 rather than 100, and the page says so plainly
+  rather than quoting a fixed denominator that would overstate how much
+  went into the number.
 
 ## Things that are not implemented
 

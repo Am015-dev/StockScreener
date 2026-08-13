@@ -2000,7 +2000,13 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
     relax_hints: dict = {}
     if near:
         near.sort(key=lambda x: x[0]["score"], reverse=True)
-        near_rows = [row for row, _ in near[:NEAR_MAX]]
+        # rows whose only miss is "unverified" surface separately, as BLOCKED
+        # rows in the main results table (see `pending` below) — keep them
+        # off this board too, or the same ticker shows up twice with two
+        # different, contradictory explanations for why it isn't a pick.
+        near_qualifying = [(row, m) for row, m in near
+                            if not any(g == "unverified" for g, _r in m)]
+        near_rows = [row for row, _ in near_qualifying[:NEAR_MAX]]
         # fundamentals for the board itself — only the shown rows, so at most
         # NEAR_MAX quote calls, all behind the rate-limit breaker
         for row in near_rows:
