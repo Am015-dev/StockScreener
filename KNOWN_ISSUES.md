@@ -156,6 +156,29 @@ rather than taken on trust.
   signal at once, which no real account can do. The portfolio figures
   beside them are the honest ones; both are shown.
 
+- **The pattern sweep still leans towards survivors.** The universe is
+  ranked by dollar volume over the FIRST twenty sessions of the window,
+  not the last, which removes the larger half of the problem — names that
+  took off no longer join the list retroactively. What remains is that
+  companies delisted during the window are absent from the price source
+  altogether, and nothing here brings them back. Any positive number on
+  /patterns should be read as the optimistic end.
+- **A shape covering half the market is largely compared against
+  itself.** The comparison group deliberately includes the pattern's own
+  hits, because the question is whether picking this shape beats picking
+  from the stocks you could have picked. The cost is that a very common
+  shape can never show a large number. This biases towards finding
+  nothing, which is the safe direction.
+- **Liquidity on /today is proxied by market value, not volume.** No
+  per-name share volume is published, and inventing a dollar-volume
+  figure from market cap would dress an assumption as a measurement. The
+  filter is stated as what it is — a $2B floor — and should be replaced
+  with real volume when it is available.
+- **/today ranks on survivability, not on direction.** Nothing in the
+  score forecasts a price, and twenty of its hundred points sit unused at
+  zero because no price shape has yet held up on data it was not chosen
+  on. The page says so and reports scores out of 80.
+
 ## Things that are not implemented
 
 - Sortable table columns, and a per-row score breakdown on click.

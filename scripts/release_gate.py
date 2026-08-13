@@ -196,6 +196,67 @@ def main() -> int:
         check("0.50" in lim and "0.41" in lim,
               "/limits carries both permutation results")
 
+        # ---- the decision page ----
+        # This is the one page the whole site exists to have. Everything
+        # else measures; this decides, and if it is wrong it is wrong in
+        # the direction of somebody losing money.
+        pg.goto(base + "/today", wait_until="load", timeout=90000)
+        td = pg.inner_text("body")
+        check("{{" not in td, "no unrendered template on /today")
+        cards = pg.locator(".card.pick").count()
+        check(cards <= 5, "/today shows at most five names", f"showed {cards}")
+        if cards:
+            # a name without a stop and a share count is not a plan, it is
+            # a tip — which is the thing this product refuses to be
+            check(pg.locator("dl.plan dt", has_text="Stop").count() == cards,
+                  "every name carries a stop")
+            check(pg.locator("dl.plan dt", has_text="Size").count() == cards,
+                  "every name carries a share count")
+            check(pg.locator("dl.plan dt", has_text="Wrong if").count() == cards,
+                  "every name says what would make it wrong")
+        # A price target implies a forecast that was measured here and not
+        # found. It must not creep back in through a template edit.
+        #
+        # Scoped to the plan blocks on purpose: the page itself contains
+        # the sentence "there is no price target anywhere on this page",
+        # so a naive search of the whole body fails on the very promise it
+        # is checking.
+        plans = " ".join(pg.locator(".card.pick dl.plan").all_inner_texts())
+        check("target" not in plans.lower(),
+              "no trade plan prints a price target")
+        check("Risk 1% of your account" in td,
+              "/today carries the position-sizing rule")
+        over = pg.evaluate("() => document.documentElement.scrollWidth - "
+                           "document.documentElement.clientWidth")
+        check(over <= 0, "/today does not scroll sideways on a phone",
+              f"{over}px of overflow")
+
+        # ---- the pattern sweep ----
+        # The credit report shipped once with no route to it from anywhere
+        # a reader would look, and nobody found it for weeks. A page that
+        # cannot be reached is a page that does not exist.
+        pg.goto(base + "/", wait_until="load", timeout=90000)
+        link = pg.locator('a[href="/patterns"]').first
+        check(link.count() > 0 and link.is_visible(),
+              "the front page links to the pattern sweep, visibly")
+        pg.goto(base + "/patterns", wait_until="load", timeout=90000)
+        pat = pg.inner_text("body")
+        check("{{" not in pat, "no unrendered template on /patterns")
+        check("falsified rule" in pat or "Not measured yet" in pat,
+              "/patterns shows the known-worthless control, or says it has "
+              "not run yet")
+        if "Not measured yet" not in pat:
+            # the failures are the point: a page that only lists winners
+            # is the thing this whole module exists to not be
+            check("no better than random" in pat or "too rare" in pat,
+                  "/patterns publishes what failed, not only what survived")
+            check("volatility bucket" in pat,
+                  "/patterns states that the null is volatility-matched")
+        over = pg.evaluate("() => document.documentElement.scrollWidth - "
+                           "document.documentElement.clientWidth")
+        check(over <= 0, "/patterns does not scroll sideways on a phone",
+              f"{over}px of overflow")
+
         check(not js_errors, "no JavaScript errors anywhere",
               "; ".join(js_errors[:3]))
         b.close()

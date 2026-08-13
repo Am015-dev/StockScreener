@@ -212,6 +212,17 @@
       {% endif %}
     </div>
 
+    <div class="card">
+      <p style="margin:0 0 .5rem"><b>Which price shapes actually work</b></p>
+      <p class="tiny" style="margin:0 0 .8rem">Eleven shapes people trade on —
+        three lower closes, a new 20-day high, a 3% drop — each measured against
+        buying a random stock on the same days, so the market's own move is
+        removed before anything is claimed. The failures are published alongside
+        the survivors, because a list of only winners tells you nothing about
+        whether the winners are real.</p>
+      <p style="margin:0"><a href="/patterns">See what was tested →</a></p>
+    </div>
+
     <details class="card" style="padding:.9rem 1.2rem">
       <summary class="tiny" style="cursor:pointer">The pattern screen —
         {{ b.n_qualified }} names{% if b.watchlist and b.n_qualified > b.watchlist|length %}
@@ -281,6 +292,8 @@
     </details>
 
     <footer class="tiny">
+      <a href="/">Today's Five</a> ·
+      <a href="/patterns">Patterns</a> ·
       <a href="/limits">Limits</a> · <a href="/changelog">Changelog</a> ·
       <a href="/full">Full board</a> · <a href="/results.csv">CSV</a><br>
       Research, not advice.

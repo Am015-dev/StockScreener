@@ -58,3 +58,51 @@ the round-2 result.
 Known and deliberate: the credit model refuses banks and insurers by
 SIC, so a bank-heavy portfolio gets overlap and earnings answers but no
 credit standings — correct for Merton, and a real coverage limit.
+
+---
+
+## Round 3 — the pattern sweep, and the decision page
+
+Not a site score. This records what the pattern framework returned the
+first time it was run properly, because the number is the deliverable.
+
+### What was run
+
+400 US companies, 501 trading sessions (2024-08-13 to 2026-08-12), 11
+price shapes at 3 holding periods = 33 combinations. The universe was
+ranked by dollar volume over the FIRST twenty sessions of the window,
+so it is roughly what someone could have screened on that morning
+rather than a list chosen knowing how the two years turned out.
+
+### What it found
+
+**Nothing.** Exactly one combination survived the search — this
+project's own falsified pullback rule, at +0.166% over ten sessions —
+and the held-back half of the history refused it at +0.04%, p = 0.24.
+
+That is the framework reproducing a result it already knew, which is
+the property its own tests demand of it. It also caught, unprompted,
+precisely the kind of false positive it exists to catch: a shape that
+looked significant because it had been searched for.
+
+### How the number moved as controls were added
+
+The same shape, "a single session down 3% or more" at five sessions:
+
+| Control added | Edge | p |
+|---|---|---|
+| date-matched null only, 1 year, universe ranked today | **+1.079%** | below 1e-06 |
+| ...plus volatility-matched comparison group | +0.745% | 0.007 |
+| ...plus 2 years and a start-of-window universe | **-0.115%** | 0.96 |
+
+Every step was a control that should have been there from the start,
+and each one removed roughly half of what looked like an edge. The
+first row is what this project would have published a week ago.
+
+### What shipped alongside it
+
+`/today` — five names, each with an entry, a stop derived from measured
+volatility, a share count sized to a stated risk budget, a deadline, the
+report date, and the condition that would make it wrong. It ranks on
+survivability, not direction, and twenty of its hundred points sit
+unused at zero because no shape has earned them. The page says so.

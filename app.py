@@ -29,7 +29,10 @@ import journal
 import market_clock
 import portfolio_import
 import analysis
+import patterns
+import plan
 import pretrade
+import ranking
 import screener
 
 app = Flask(__name__)
@@ -701,10 +704,16 @@ def _auto_reverify(params, attempts=12, wait=30):
         _auto["running"] = False
 
 
-@app.route("/")
+@app.route("/brief")
 def index():
     """One card, one decision — rendered on the server, so the page is
-    complete when it arrives and never starts a scan to fill itself in."""
+    complete when it arrives and never starts a scan to fill itself in.
+
+    This was the front page until /today existed. It still carries the
+    credit directory and the pre-trade check, which are worth keeping;
+    what it never carried was an answer to "so what do I buy", and that
+    is now the root's job.
+    """
     try:
         m = market_clock.state()
         f = (market_clock.staleness(float(_state["results_ts"]))
@@ -1695,6 +1704,183 @@ def favicon():
            ' fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>')
     return Response(svg, mimetype="image/svg+xml",
                     headers={"Cache-Control": "public, max-age=604800"})
+
+
+_today_memo = {"key": None, "res": None}
+
+
+def _today_candidates(horizon: int) -> list:
+    """Every liquid name the instance knows about, ready to be ranked.
+
+    Built from the books already in memory — prices, volatility, credit,
+    the earnings calendar — so this costs no outbound call. Deliberately
+    NOT built from the pattern screen's output: that screen's entry rule
+    is the one this project falsified, and ranking its survivors would
+    smuggle a dead signal back in through the candidate list.
+    """
+    series = pretrade._series_of(_price_book()) or {}
+    vols = _vol_book() or {}
+    creds = _credit_view() or {}
+    earn, _complete = _published_earnings()
+    out = []
+    for t, closes in series.items():
+        c = [x for x in (closes or []) if x]
+        if len(c) < 20:
+            continue
+        rep = creds.get(t) or {}
+        px = c[-1]
+        # `equity` in a credit report is shares x price — the company's
+        # market value, restated against the latest close. It is the only
+        # size figure published per name, and size is standing in for
+        # liquidity here because share volume is not published at all.
+        mv = rep.get("equity")
+        # vol.json holds {vol, obs, as_of} per name, not a bare float —
+        # and a thin estimate is worse than none, because it sets both the
+        # stop and the share count
+        v = vols.get(t) or {}
+        av = v.get("vol") if isinstance(v, dict) else v
+        if isinstance(v, dict) and (v.get("obs") or 0) < 60:
+            av = None
+        out.append({
+            "ticker": t,
+            "name": rep.get("name") or t,
+            "price": px,
+            "market_value": mv if (mv and mv > 0) else None,
+            "annual_vol": av,
+            "dd": rep.get("dd"),
+            "is_financial": bool(rep.get("missing") == "financial"
+                                 or rep.get("not_modelled") == "financial"),
+            "days_to_earnings": (earn or {}).get(t),
+            "sector": rep.get("sector"),
+        })
+    return out
+
+
+@app.route("/")
+@app.route("/today")
+def today_page():
+    """The five names, with the plan for each — the point of the whole site.
+
+    Everything else here measures. This decides. It is the page a reader
+    opens in the morning, acts on in two minutes, and closes.
+
+    What it will not do is imply a forecast. There is no price target and
+    no buy rating, because the one entry signal this project tested
+    against a null lost to a coin flip twice. What is on offer is a
+    shortlist that will not blow up, sized so that being wrong costs a
+    known amount — which is the part that actually compounds.
+    """
+    horizon = ranking.DEFAULT_HORIZON
+    try:
+        budget = float(request.args.get("risk") or 100.0)
+    except (TypeError, ValueError):
+        budget = 100.0
+    budget = min(max(budget, 1.0), 1e7)
+
+    # Scoring reads every name in the book and ranks it. That is cheap
+    # once and wasteful on every request, and this is the front page on a
+    # free instance that also has to serve everything else. The inputs
+    # only change when a book is refreshed, so key on exactly that.
+    key = (_book["ts"], _vols["ts"], _creds["ts"], _earn_pub["ts"],
+           round(budget, 2), horizon)
+    if _today_memo["key"] == key:
+        res = _today_memo["res"]
+    else:
+        res = ranking.score(_today_candidates(horizon), holdings=[],
+                            patterns_report=_published_get("patterns.json"),
+                            risk_budget=budget, horizon=horizon,
+                            corr_by_ticker=None)
+        _today_memo.update(key=key, res=res)
+
+    # A stop does not protect you across a report — the price gaps
+    # straight through it. That is the whole reason the earnings filter
+    # exists, and when the calendar cannot be read it excludes nothing:
+    # every name comes back "date unknown", gets a flag, and sails
+    # through. Five confident-looking plans with the one check that
+    # matters silently switched off is precisely the failure this project
+    # keeps having, so the list is withheld instead.
+    earn, cal_complete = _published_earnings()
+    if not earn:
+        return render_template("today.html", picks=[], res=res, budget=budget,
+                               horizon=horizon, cost=ranking.ROUND_TRIP_COST_PCT,
+                               blocked="the earnings calendar could not be read")
+
+    picks = []
+    for row in res["ranked"][:5]:
+        p = plan.trade_plan(row, risk_budget=budget, horizon=horizon)
+        if not p.get("usable"):
+            continue
+        p["thesis"] = plan.thesis(row, horizon, rank=len(picks))
+        p["score"] = row["score"]
+        p["components"] = row["components"]
+        p["component_max"] = row.get("component_max") or {}
+        picks.append(p)
+    return render_template("today.html", picks=picks, res=res,
+                           budget=budget, horizon=horizon,
+                           cost=ranking.ROUND_TRIP_COST_PCT)
+
+
+@app.route("/patterns")
+def patterns_page():
+    """Which price shapes were tested, and which of them survived.
+
+    This exists because the honest answer to "does this shape work" is
+    almost always no, and nowhere on the internet shows you the no. Every
+    site that tests patterns publishes the winners; the losers are what
+    tell you whether the winners mean anything. If eleven shapes were
+    tried and one came out at p = 0.04, that is not a discovery, it is
+    arithmetic — and a reader can only see that if the other ten are on
+    the page.
+
+    The measurement runs weekly on a runner, because it needs a year of
+    daily bars for hundreds of names. This page only reads the result.
+    """
+    d = _published_get("patterns.json") or {}
+    rows = []
+    for h, res in sorted((d.get("horizons") or {}).items(),
+                         key=lambda kv: int(kv[0])):
+        for name, r in (res or {}).items():
+            if not r:
+                rows.append({"pattern": name, "horizon": int(h),
+                             "measured": False})
+                continue
+            rows.append({"pattern": name, "horizon": int(h), "measured": True,
+                         "n": r.get("n"), "days": r.get("days"),
+                         "edge_pct": r.get("edge_pct"),
+                         "after_costs_pct": r.get("after_costs_pct"),
+                         "hit_rate_pct": r.get("hit_rate_pct"),
+                         "p": r.get("p"),
+                         "p_text": patterns.p_words(r.get("p")),
+                         "family_size": r.get("family_size"),
+                         "survives": bool(r.get("survives")),
+                         # confirmed = it also held up on the half of the
+                         # history it was NOT chosen on. Surviving the
+                         # search alone never earns the badge.
+                         "confirmed": bool(r.get("confirmed")),
+                         "holdout": r.get("holdout"),
+                         "holdout_note": r.get("holdout_note"),
+                         "tradeable": bool(r.get("survives")
+                                           and r.get("confirmed")
+                                           and (r.get("after_costs_pct") or 0) > 0),
+                         "verdict": patterns.verdict(r)})
+    # strongest first, so the page is read top-down and the reader does
+    # not have to hunt for whether anything worked
+    rows.sort(key=lambda r: (not r.get("tradeable"), not r.get("survives"),
+                             r.get("p") if r.get("p") is not None else 2))
+    measured = [r for r in rows if r.get("measured")]
+    return render_template("patterns.html", d=d, rows=rows,
+                           measured=measured,
+                           unmeasured=len(rows) - len(measured),
+                           # the family every result was corrected against —
+                           # taken from the results rather than counted here,
+                           # so the page cannot claim a correction the
+                           # measurement did not actually apply
+                           family=(measured[0].get("family_size")
+                                   if measured else None),
+                           tradeable=[r for r in rows if r.get("tradeable")],
+                           cost=patterns.ROUND_TRIP_COST_PCT,
+                           min_days=patterns.MIN_DAYS,
+                           source=_published_reads.get("patterns.json"))
 
 
 @app.route("/limits")

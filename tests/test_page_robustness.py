@@ -1,9 +1,14 @@
-"""The home page must render whatever ends up in a results row.
+"""The brief page must render whatever ends up in a results row.
 
 Rows arrive from a scan, a CSV reload, a published payload and a snapshot
 mirrored out of someone's browser. Any of them can be a schema older than
-the running code. A 500 here is total unavailability: the whole product is
-one page.
+the running code. A 500 here loses the credit directory and the pre-trade check
+at once.
+
+This exercises /brief rather than the root. It was written when the
+brief WAS the root; the root is now Today's Five, which reads none
+of these fields and would make this six hundred rescorings of the
+whole universe testing nothing.
 """
 import os, sys, tempfile, time, itertools, random
 T = tempfile.mkdtemp()
@@ -40,7 +45,7 @@ for fld, junk in itertools.product(FIELDS, JUNK):
     A._state.update(results=[row], top_picks=[row], pending=[],
                     results_ts=time.time(), status="done")
     n += 1
-    if c.get("/").status_code != 200:
+    if c.get("/brief").status_code != 200:
         bad.append((fld, repr(junk)))
 
 # whole rows of junk, and missing keys
@@ -50,7 +55,7 @@ for _ in range(400):
                     results_ts=random.choice([None, time.time(), 0]),
                     status="done")
     n += 1
-    if c.get("/").status_code != 200:
+    if c.get("/brief").status_code != 200:
         bad.append(("random", repr(row)[:120]))
 
 print(f"{n} corrupted-row renders")
@@ -69,7 +74,7 @@ import re as _re
 A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
                 top_picks=[GOOD], pending=[], results_ts=time.time(),
                 status="done")
-_html = c.get("/").get_data(as_text=True)
+_html = c.get("/brief").get_data(as_text=True)
 _tbl = _re.search(r'<table class="wl".*?</table>', _html, _re.S)
 assert _tbl, "the watchlist table did not render"
 _rows = _re.findall(r"<tr[^>]*>(.*?)</tr>", _tbl.group(0), _re.S)
@@ -96,7 +101,7 @@ try:
     A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
                     top_picks=[GOOD], pending=[], results_ts=time.time(),
                     status="done")
-    _html = c.get("/").get_data(as_text=True)
+    _html = c.get("/brief").get_data(as_text=True)
     _above = _html.split("<details")[0]
     _links = _re.findall(r'href="/credit/([A-Z0-9.\-]+)"', _above)
     assert _links, "no link to a credit report before the collapsed section"
@@ -116,7 +121,7 @@ finally:
 # feature
 A._credit_book = lambda fetch=False: {}
 try:
-    _html = c.get("/").get_data(as_text=True)
+    _html = c.get("/brief").get_data(as_text=True)
     assert 'id="crTicker"' in _html.split("<details")[0]
     assert "No company has been measured yet" in _html
     print("with nothing measured the way in is still there, and says why it is empty")
@@ -134,7 +139,7 @@ print("\nCREDIT REPORT REACHABILITY PINNED")
 # question and a blank page under it: no brief, no pre-trade check, no
 # credit reports. Rendered it in a real browser to find that out, which
 # is the only way a display:none is visible at all.
-_html = c.get("/").get_data(as_text=True)
+_html = c.get("/brief").get_data(as_text=True)
 
 assert '<div id="main">' in _html, \
     "the page's own content must not ship hidden"
@@ -165,7 +170,7 @@ print("skipping the holdings question is remembered on the next visit")
 A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
                 top_picks=[GOOD], pending=[], results_ts=time.time(),
                 status="done")
-_html = c.get("/").get_data(as_text=True)
+_html = c.get("/brief").get_data(as_text=True)
 assert "Closest to the setup today" not in _html
 assert "Nothing to do today" not in _html
 print("no trade is recommended anywhere on the page")
@@ -202,7 +207,7 @@ print("/full states the falsification before it shows a row")
 # saw, and the review's biggest single deduction for value density. The
 # ask is now one line above the day's news; the form appears only when
 # the reader asks for it.
-_html = c.get("/").get_data(as_text=True)
+_html = c.get("/brief").get_data(as_text=True)
 assert 'id="ownInvite"' in _html, "the slim invitation must exist"
 _i_invite = _html.find('id="ownInvite"')
 _i_gate = _html.find('id="ownGate"')

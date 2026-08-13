@@ -1,0 +1,240 @@
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Which price shapes actually work</title>
+<style>
+  :root {
+    --bg:#faf9f7; --card:#fff; --line:#e3e1dc; --ink:#1a1917; --ink-2:#5c5a55;
+    --ink-3:#87857f; --accent:#2a78d6; --green:#157f5b; --amber:#97650a;
+    --red:#c8442c; --flat:#8a8880;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+      --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+      --amber:#d9a02c; --red:#e5705a; --flat:#7d7b75;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+    --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+    --amber:#d9a02c; --red:#e5705a; --flat:#7d7b75;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:17px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:48rem; margin:0 auto; padding:2rem 1.15rem 4rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:1.4rem 1.35rem; margin:0 0 1.1rem; }
+  h1 { font-size:1.5rem; margin:0 0 .1rem; letter-spacing:-.015em; }
+  h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.09em;
+       color:var(--ink-3); margin:0 0 .8rem; font-weight:640; }
+  p { margin:0 0 .8rem; } p:last-child { margin-bottom:0; }
+  .lead { font-size:1.35rem; line-height:1.35; font-weight:640; margin:0 0 .8rem;
+          letter-spacing:-.015em; }
+  .tiny { color:var(--ink-3); font-size:.82rem; line-height:1.55; }
+  .muted { color:var(--ink-2); font-size:.92rem; }
+  .ok { color:var(--green); } .warn { color:var(--amber); } .bad { color:var(--red); }
+  a { color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:.92rem;
+          font-variant-numeric:tabular-nums; }
+  th, td { padding:.5rem .35rem; border-bottom:1px solid var(--line); text-align:left;
+           vertical-align:top; }
+  th { font-size:.7rem; text-transform:uppercase; letter-spacing:.07em;
+       color:var(--ink-3); font-weight:640; }
+  td.r, th.r { text-align:right; white-space:nowrap; }
+  .scroll { overflow-x:auto; }
+  .name { min-width:14rem; }
+  .pill { display:inline-block; font-size:.7rem; font-weight:680; padding:.1rem .45rem;
+          border-radius:999px; letter-spacing:.03em; white-space:nowrap; }
+  .pill.no { background:color-mix(in srgb, var(--flat) 15%, transparent); color:var(--ink-3); }
+  .pill.yes { background:color-mix(in srgb, var(--green) 18%, transparent); color:var(--green); }
+  .pill.thin { background:color-mix(in srgb, var(--amber) 18%, transparent); color:var(--amber); }
+  tr.dim td { color:var(--ink-2); }
+  .num.neg { color:var(--ink-2); }
+  dl { margin:0; } dt { font-weight:640; margin:.9rem 0 .15rem; font-size:.95rem; }
+  dt:first-child { margin-top:0; }
+  dd { margin:0; color:var(--ink-2); font-size:.94rem; }
+
+  /* On a phone the table's useful columns — after costs, and the verdict —
+     sit off the right edge, so the reader is shown the shape's name and a
+     sideways scrollbar. Stack each result into its own block instead: the
+     verdict leads, the numbers follow with their labels attached. */
+  @media (max-width:560px) {
+    table, tbody, td { display:block; width:100%; }
+    thead { position:absolute; left:-9999px; }
+    tr { display:flex; flex-direction:column;
+         border-bottom:1px solid var(--line); padding:.7rem 0; }
+    tr:last-child { border-bottom:0; }
+    td { border:0; padding:.1rem 0; text-align:left !important; }
+    /* name, then the verdict, then the arithmetic behind it — the order
+       someone reading on a phone actually needs it in */
+    td.name { order:-2; font-weight:640; font-size:1rem; margin-bottom:.15rem; }
+    td.verdict { order:-1; }
+    td[data-l]::before { content:attr(data-l) " "; color:var(--ink-3);
+                         font-size:.78rem; text-transform:uppercase;
+                         letter-spacing:.06em; }
+  }
+</style>
+
+<div class="wrap">
+  <p class="tiny" style="margin:0 0 1rem"><a href="/">← Today's Five</a></p>
+
+  {% if not rows %}
+  <div class="card">
+    <h1>Which price shapes actually work</h1>
+    <p class="lead" style="margin-top:.6rem">Not measured yet on this build.</p>
+    <p class="muted">The sweep needs a year of daily closes for several hundred
+      companies, so it runs weekly on a build machine rather than here. Until it
+      has run once, this page has nothing to report — and an empty page is the
+      right answer, because the alternative is showing you numbers nobody
+      produced.</p>
+    {% if source %}<p class="tiny">Last read: {{ source }}.</p>{% endif %}
+  </div>
+  {% else %}
+
+  <div class="card">
+    <h1>Which price shapes actually work</h1>
+    {% if tradeable %}
+    <p class="lead" style="margin-top:.6rem">
+      {{ tradeable|length }} of {{ measured|length }} shapes beat a random stock
+      that was moving just as much — and then held up on data they were not
+      chosen on.</p>
+    <p class="muted">Two hurdles, not one. The first is beating a stock of the
+      same volatility on the same day, which removes both the market's move and
+      the shape's habit of picking violent names. The second is being re-measured
+      on the half of the history the search never saw. Only these cleared both.</p>
+    {% else %}
+    <p class="lead" style="margin-top:.6rem">
+      Nothing held up. None of the {{ measured|length }} shapes tested is worth
+      trading.</p>
+    <p class="muted">That is the finding, not a failure to find one. Every shape
+      here is sold somewhere as a signal. Each was measured against buying a
+      random stock <em>that was moving just as much</em>, on the same day — which
+      removes the market's move and the fact that most of these shapes only fire
+      in violent stocks. What survived that was then re-tested on the half of the
+      history it was not chosen on.</p>
+    <p class="muted"><strong>What this is worth to you:</strong> it is the list of
+      things not to spend money on. This project lost months to a shape nobody
+      tested until the end, and a coin flip turned out to do the same job.
+      Everything below was tested first.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Every shape tried, including the ones that failed</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="name">Shape</th>
+            <th class="r">Held</th>
+            <th class="r">Edge</th>
+            <th class="r">After costs</th>
+            <th class="r">Days</th>
+            <th class="r">p</th>
+            <th class="r">Held up after</th>
+            <th class="r">Verdict</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for r in rows %}
+          <tr class="{{ '' if r.survives else 'dim' }}">
+            <td class="name">{{ r.pattern }}</td>
+            <td class="r" data-l="Held">{{ r.horizon }}d</td>
+            {% if r.measured %}
+            <td class="r num {{ '' if r.edge_pct > 0 else 'neg' }}" data-l="Edge">{{ '%+.2f'|format(r.edge_pct) }}%</td>
+            <td class="r num {{ '' if r.after_costs_pct > 0 else 'neg' }}" data-l="After costs">{{ '%+.2f'|format(r.after_costs_pct) }}%</td>
+            <td class="r" data-l="Days">{{ r.days }}</td>
+            <td class="r" data-l="p">{{ r.p_text }}</td>
+            <td class="r" data-l="Held up after">
+              {% if r.holdout %}{{ '%+.2f'|format(r.holdout.edge_pct) }}%
+              {% elif r.survives %}—{% endif %}</td>
+            <td class="r verdict">
+              {% if r.tradeable %}<span class="pill yes">confirmed</span>
+              {% elif r.survives and not r.confirmed %}<span class="pill thin">found, did not hold up</span>
+              {% elif r.survives %}<span class="pill thin">real, too small</span>
+              {% else %}<span class="pill no">no better than random</span>{% endif %}
+            </td>
+            {% else %}
+            <td class="r verdict" colspan="6" style="text-align:left;color:var(--ink-3)">
+              did not appear on {{ min_days }} separate days — too rare here to measure</td>
+            {% endif %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="tiny" style="margin-top:.9rem">"Edge" is the shape's average return
+      minus the average return of every stock trading on the same days, so a day
+      the whole market rose counts for nothing. "After costs" subtracts a
+      {{ cost }}% round trip. "p" is how often random entry on those same days did
+      as well.</p>
+  </div>
+
+  <div class="card">
+    <h2>How this is measured</h2>
+    <dl>
+      <dt>The market's move is removed before anything else</dt>
+      <dd>A shape that happens to fire on days the whole market rallied will show
+        a beautiful average return and mean nothing. Every shape here is scored
+        against what a random stock did on exactly the same days.</dd>
+
+      <dt>And so is the stock's own violence</dt>
+      <dd>That still is not enough. Most of these shapes — a 3% day, a week of
+        big moves, a new low — only ever fire in stocks that are moving hard, and
+        stocks that move hard behave differently from the quiet majority whatever
+        shape they made. Measured against any stock at all, this list produced
+        eleven "winners", every one of them a volatility shape. So the comparison
+        group is drawn from the same volatility bucket on the same day: what did
+        stocks moving <em>this</em> much, on <em>this</em> day, do next? What is
+        left after that belongs to the shape.</dd>
+
+      <dt>The day is the unit, not the stock</dt>
+      <dd>Three hundred stocks firing on four days is four observations, not three
+        hundred — they all shared those four days' weather. This is not a
+        technicality: it is the exact error that made this framework declare a
+        known-worthless rule significant the first time it met real data. A shape
+        must appear on at least {{ min_days }} separate days to be scored at all.</dd>
+
+      <dt>Testing many things is paid for</dt>
+      <dd>At the usual threshold, one shape in twenty looks significant by luck
+        alone.{% if family %} All {{ family }} measurements — every shape at every
+        holding period — are corrected together, so trying a second holding
+        period does not buy a second free ticket in the same lottery, and a lucky
+        row cannot be lifted out and shown on its own.{% endif %}</dd>
+
+      <dt>Costs come out before the verdict</dt>
+      <dd>A real effect smaller than the spread is a way to pay a broker. Anything
+        that survives the statistics but not the {{ cost }}% round trip is labelled
+        "real, too small" rather than sold as an edge.</dd>
+
+      <dt>A known-worthless rule is left in on purpose</dt>
+      <dd>This project's own pullback rule is in the list above. It was falsified
+        against coin-flip entry, twice. It is kept as a control: a framework that
+        cannot reproduce a result it already knows is wrong is not measuring
+        anything.</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>What this was measured on</h2>
+    <p class="muted">{{ d.tickers }} of the most heavily traded US companies,
+      {{ d.sessions }} trading sessions{% if d.from %} from {{ d['from'] }} to
+      {{ d.to }}{% endif %}. {{ rows|length }} shape-and-holding-period
+      combinations, each against {{ d.seeds }} random redraws{% if unmeasured %};
+      {{ unmeasured }} of them appeared on too few separate days to score{% endif %}.</p>
+    <p class="tiny">One window of one market. A shape that did nothing here may
+      have worked in another decade, and a shape that worked here may not work
+      next year — which is why the whole list is published rather than the best
+      row of it.</p>
+    <p class="tiny"><strong>The bias that is still in here:</strong> those
+      companies were picked because they are heavily traded <em>today</em>, and
+      then the year was replayed. Names that collapsed over the year fell out of
+      that list and names that took off joined it, so the whole pool is tilted
+      towards things that went up. It is why the comparison group is drawn from
+      the same pool — both sides carry the same tilt, so it largely cancels — but
+      "largely" is not "entirely", and any positive number here should be read
+      as the optimistic end.{% if source %} Read from the {{ source }}.{% endif %}</p>
+  </div>
+  {% endif %}
+</div>
