@@ -1706,6 +1706,9 @@ def favicon():
                     headers={"Cache-Control": "public, max-age=604800"})
 
 
+_today_memo = {"key": None, "res": None}
+
+
 def _today_candidates(horizon: int) -> list:
     """Every liquid name the instance knows about, ready to be ranked.
 
@@ -1774,13 +1777,20 @@ def today_page():
         budget = 100.0
     budget = min(max(budget, 1.0), 1e7)
 
-    cands = _today_candidates(horizon)
-    holdings = []
-    corr = None
-    res = ranking.score(cands, holdings=holdings,
-                        patterns_report=_published_get("patterns.json"),
-                        risk_budget=budget, horizon=horizon,
-                        corr_by_ticker=corr)
+    # Scoring reads every name in the book and ranks it. That is cheap
+    # once and wasteful on every request, and this is the front page on a
+    # free instance that also has to serve everything else. The inputs
+    # only change when a book is refreshed, so key on exactly that.
+    key = (_book["ts"], _vols["ts"], _creds["ts"], _earn_pub["ts"],
+           round(budget, 2), horizon)
+    if _today_memo["key"] == key:
+        res = _today_memo["res"]
+    else:
+        res = ranking.score(_today_candidates(horizon), holdings=[],
+                            patterns_report=_published_get("patterns.json"),
+                            risk_budget=budget, horizon=horizon,
+                            corr_by_ticker=None)
+        _today_memo.update(key=key, res=res)
 
     # A stop does not protect you across a report — the price gaps
     # straight through it. That is the whole reason the earnings filter
