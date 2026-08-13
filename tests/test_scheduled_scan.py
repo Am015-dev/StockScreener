@@ -368,7 +368,7 @@ def _fake_sec_get(url, timeout=20):
 scheduled_scan._sec_get = _fake_sec_get
 # every fake company is an industrial unless a test says otherwise —
 # without this the guard would try a real streamed read of sec.gov
-scheduled_scan._sic_of = lambda cik: "3711"
+scheduled_scan._company_identity = lambda cik: {"sic": "3711", "sic_desc": None, "name": None}
 _cb_prices = {"dates": DATES if False else [f"d{i}" for i in range(60)],
               "series": {"AAA": [100.0] * 60, "BBB": [100.0] * 60}}
 _cb_vols = {"AAA": {"vol": 0.25, "obs": 900}, "BBB": {"vol": 0.25, "obs": 900}}
@@ -515,11 +515,11 @@ _sic_asked = []
 
 def _sic_financial(cik):
     _sic_asked.append(cik)
-    return "6324" if cik == 2 else "3711"
+    return {"sic": "6324" if cik == 2 else "3711", "sic_desc": None, "name": None}
 
 
 scheduled_scan._sec_get = _fake_sec_get
-scheduled_scan._sic_of = _sic_financial
+scheduled_scan._company_identity = _sic_financial
 _fin = scheduled_scan.credit_book(["AAA", "BBB"], _cb_prices, _cb_vols,
                                   now=1_000_000)
 assert _fin["AAA"]["dd"] is not None, "the industrial is still measured"
@@ -527,6 +527,22 @@ assert _fin["BBB"]["dd"] is None and _fin["BBB"]["not_modelled"], _fin["BBB"]
 assert "not modelled" in _fin["BBB"]["verdict"]
 assert _fin["BBB"]["sic"] == "6324" and _fin["BBB"]["built"] == 1_000_000
 print("an insurer is published as 'not modelled', with the reason attached")
+
+# ---- name and sector name ride the same streamed read as sic ----
+_named = scheduled_scan.credit_book(["AAA"], _cb_prices, _cb_vols, now=2_000_000)
+assert "sic_desc" in _named["AAA"] and "name" in _named["AAA"], _named["AAA"]
+print("a measured entry carries the fields alongside sic, even when both are None here")
+
+# an entry carried forward from BEFORE this existed has no "sic_desc"/"name"
+# key at all — it must round-trip with no KeyError, not be purged like a
+# pre-sector-guard entry (a missing display name is cosmetic, not a defect
+# in what the number means, so it does not force a re-measurement)
+_old_shape = {"AAA": {"ticker": "AAA", "dd": 3.1, "sic": "3711",
+                      "capck": True, "built": 2_000_000 - 60}}
+_carried_forward = scheduled_scan.credit_book([], _cb_prices, _cb_vols,
+                                              prev=_old_shape, now=2_000_000)
+assert _carried_forward.get("AAA", {}).get("dd") == 3.1, _carried_forward.get("AAA")
+print("an entry from before name/sector tracking existed carries forward, no KeyError")
 
 # entries built before the sector guard existed carry no "sic" and must
 # be re-measured, not carried — that is how MOH leaves the book
@@ -543,7 +559,7 @@ _kept = scheduled_scan.credit_book(["BBB"], _cb_prices, _cb_vols,
 assert _kept["BBB"]["not_modelled"] and not _sic_asked
 print("the refusal is carried forward without asking the SEC again")
 
-scheduled_scan._sic_of = lambda cik: "3711"
+scheduled_scan._company_identity = lambda cik: {"sic": "3711", "sic_desc": None, "name": None}
 
 
 # ---- a name that cannot be measured is an answer, not a queue poison ----

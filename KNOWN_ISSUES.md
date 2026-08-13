@@ -83,6 +83,20 @@ rather than taken on trust.
   filings the distance is re-solved against the latest close with the
   filing held constant, and the report says so where the reader can see
   it.
+- **Sector-relative standing needs the sector to be well covered.** The
+  percentile is computed against the exact SEC SIC code first, its
+  2-digit major group second, and the whole measured book last — the
+  first level with at least 5 other measured names. On the current book
+  (~830 names) the exact code clears that bar for well under half of
+  them; most names get the major-group comparison, and a rare industry
+  gets the whole market, which the page states plainly rather than
+  showing a sector figure that would mean nothing.
+- **Distance at other horizons holds this quarter's volatility and the
+  risk-free rate constant across the whole window.** That gets weaker
+  the further out it is stretched — a refinancing, an acquisition, a
+  rate-regime change can all happen inside five years and none of them
+  are in the model — which is why the multi-horizon view stops at 5
+  years rather than extending toward Moody's 10-year term structure.
 
 ## Coverage
 

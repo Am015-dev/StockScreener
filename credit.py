@@ -35,6 +35,7 @@ nothing.
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, timedelta
 from statistics import NormalDist
 
@@ -96,6 +97,35 @@ def is_financial(sic) -> bool:
     except (TypeError, ValueError):
         return False
     return FINANCIAL_SIC[0] <= code <= FINANCIAL_SIC[1]
+
+
+def parse_submissions_identity(buf: bytes) -> dict:
+    """SIC code, sector name and legal name from a SEC submissions buffer.
+
+    The two files that fetch this (app.py, scripts/scheduled_scan.py)
+    stream the submissions endpoint and stop after ~64KB rather than
+    downloading a filing history nobody asked for — so `buf` is very
+    often a TRUNCATED, invalid JSON document. This is a regex on the raw
+    bytes rather than json.loads for exactly that reason: the buffer is
+    not guaranteed to parse and never will be.
+
+    All three fields sit within the first few hundred bytes of any real
+    filer's submissions JSON (`cik, entityType, sic, sicDescription,
+    ownerOrg, ..., name, tickers, ...`), well inside the truncation
+    window — the SIC lookup this project already made was paying for
+    this data and discarding it. `formerNames` appears later in the
+    payload and also contains nested "name" keys; taking the FIRST match
+    is what keeps this reading the top-level field and not a former one.
+
+    Never raises. Any field not found is None — a truncated or garbage
+    buffer is a data gap, not an error.
+    """
+    m_sic = re.search(rb'"sic"\s*:\s*"?(\d{2,4})"?', buf)
+    m_desc = re.search(rb'"sicDescription"\s*:\s*"([^"]*)"', buf)
+    m_name = re.search(rb'"name"\s*:\s*"([^"]*)"', buf)
+    return {"sic": m_sic.group(1).decode() if m_sic else None,
+           "sic_desc": m_desc.group(1).decode("utf-8", "replace") if m_desc else None,
+           "name": m_name.group(1).decode("utf-8", "replace") if m_name else None}
 
 
 def secondary_line(ticker: str) -> str | None:
@@ -374,6 +404,52 @@ def band(dd: float | None) -> str | None:
     return "in distress on this measure"
 
 
+def horizon_view(equity: float, default_point: float, equity_vol: float,
+                 rf: float = 0.0375,
+                 horizons: tuple = (0.5, 1.0, 2.0, 5.0)) -> list[dict]:
+    """Distance to Default at a few different time horizons, not just one.
+
+    Moody's shows a multi-year EDF term structure — but that is a default
+    PROBABILITY at each horizon, which this module refuses to compute for
+    the same reason it refuses one at all (see report()'s docstring). The
+    honest analog stays in distance units at every horizon: how many
+    standard deviations of asset value sit between the firm and default,
+    asked over 6 months, a year, two years, five.
+
+    Each horizon is solved INDEPENDENTLY — the same solve_merton() then
+    distance_to_default() pair report() already calls at T=1, called
+    again at each other T — because equity's value as an option on the
+    firm's assets depends on the horizon it is priced against: the same
+    observed equity implies a different (asset value, asset volatility)
+    pair at a 6-month horizon than at a 5-year one. Holding the T=1
+    solve's numbers fixed and only changing T in the distance formula
+    would be cheaper, but it would not be answering the 6-month or
+    5-year question — it would be re-describing the 1-year answer.
+
+    Capped at 5 years on purpose. Asset volatility and the risk-free
+    drift are both held constant over T here, and that assumption gets
+    materially weaker the further out it is stretched — a number this
+    project could not stand behind at 10 years would undercut the same
+    honesty principle the no-probability rule exists to protect.
+
+    Returns [{"years", "dd", "band"}, ...], one entry per horizon, in the
+    order given. A horizon whose solve does not converge gets dd=None and
+    band=None — present in the list, not silently dropped from it, the
+    same rule credit.history() already follows for a single unsolvable
+    point.
+    """
+    out = []
+    for h in horizons:
+        solved = solve_merton(equity, default_point, equity_vol, rf, T=h)
+        dd = None
+        if solved is not None:
+            V, sV = solved
+            dd = distance_to_default(V, sV, default_point, rf, T=h)
+        out.append({"years": h, "dd": round(dd, 2) if dd is not None else None,
+                    "band": band(dd)})
+    return out
+
+
 def report(ticker: str, equity: float | None, closes,
            current_liabilities: float | None, total_liabilities: float | None,
            rf: float = 0.0375, as_of: str | None = None,
@@ -634,6 +710,134 @@ def percentile(dd: float, peers: list[float]) -> int | None:
         return None
     below = sum(1 for v in vals if v < dd)
     return int(round(100.0 * below / len(vals)))
+
+
+def sic_major_group(sic) -> str | None:
+    """The 2-digit SIC major group (e.g. "35" for "Electronic Computers"'s
+    "3571") — a coarser sector bucket, used when a company's exact 4-digit
+    code has too few other measured names to rank against. On the live
+    book (828 entries, 389 measured) exact-SIC grouping gives ≥5 other
+    measured peers to only 39% of measured names; the 2-digit group gets
+    there for 83% — most 4-digit codes are simply too narrow a slice of a
+    universe this size."""
+    s = str(sic or "").strip()
+    return s[:2] if len(s) >= 2 and s[:2].isdigit() else None
+
+
+def safety_percentile(value: float | None, peers: list,
+                      lower_is_safer: bool = False) -> int | None:
+    """percentile(), generalised so the result always reads as "safer
+    than X% of peers", whichever direction is actually safe for this
+    metric.
+
+    Distance to default is safer-when-higher, which is what percentile()
+    already assumes. Leverage and asset volatility are the opposite —
+    more of either is worse — so scoring them with percentile() unchanged
+    would report a highly-levered company as ranking HIGH: good news,
+    read backwards, for exactly the companies where getting it right
+    matters most. lower_is_safer=True flips the comparison so "higher
+    percentile always means safer" holds for any of the three metrics
+    this report shows a percentile for.
+    """
+    if value is None:
+        return None
+    vals = [p for p in (peers or []) if p is not None]
+    if len(vals) < 5:
+        return None
+    safer = sum(1 for v in vals if v > value) if lower_is_safer \
+        else sum(1 for v in vals if v < value)
+    return int(round(100.0 * safer / len(vals)))
+
+
+def _sector_pool(measured: dict, ticker: str, sic, min_peers: int) -> tuple:
+    """(level, key, mates) — the narrowest of (exact SIC, its 2-digit
+    major group, the whole book) that has at least `min_peers` OTHER
+    measured names. `mates` is the list of those other reports, `ticker`
+    itself always excluded. Falls all the way to the whole book — the
+    same floor percentile() itself already enforces — rather than ever
+    reporting "not enough data" when a wider, still-meaningful pool
+    exists."""
+    major = sic_major_group(sic)
+    if sic:
+        exact = [r for t2, r in measured.items()
+                if t2 != ticker and r.get("sic") == sic]
+        if len(exact) >= min_peers:
+            return "sic", sic, exact
+    if major:
+        maj = [r for t2, r in measured.items()
+              if t2 != ticker and sic_major_group(r.get("sic")) == major]
+        if len(maj) >= min_peers:
+            return "sic_major", major, maj
+    return "whole", None, [r for t2, r in measured.items() if t2 != ticker]
+
+
+def peer_standings(book: dict, min_peers: int = 5) -> dict:
+    """Whole-universe AND sector-relative standing for every measured
+    name in `book`.
+
+    Sector is tried at increasing width — exact SIC, then its 2-digit
+    major group, then the whole book — stopping at the first level with
+    enough other measured names to say anything (see _sector_pool()). A
+    name whose exact industry is well covered gets a genuinely tight
+    comparison; a rare one gets a wider net instead of no comparison at
+    all. `sector_fallback` tells the reader which happened.
+
+    Leverage and volatility percentiles are computed within THIS SAME
+    pool, not a separately-chosen one — so a reader is never shown "safer
+    than 60% of its sector on distance" beside "safer than 40% of the
+    whole market on leverage" with no way to tell they describe different
+    populations.
+
+    Pure — no I/O, no network. `book` is any {ticker: report} mapping
+    with `dd`, `sic`, `market_leverage`, `asset_vol` on each entry; a
+    caller assembles that from wherever its own reports live.
+    """
+    measured = {t: r for t, r in (book or {}).items()
+               if isinstance(r, dict) and r.get("dd") is not None}
+    out = {}
+    for t, r in measured.items():
+        whole = [r2["dd"] for t2, r2 in measured.items() if t2 != t]
+        level, key, mates = _sector_pool(measured, t, r.get("sic"), min_peers)
+        sector_dds = [m["dd"] for m in mates]
+        lev_pool = [m.get("market_leverage") for m in mates]
+        vol_pool = [m.get("asset_vol") for m in mates]
+        out[t] = {
+            "peers_n": len(whole),
+            "percentile": percentile(r["dd"], whole),
+            "sector": key,
+            "sector_level": level,
+            "sector_fallback": level == "whole",
+            "sector_peers_n": len(sector_dds),
+            "sector_percentile": (percentile(r["dd"], sector_dds)
+                                  if level != "whole" else None),
+            "leverage_percentile": safety_percentile(
+                r.get("market_leverage"), lev_pool, lower_is_safer=True),
+            "volatility_percentile": safety_percentile(
+                r.get("asset_vol"), vol_pool, lower_is_safer=True),
+        }
+    return out
+
+
+def filter_sector(book: dict, sic, level: str = "sic_major") -> dict:
+    """The subset of `book` sharing `sic`'s value at the given level.
+
+    `level` must be the SAME "sector_level" peer_standings() returned for
+    this ticker ("sic" for the exact code, "sic_major" for its 2-digit
+    group) — passed explicitly rather than re-decided here, so "nearest
+    companies measured" and the percentile prose can never disagree
+    about which pool they are describing.
+    """
+    if level == "sic":
+        key = str(sic or "").strip() or None
+        if not key:
+            return {}
+        return {t: r for t, r in (book or {}).items()
+               if isinstance(r, dict) and str(r.get("sic") or "").strip() == key}
+    major = sic_major_group(sic)
+    if not major:
+        return {}
+    return {t: r for t, r in (book or {}).items()
+           if isinstance(r, dict) and sic_major_group(r.get("sic")) == major}
 
 
 # --------------------- reading a filed balance sheet ---------------------

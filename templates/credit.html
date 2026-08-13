@@ -52,7 +52,8 @@
 
   {% if r.dd is none %}
   <div class="card">
-    <h1>{{ t }}</h1>
+    <h1>{% if r.name %}{{ r.name }} <span class="tiny">({{ t }})</span>{% else %}{{ t }}{% endif %}</h1>
+    {% if r.sic_desc %}<p class="tiny" style="margin:0 0 .4rem">{{ r.sic_desc }}</p>{% endif %}
     <p class="lead" style="margin-top:.6rem">Not measured.</p>
     <p class="muted">{{ r.verdict or "This company could not be assessed." }}</p>
     <p class="tiny">Nothing on this page is a statement about the company. A
@@ -61,7 +62,8 @@
   {% else %}
 
   <div class="card">
-    <h1>{{ t }}</h1>
+    <h1>{% if r.name %}{{ r.name }} <span class="tiny">({{ t }})</span>{% else %}{{ t }}{% endif %}</h1>
+    {% if r.sic_desc %}<p class="tiny" style="margin:0 0 .4rem">{{ r.sic_desc }}</p>{% endif %}
     <p class="tiny" style="margin:0 0 1rem">How far this company sits from the point
       where what it owes comes due against too little to pay it</p>
     <p class="big {{ 'ok' if r.dd >= 4 else 'warn' if r.dd >= 2.5 else 'bad' }}">
@@ -84,8 +86,23 @@
       {{ (r.market_leverage * 100)|round(1) }}% of what the whole business is worth, and its shares
       swing {{ (r.equity_vol * 100)|round(0)|int }}% a year.</p>
     {% endif %}
+    {% if r.leverage_percentile is not none and r.volatility_percentile is not none %}
+    <p class="tiny">Checking that claim against the same
+      {{ 'sector' if not r.sector_fallback else 'market' }} peers: on leverage alone this
+      company is safer than <b>{{ r.leverage_percentile }}%</b> of them; on how hard its
+      value swings, safer than <b>{{ r.volatility_percentile }}%</b>. Higher always means
+      safer, on both.</p>
+    {% endif %}
+    {% if r.sector_percentile is not none %}
+    <p class="muted">Against the {{ r.sector_peers_n }} other companies measured today in
+      {%- if r.sector_level == 'sic' and r.sic_desc %} the same industry ({{ r.sic_desc }}){%
+      else %} a related part of the market{% endif %}, it sits at the
+      {{ 'stronger' if r.sector_percentile >= 50 else 'weaker' }} end: safer than
+      <b>{{ r.sector_percentile }}%</b> of them.</p>
+    {% endif %}
     {% if r.percentile is not none %}
-    <p class="muted">Against the {{ r.peers_n }} other companies measured today it sits
+    <p class="muted">Against the {{ r.peers_n }} other companies measured today
+      {%- if r.sector_percentile is not none %}, across the whole market{% endif %}, it sits
       at the {{ 'stronger' if r.percentile >= 50 else 'weaker' }} end: safer than
       <b>{{ r.percentile }}%</b> of them.</p>
     {% endif %}
@@ -124,6 +141,34 @@
     </p>
     <p class="tiny">The debts are held at the {{ r.as_of }} filing across this
       window; the movement is the market re-pricing them.</p>
+  </div>
+  {% endif %}
+
+  {% if horizons %}
+  <div class="card">
+    <h2>Over a longer or shorter window</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Horizon</th><th class="r">Distance</th><th>Standing</th></tr></thead>
+      <tbody>
+      {% for h in horizons %}
+        <tr>
+          <td>{{ '%g'|format(h.years) }} year{{ 's' if h.years != 1 else '' }}</td>
+          {% if h.dd is not none %}
+          <td class="r">{{ '%.2f'|format(h.dd) }}</td>
+          <td>{{ h.band }}</td>
+          {% else %}
+          <td class="r" colspan="2">could not be solved at this horizon</td>
+          {% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="tiny" style="margin-top:.7rem">A different question from the chart
+      above: that one holds today's balance sheet fixed and moves the price back
+      through past dates. This holds today's price and balance sheet fixed and
+      moves the WINDOW instead — how many standard deviations from trouble over
+      six months, a year, two, five. Distance only, at every horizon, the same as
+      everywhere else on this page — never a percentage.</p>
   </div>
   {% endif %}
 
@@ -170,10 +215,14 @@
     </table></div>
     <p class="tiny" style="margin-top:.7rem">Ranking companies against each other
       does not need the missing calibration step above, so this part of the
-      report is unaffected by it. {{ n_measured }} companies are measured
-      today, {{ t }} among them — one more than the "other companies" count
-      near the top of this page, which is this company's own peer set and so
-      leaves it out. Coverage widens with each scan.</p>
+      report is unaffected by it.
+      {%- if r.sector_level in ('sic', 'sic_major') %} Drawn from the same
+      {% if r.sector_level == 'sic' %}industry{% else %}part of the market{% endif %}
+      as the sector comparison above, not the whole board.
+      {%- else %} {{ n_measured }} companies are measured today, {{ t }} among
+      them — one more than the "other companies" count near the top of this
+      page, which is this company's own peer set and so leaves it out.
+      {%- endif %} Coverage widens with each scan.</p>
   </div>
   {% endif %}
 
