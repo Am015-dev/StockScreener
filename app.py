@@ -977,6 +977,33 @@ def _credit_book(fetch: bool = False) -> dict:
 
 
 _earn_pub = {"ts": 0.0, "data": None}
+_patterns_pub = {"ts": 0.0, "data": None}
+
+
+def _patterns_book(fetch: bool = False) -> dict:
+    """The published pattern sweep, warmed in the background like the rest.
+
+    This exists because reading it inline cost the front page 75 seconds.
+    _published_get is a NETWORK fetch bounded by PUBLISHED_FETCH_S, and
+    the /today route called it on every cache miss — so a cold instance
+    served the root only after that fetch finished or gave up. The
+    release gate found it the honest way: twenty-three assertions passed
+    and the twenty-fourth timed out navigating to "/".
+
+    The other four books have always been warmed on a thread for exactly
+    this reason. This one now is too, and the route reads whatever is in
+    hand rather than going to the network in front of a reader.
+    """
+    if not fetch:
+        return _patterns_pub["data"] or {}
+    data = _published_get("patterns.json")
+    if not data:
+        return _patterns_pub["data"] or {}
+    _patterns_pub.update(data=data, ts=time.time())
+    n = sum(len(v or {}) for v in (data.get("horizons") or {}).values())
+    print(f"[warm] pattern sweep: {n} combinations, "
+          f"{len(data.get('tradeable') or [])} confirmed", flush=True)
+    return data
 
 
 def _earnings_book(fetch: bool = False) -> dict:
@@ -1783,12 +1810,12 @@ def today_page():
     # only change when a book is refreshed, so key on exactly that.
     earn, cal_complete = _published_earnings()
     key = (_book["ts"], _vols["ts"], _creds["ts"], _earn_pub["ts"],
-           round(budget, 2), horizon, cal_complete)
+           _patterns_pub["ts"], round(budget, 2), horizon, cal_complete)
     if _today_memo["key"] == key:
         res = _today_memo["res"]
     else:
         res = ranking.score(_today_candidates(horizon), holdings=[],
-                            patterns_report=_published_get("patterns.json"),
+                            patterns_report=_patterns_book(),
                             risk_budget=budget, horizon=horizon,
                             corr_by_ticker=None, cal_complete=cal_complete)
         _today_memo.update(key=key, res=res)
@@ -1836,7 +1863,7 @@ def patterns_page():
     The measurement runs weekly on a runner, because it needs a year of
     daily bars for hundreds of names. This page only reads the result.
     """
-    d = _published_get("patterns.json") or {}
+    d = _patterns_book() or {}
     rows = []
     for h, res in sorted((d.get("horizons") or {}).items(),
                          key=lambda kv: int(kv[0])):
@@ -2106,7 +2133,8 @@ def _warm_books():
     """
     for label, fn in (("price book", _price_book), ("volatility book", _vol_book),
                       ("credit book", _credit_book),
-                      ("earnings calendar (published)", _earnings_book)):
+                      ("earnings calendar (published)", _earnings_book),
+                      ("pattern sweep", _patterns_book)):
         try:
             fn(fetch=True)
         except Exception as e:
@@ -2262,7 +2290,8 @@ def _boot_books() -> None:
     if os.environ.get("SKIP_WARM"):
         return
     for name, store in (("prices.json", _book), ("vol.json", _vols),
-                        ("credit.json", _creds)):
+                        ("credit.json", _creds),
+                        ("patterns.json", _patterns_pub)):
         try:
             path = os.path.join(PUBLISHED_DIR, name)
             if not os.path.exists(path):
