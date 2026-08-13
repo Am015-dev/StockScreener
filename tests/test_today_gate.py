@@ -68,4 +68,27 @@ print("  and renders no trade plan, not even a partial one")
 assert c.get("/").data == r.data, "/ and /today disagree"
 print("the root serves the same refusal — no way around it by URL")
 
+# ---- the front page must never wait on the network ----
+# It did. _published_get is a network fetch bounded by PUBLISHED_FETCH_S
+# (75 seconds by default) and the route called it for patterns.json on
+# every cache miss, so a cold instance served "/" only after that fetch
+# finished or gave up. The site went unreachable and the release gate
+# found it the honest way: twenty-three assertions passed and the
+# twenty-fourth timed out navigating to the root.
+#
+# PUBLISHED_BASE points at an unroutable address in this test, so any
+# route that still reaches out will take the full ceiling.
+import time                                                     # noqa: E402
+
+app.PUBLISHED_BASE = "http://10.255.255.1"
+app.PUBLISHED_FETCH_S = 75.0
+app._today_memo.update(key=None, res=None)     # force the slow path
+for path in ("/", "/today", "/patterns"):
+    t0 = time.time()
+    resp = c.get(path)
+    took = time.time() - t0
+    assert resp.status_code == 200, (path, resp.status_code)
+    assert took < 5.0, f"{path} waited {took:.0f}s on the network"
+    print(f"{path} answers in {took:.2f}s with the network unreachable")
+
 print("\nALL /today GATE TESTS PASSED")
