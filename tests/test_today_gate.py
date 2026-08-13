@@ -153,3 +153,38 @@ print("the bug this closes: EUBAD.MI stays unverified despite a globally-complet
       "US calendar; EUOK.PA is flagged single-source, never silently corroborated")
 
 print("\nEU EARNINGS SINGLE-SOURCE PINNED")
+
+
+# ---- the SAME bug, on /check: a warm US-only live calendar must not
+# shadow the published EU book ----
+# _today_candidates() above reads _published_earnings() unconditionally,
+# so it never exposed this. /check has its own earn-resolution path that
+# prefers screener._earnings_calendar(build=False) — the live-built,
+# US-only Nasdaq feed with its OWN disk cache — and only falls back to
+# _published_earnings() (which carries the eu book) when that live map
+# is completely empty. On a warm instance it is essentially never empty,
+# so the fallback that would have picked up EUOK.PA's date never fired,
+# and every EU pre-trade check answered "could not be verified" even
+# with a Yahoo date on record. Seed that live cache exactly as a warm
+# production instance would — non-empty, US names only, no EUOK.PA — to
+# reproduce it.
+import cache_store as cache_store_module                        # noqa: E402
+
+cache_store_module.put(
+    f"earncal:{app.screener.EARN_CAL_DAYS}",
+    {"as_of": time.strftime("%Y-%m-%d", time.gmtime()),
+     "map": {t: 60 for t in series}, "complete": True})
+
+r = c.post("/check", json={"ticker": "EUOK.PA", "holdings": ""})
+assert r.status_code == 200, r.status_code
+body = r.get_json()
+heads = [f["headline"] for f in body["findings"]]
+assert not any("could not be verified" in h for h in heads), \
+    ("a warm US-only live calendar shadowed EUOK.PA's published EU date", heads)
+assert any("No earnings for 60 days" in h for h in heads), heads
+details = " ".join(f["detail"] for f in body["findings"])
+assert "Yahoo's per-ticker calendar alone" in details, details
+print("/check merges the EU book in even when the live US-only calendar "
+      "is already warm, and labels the date single-source")
+
+print("\n/check EU-MERGE PINNED")

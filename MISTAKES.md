@@ -75,6 +75,39 @@ don't assume "unchanged expression" means "unchanged behavior" once a
 nearby computation (like a staleness flag) that used to be folded into it
 is now sitting in a separate local variable.
 
+## 2026-08-13 — fixed the fail-open bug in three call sites, missed that /check never reaches the fourth
+
+**Assumed:** auditing every call site that read the old global `cal_complete`
+flag (`ranking.py::filters`, `plan.py::trade_plan`, and the `/check` route's
+calls to `analysis.build`/`pretrade.check`) and switching them to the new
+per-candidate `cal_covered`/`earnings_single_source` fields closed the
+fail-open bug everywhere it could occur — the `/check` route's earnings
+dict already came from `_published_earnings()`, which carries the `eu`
+book, so passing the right `complete_for_ticker` there was the whole fix.
+**Actually:** `/check` never actually reaches `_published_earnings()` in
+production. It first tries `screener._earnings_calendar(build=False)` — a
+separate, US-only, disk-cached live calendar that predates the published
+book — and only falls back to `_published_earnings()` when that live map
+is completely empty. On a warm instance (essentially always, since the
+disk cache persists across requests) it is never empty, so the EU book's
+dates never merged in at all: every EU ticker's pre-trade check answered
+"earnings date could not be verified" regardless of what the scheduled
+runner had published for it. Confirmed live against production —
+`POST /check {"ticker": "TYT.L"}` blocked with that exact message despite
+`earnings.json`'s `eu.map` on the data branch holding `"TYT.L": 83`.
+**Caught by:** a manual live curl against the deployed `/check` endpoint
+after the scan had published fresh EU data — not by any of the tests
+written for this feature, all of which exercised `_today_candidates()`
+and `ranking.filters()` directly and never actually called the `/check`
+route, so this path's separate earn-resolution logic was untested.
+**Rule:** when a fix touches "all call sites of X", grep for every
+function that could independently answer the same question through a
+*different* data path (a second cache, a second fetch) — auditing call
+sites of the shared helper is not the same as auditing every route that
+answers the same user-facing question, and a live curl against the actual
+endpoint the feature is meant to change is worth more than tracing the
+code path by inspection.
+
 ## 2026-08-13 — "everything seems old" meant staleness, not styling
 
 **Assumed:** a report that "everything seems old" on `/full` was about
