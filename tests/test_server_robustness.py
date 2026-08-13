@@ -794,14 +794,14 @@ try:
     # a stale published calendar is refused, not trusted about 'clear'
     A._earn_pub["data"]["as_of"] = (
         _dt2.date.today() - _dt2.timedelta(days=5)).isoformat()
-    cal, ok = A._published_earnings()
+    cal, ok, _single = A._published_earnings()
     assert cal == {} and ok is False
     print("a five-day-old published calendar is refused rather than believed")
 
     # and re-basing: yesterday's map moves one day closer today
     A._earn_pub["data"]["as_of"] = (
         _dt2.date.today() - _dt2.timedelta(days=1)).isoformat()
-    cal, ok = A._published_earnings()
+    cal, ok, _single = A._published_earnings()
     assert cal.get("NEARER") == 3, cal
     print("the published days-to-report are re-based onto today")
 finally:

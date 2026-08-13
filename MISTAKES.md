@@ -28,6 +28,53 @@ curl, a human correction) — never "on reflection."
 
 ---
 
+## 2026-08-13 — reused a sentinel timestamp across two fixture loads, hid a memo cache
+
+**Assumed:** setting `app._creds.update(data=..., ts=9e9)` twice in the
+same test — once for the original 40-ticker fixture, once again after
+merging in two EU tickers — would make the second load visible
+everywhere that read `_creds`.
+**Actually:** `_credit_view()` memoizes on the tuple
+`(_creds["ts"], _book["ts"])`; reusing the identical `9e9` sentinel both
+times produced an identical cache key, so the memo silently kept serving
+the FIRST load's restated book — missing the two new EU tickers
+entirely — and every downstream assertion about them read `None` for
+fields that were clearly set in the fixture.
+**Caught by:** an isolated single-ticker repro of the same fixture
+passed while the full multi-ticker test file failed on the identical
+assertion — the difference was the file's second `ts=9e9` collided with
+its first, and the isolated repro never had a first load to collide
+with.
+**Rule:** when a test reloads a store this codebase memoizes on `ts`,
+bump the sentinel between loads (`9e9`, `9e9 + 1`, ...) — an identical
+timestamp is an identical cache key, not "fresh data."
+
+## 2026-08-13 — splitting a 2-tuple into a 3-tuple dropped a staleness gate
+
+**Assumed:** rewriting `app.py::_published_earnings()` to return
+`(cal, complete, single_source)` instead of `(cal, ok)` could keep the
+`complete`/`ok` value as a straight `bool(book.get("complete"))` — the
+staleness check (`shift <= 3`) already governed whether `cal` got
+populated, so it looked like `complete` didn't need to depend on it too.
+**Actually:** the pre-existing behavior tied "the calendar can be trusted
+as complete" to freshness as well as the raw published flag — a calendar
+five days stale must read as incomplete even though the source publisher
+still says `"complete": true` in the underlying data, because "complete"
+here means "you may trust an absence from this map as the all-clear," and
+a five-day-old absence is not trustworthy. Dropping that link let a stale
+calendar report `ok=True`, silently re-opening the exact fail-open shape
+item 6 was built to close, just moved to the freshness axis instead of
+the US/EU-region axis.
+**Caught by:** `tests/test_server_robustness.py`'s existing staleness pin
+(`cal == {} and ok is False` after backdating `as_of` by 5 days), which
+predated this session's changes and had nothing to do with EU earnings —
+it caught a regression in an unrelated refactor of the same function.
+**Rule:** when a function's return value grows a new field, re-derive
+every existing field from the same inputs that produced it before —
+don't assume "unchanged expression" means "unchanged behavior" once a
+nearby computation (like a staleness flag) that used to be folded into it
+is now sitting in a separate local variable.
+
 ## 2026-08-13 — "everything seems old" meant staleness, not styling
 
 **Assumed:** a report that "everything seems old" on `/full` was about

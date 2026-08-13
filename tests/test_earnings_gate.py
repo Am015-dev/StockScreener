@@ -197,4 +197,28 @@ assert ok and cal == {"X": 2}, (cal, ok)
 assert calls["n"] == 0, f"a cached calendar must not re-fetch ({calls['n']} calls)"
 print("calendar cached: repeat presets in the same run cost no extra requests")
 
+# ---- a non-US name Yahoo CAN answer is published, flagged single-source ----
+# The US bulk calendar still says nothing about FOREIGN.L, but when
+# Yahoo's per-ticker endpoint returns a real date this time, the name
+# must publish as a pick — not stay blocked — carrying a flag that says
+# plainly this date rests on one source, not two.
+_saved_yahoo_days = screener._get_days_to_earnings
+try:
+    def _yahoo_days_for_foreign(t):
+        return 30 if t == "FOREIGN.L" else None
+    screener._get_days_to_earnings = _yahoo_days_for_foreign
+    rows, pend, log = scan({"SOON": SOON_D, "LATER": LATER_D})
+    assert "FOREIGN.L" in rows, \
+        f"a Yahoo-readable date must publish the pick, not leave it blocked: {pend.keys()}"
+    assert rows["FOREIGN.L"]["days_to_earnings"] == 30, rows["FOREIGN.L"]
+    assert "earnings_single_source" in rows["FOREIGN.L"]["flags"], \
+        f"a non-US date from Yahoo alone must say so: {rows['FOREIGN.L']['flags']}"
+    # and a US name's calendar-sourced date must NOT carry this flag —
+    # it is corroborated, not single-source
+    assert "earnings_single_source" not in rows["LATER"]["flags"], rows["LATER"]["flags"]
+    print(f"a EU name with a Yahoo-only date publishes, flagged single-source: "
+          f"{rows['FOREIGN.L']['flags']}")
+finally:
+    screener._get_days_to_earnings = _saved_yahoo_days
+
 print("\nALL EARNINGS-GATE TESTS PASSED")

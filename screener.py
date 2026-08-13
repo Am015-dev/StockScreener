@@ -1805,7 +1805,9 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     flags.append("earnings_from_quote")
                 if days_to_earnings is None and earn_txt is None:
                     if p["strict_gates"] and p["earnings_drop_days"] > 0:
-                        why = ("no earnings calendar covers this listing"
+                        why = ("no earnings calendar covers this listing, "
+                               "and Yahoo's per-ticker source returned "
+                               "nothing either"
                                if _region(ticker) != "US" else
                                "earnings date can't be verified")
                         near_reject("unverified",
@@ -1816,6 +1818,15 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     flags.append("earnings_unverified")
                 elif days_to_earnings is None:
                     flags.append("earnings_none_in_window")
+                elif ("earnings_from_calendar" not in flags
+                      and _region(ticker) != "US"):
+                    # A US date is corroborated: the bulk Nasdaq calendar,
+                    # optionally cross-checked against Finnhub. A non-US
+                    # date rests on Yahoo's per-ticker endpoint alone —
+                    # one source, not two — and every place this renders
+                    # says so, rather than reading identically to a
+                    # corroborated US date.
+                    flags.append("earnings_single_source")
                 if days_to_earnings is not None and days_to_earnings <= p["earnings_drop_days"]:
                     near_reject("earnings", f"earnings in {days_to_earnings}d")
                     continue
