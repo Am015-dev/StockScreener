@@ -453,7 +453,8 @@ def horizon_view(equity: float, default_point: float, equity_vol: float,
 def report(ticker: str, equity: float | None, closes,
            current_liabilities: float | None, total_liabilities: float | None,
            rf: float = 0.0375, as_of: str | None = None,
-           vol: float | None = None, vol_obs: int | None = None) -> dict:
+           vol: float | None = None, vol_obs: int | None = None,
+           currency_refused: str | None = None) -> dict:
     """A full assessment, or an explicit refusal naming what was missing.
 
     `vol` lets the caller supply a volatility measured over more history
@@ -461,9 +462,23 @@ def report(ticker: str, equity: float | None, closes,
     from years of returns; `closes` is a 60-day window kept small enough
     to download. When a measured volatility is passed it is used and
     `closes` only has to be long enough to price the shares.
+
+    `currency_refused` names a currency (from balance_sheet()'s
+    `currency_only`) when this filer's balance-sheet tags exist but only
+    in that currency — a more specific, more honest refusal than the
+    generic "missing balance sheet", and never a converted number:
+    converting at a guessed rate would produce a figure the model does
+    not mean.
     """
     out: dict = {"ticker": (ticker or "").upper(), "as_of": as_of,
                  "missing": [], "dd": None, "band": None}
+    if current_liabilities is None and total_liabilities is None and currency_refused:
+        out["missing"].append("a balance sheet in USD")
+        out["verdict"] = (f"Cannot assess — files in {currency_refused}; "
+                          f"converting at a guessed rate would produce a "
+                          f"number the model does not mean.")
+        out["currency_refused"] = currency_refused
+        return out
     if not equity or equity <= 0:
         out["missing"].append("market capitalisation")
     supplied = vol is not None and vol > 0
@@ -866,9 +881,15 @@ UNIT = "USD"
 FILING_MAX_AGE_DAYS = 430
 
 
-def _latest(facts: dict, tag: str, today: str | None = None) -> dict | None:
-    """Most recent USD value for a us-gaap tag, from a companyfacts dict."""
-    node = (facts.get("facts", {}).get("us-gaap", {}) or {}).get(tag)
+def _latest(facts: dict, tag: str, today: str | None = None,
+            tax: str = "us-gaap") -> dict | None:
+    """Most recent USD value for a tag, from a companyfacts dict.
+
+    `tax` selects the taxonomy: "us-gaap" for domestic filers, "ifrs-full"
+    for foreign private issuers (20-F) who report under IFRS instead —
+    same shape, different element names for some concepts.
+    """
+    node = (facts.get("facts", {}).get(tax, {}) or {}).get(tag)
     if not node:
         return None
     today = today or date.today().isoformat()
@@ -886,6 +907,88 @@ def _latest(facts: dict, tag: str, today: str | None = None) -> dict | None:
     return best
 
 
+def _non_usd_currency(facts: dict, tag: str, tax: str) -> str | None:
+    """If this tag has recent rows but none in USD, name the currency they
+    ARE in. Used only to make a refusal specific ("files in GBP") instead
+    of indistinguishable from data that was never filed at all."""
+    node = (facts.get("facts", {}).get(tax, {}) or {}).get(tag)
+    if not node:
+        return None
+    units = (node.get("units") or {})
+    if any(units.get(UNIT) or []):
+        return None
+    for unit, rows in units.items():
+        if unit != UNIT and rows:
+            return unit
+    return None
+
+
+# IFRS Foundation taxonomy element names for the same five concepts
+# us-gaap covers above. Borrowed from edgartools' (github.com/dgunning/
+# edgartools, MIT) documented IFRS tag mapping — that package was not
+# adopted as a dependency (too heavy for this instance's 512MB / short
+# requirements.txt), but its knowledge of which ifrs-full concepts line
+# up with which us-gaap ones is reused here, credited rather than
+# rediscovered. "Liabilities" (the total) is spelled the same in both
+# taxonomies; the others differ.
+IFRS_BALANCE_TAGS = ("CurrentLiabilities", "NoncurrentLiabilities",
+                     "Liabilities", "Equity", "EquityAndLiabilities")
+
+
+def _balance_sheet_route(facts: dict, today: str | None, tax: str) -> dict | None:
+    """One taxonomy's attempt at current+total liabilities, same-period-end
+    discipline as the us-gaap route. Returns None if nothing lines up."""
+    cur_tag = "LiabilitiesCurrent" if tax == "us-gaap" else "CurrentLiabilities"
+    tot_tag = "Liabilities"   # spelled the same in both taxonomies
+    eq_tags = (("StockholdersEquity",
+               "StockholdersEquityIncludingPortionAttributableTo"
+               "NoncontrollingInterest") if tax == "us-gaap" else ("Equity",))
+    total_tag = ("LiabilitiesAndStockholdersEquity" if tax == "us-gaap"
+                else "EquityAndLiabilities")
+
+    # us-gaap keeps its original bare source strings unchanged (pinned
+    # elsewhere, and the common case should not carry a taxonomy label
+    # nobody reading a US filer's report needs to see); ifrs-full's are
+    # prefixed since "Read as" on the page is the only place a reader
+    # can tell which taxonomy answered.
+    prefix = "" if tax == "us-gaap" else f"{tax}: "
+
+    cur = _latest(facts, cur_tag, today, tax)
+    tot = _latest(facts, tot_tag, today, tax)
+    if cur and tot and cur["end"] == tot["end"]:
+        return {"current_liabilities": float(cur["val"]),
+                "total_liabilities": float(tot["val"]),
+                "as_of": cur["end"], "source": f"{prefix}Liabilities",
+                "taxonomy": tax}
+
+    if tax != "us-gaap":
+        # IFRS filers often tag the two halves but not a combined total —
+        # the sum is still a same-period-end figure, not a guess.
+        noncur = _latest(facts, "NoncurrentLiabilities", today, tax)
+        if cur and noncur and cur["end"] == noncur["end"]:
+            return {"current_liabilities": float(cur["val"]),
+                    "total_liabilities": float(cur["val"]) + float(noncur["val"]),
+                    "as_of": cur["end"],
+                    "source": f"{prefix}current + noncurrent",
+                    "taxonomy": tax}
+
+    # assets = liabilities + equity, so liabilities = assets - equity
+    lse = _latest(facts, total_tag, today, tax)
+    eq = None
+    for t in eq_tags:
+        eq = _latest(facts, t, today, tax)
+        if eq:
+            break
+    if lse and eq and lse["end"] == eq["end"]:
+        total = float(lse["val"]) - float(eq["val"])
+        if total > 0 and cur and cur["end"] == lse["end"]:
+            return {"current_liabilities": float(cur["val"]),
+                    "total_liabilities": total, "as_of": lse["end"],
+                    "source": f"{prefix}assets minus equity",
+                    "taxonomy": tax}
+    return None
+
+
 def balance_sheet(facts: dict, today: str | None = None) -> dict:
     """Current and total liabilities, as of ONE date, in ONE currency.
 
@@ -899,36 +1002,29 @@ def balance_sheet(facts: dict, today: str | None = None) -> dict:
     So a mismatched pair is not patched up — the direct route is dropped
     and the accounting identity is tried instead, and if that cannot be
     formed at a single date either, the report refuses.
+
+    Tries us-gaap first, then ifrs-full (a foreign private issuer filing
+    a 20-F) — us-gaap wins when a filer tags both, so a dual-tagger does
+    not flip which route answers between runs. Only USD is read from
+    either taxonomy (see UNIT above); a filer whose recent tags exist
+    only in another currency is refused with that currency named, via
+    `currency_only`, rather than converted at a guessed rate.
     """
     out = {"current_liabilities": None, "total_liabilities": None,
-           "as_of": None, "source": None}
-    cur = _latest(facts, "LiabilitiesCurrent", today)
-    tot = _latest(facts, "Liabilities", today)
-
-    if cur and tot and cur["end"] == tot["end"]:
-        out.update(current_liabilities=float(cur["val"]),
-                   total_liabilities=float(tot["val"]),
-                   as_of=cur["end"], source="Liabilities")
-        return out
-
-    # assets = liabilities + equity, so liabilities = assets - equity
-    lse = _latest(facts, "LiabilitiesAndStockholdersEquity", today)
-    eq = (_latest(facts, "StockholdersEquity", today)
-          or _latest(facts,
-                     "StockholdersEquityIncludingPortionAttributableTo"
-                     "NoncontrollingInterest", today))
-    if lse and eq and lse["end"] == eq["end"]:
-        total = float(lse["val"]) - float(eq["val"])
-        if total > 0 and cur and cur["end"] == lse["end"]:
-            out.update(current_liabilities=float(cur["val"]),
-                       total_liabilities=total, as_of=lse["end"],
-                       source="assets minus equity")
+           "as_of": None, "source": None, "taxonomy": None}
+    for tax in ("us-gaap", "ifrs-full"):
+        route = _balance_sheet_route(facts, today, tax)
+        if route:
+            out.update(route)
             return out
 
-    # Nothing lines up. Whatever was found is reported for disclosure, but
-    # a total from a different period end is NOT returned as the total —
-    # leaving it in the field the model reads is exactly how the two got
-    # combined in the first place.
+    # Nothing usable in either taxonomy. Report what the us-gaap route
+    # found for disclosure (unchanged from before IFRS support), and
+    # separately check whether either taxonomy's total-liabilities tag
+    # exists but only in a foreign currency — that is a different fact
+    # from "never filed" and deserves a different refusal.
+    cur = _latest(facts, "LiabilitiesCurrent", today)
+    tot = _latest(facts, "Liabilities", today)
     if cur:
         out["current_liabilities"] = float(cur["val"])
         out["as_of"] = cur["end"]
@@ -936,6 +1032,12 @@ def balance_sheet(facts: dict, today: str | None = None) -> dict:
         out["total_as_of"] = tot["end"]
         out["total_unusable"] = float(tot["val"])
         out["mismatched"] = bool(cur and cur["end"] != tot["end"])
+
+    for tax, tag in (("ifrs-full", "Liabilities"), ("us-gaap", "Liabilities")):
+        ccy = _non_usd_currency(facts, tag, tax)
+        if ccy:
+            out["currency_only"] = ccy
+            break
     return out
 
 
@@ -998,9 +1100,11 @@ def fetch_balance_sheet(cik: int, get_json) -> dict:
     endpoint.
 
     So the cheap path is an optimisation, not the source of truth: if it
-    fails to produce a usable balance sheet, the authoritative endpoint is
-    fetched before giving up. A tag that neither route can supply is
-    absent, and balance_sheet() refuses rather than guessing.
+    fails to produce a usable balance sheet, the ifrs-full concepts are
+    tried the same cheap way (five more small calls — still far under the
+    3.7MB whole-filer endpoint), then the authoritative endpoint before
+    giving up. A tag that no route can supply is absent, and
+    balance_sheet() refuses rather than guessing.
     """
     facts: dict = {"facts": {"us-gaap": {}}}
     fetched, failed = [], []
@@ -1030,14 +1134,43 @@ def fetch_balance_sheet(cik: int, get_json) -> dict:
             and out.get("source")):
         return out
 
+    # us-gaap came up empty — try the ifrs-full concepts the same cheap
+    # way before paying for companyfacts. A domestic filer simply gets
+    # 404s here and this costs nothing but five quick misses.
+    ifrs_fetched, ifrs_failed = [], []
+    facts["facts"]["ifrs-full"] = {}
+    for tag in IFRS_BALANCE_TAGS:
+        url = (f"https://data.sec.gov/api/xbrl/companyconcept/"
+               f"CIK{int(cik):010d}/ifrs-full/{tag}.json")
+        try:
+            d = get_json(url)
+        except Exception:
+            ifrs_failed.append(tag)
+            continue
+        units = (d or {}).get("units") or {}
+        if any(rows for rows in units.values()):
+            facts["facts"]["ifrs-full"][tag] = {"units": units}
+            ifrs_fetched.append(tag)
+        else:
+            ifrs_failed.append(tag)
+    if ifrs_fetched:
+        out = balance_sheet(facts)
+        out["tags_fetched"] = fetched + [f"ifrs-full:{t}" for t in ifrs_fetched]
+        out["tags_failed"] = failed + [f"ifrs-full:{t}" for t in ifrs_failed]
+        out["source_endpoint"] = "companyconcept"
+        if (out["total_liabilities"] is not None
+                and out["current_liabilities"] is not None
+                and out.get("source")):
+            return out
+
     try:
         cf = get_json(f"https://data.sec.gov/api/xbrl/companyfacts/"
                       f"CIK{int(cik):010d}.json")
     except Exception:
         return out
     full = balance_sheet(cf if isinstance(cf, dict) else {})
-    full["tags_fetched"] = fetched
-    full["tags_failed"] = failed
+    full["tags_fetched"] = fetched + [f"ifrs-full:{t}" for t in ifrs_fetched]
+    full["tags_failed"] = failed + [f"ifrs-full:{t}" for t in ifrs_failed]
     full["source_endpoint"] = "companyfacts"
     return full
 

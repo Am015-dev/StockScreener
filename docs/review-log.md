@@ -150,6 +150,23 @@ for each gap before writing code.
   (wide-net) already enforces — falling back to the pre-existing $2B
   market-value proxy, flagged, for the names `liquidity.json` has no
   figure for.
-- Remaining items from the plan (IFRS credit coverage via borrowed
-  `ifrs-full` tag knowledge, EU earnings verification) are tracked for
-  follow-up rounds; this entry covers what shipped in this pass.
+- **IFRS credit coverage** — [`edgartools`](https://github.com/dgunning/edgartools)
+  (MIT) **rejected as a dependency** (too heavy for a 512MB instance and
+  the short requirements.txt) but its knowledge of which `ifrs-full` XBRL
+  concepts line up with which `us-gaap` ones **borrowed with
+  attribution** into `credit.py`. `balance_sheet()` now tries us-gaap
+  first (unchanged precedence — a dual-tagger's route never flips between
+  runs), then ifrs-full via three routes with the same same-period-end
+  discipline the us-gaap path already enforced (direct total, sum of
+  current+noncurrent for filers who don't tag a combined total, and the
+  assets-minus-equity identity). `fetch_balance_sheet()` tries the cheap
+  ifrs-full companyconcept calls before paying for the 3.7MB
+  companyfacts endpoint — verified in `tests/test_credit.py` with a
+  call-count pin. **Currency honesty, not conversion**: a filer whose
+  tags exist only in a non-USD currency is refused with that currency
+  named (`currency_only` → `report(currency_refused=...)`), never
+  converted at a guessed rate — `KNOWN_ISSUES.md` says "read when they
+  report in USD," not "IFRS covered," because the non-USD majority is
+  still refused, honestly.
+- Remaining item from the plan (EU earnings verification) is tracked for
+  a follow-up round; this entry covers what shipped in this pass.
