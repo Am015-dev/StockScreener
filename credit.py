@@ -937,7 +937,7 @@ DELISTING_FORMS = {"25", "25-NSE"}
 DEREGISTRATION_FORMS = {"15", "15-12G", "15-15D"}
 
 
-def delisting_filing(cik: int, get_json) -> dict | None:
+def delisting_filing(cik: int, get_json, today: str | None = None) -> dict | None:
     """The most recent EDGAR evidence that this filer's PRIMARY listing ended.
 
     get_json(url) -> dict, or raises. Returns None when there is no
@@ -952,17 +952,25 @@ def delisting_filing(cik: int, get_json) -> dict | None:
     share) while its common stock keeps trading, and the submissions
     endpoint names the FORM, not which security it covered. Treating
     presence alone as "this company delisted" would have put a real,
-    currently-traded utility on that list.
+    currently-traded utility on the list.
 
-    So this also checks for a 10-K or 10-Q filed in the year after the
-    newest delisting-family filing. A filer that keeps its periodic
-    reports coming is still a going concern under SEC reporting,
-    whatever it delisted — that is what separates AEP's history (three
-    Form 25-NSEs, and 10-Ks every year regardless) from Twitter's (a
-    Form 25-NSE, a Form 15-12G nine days later, and no 10-K or 10-Q
-    since). `likely_primary_delisting` is False whenever a periodic
-    report follows, and only True when the delisting-family filing is
-    followed by silence.
+    So this also checks for a 10-K or 10-Q filed after the newest
+    delisting-family filing. A filer that keeps its periodic reports
+    coming is still a going concern under SEC reporting, whatever it
+    delisted — that is what separates AEP's history (three Form
+    25-NSEs, and 10-Qs regardless) from Twitter's (a Form 25-NSE, a
+    Form 15-12G nine days later, and no 10-K or 10-Q since).
+
+    A first version of this stopped there and misread Electronic Arts,
+    Brown-Forman and Philip Morris — three of the most ordinary
+    still-trading blue chips there are — as delisted, because each had
+    filed a Form 25-NSE only weeks earlier and no 10-Q had had TIME to
+    follow yet. Absence of a filing that has not had a chance to exist
+    is not evidence of anything; it is the clock, not the company. So
+    `likely_primary_delisting` is False when a periodic report follows,
+    None when under a year has passed since the filing and none has
+    followed YET, and only True when a full year of silence has
+    actually elapsed.
     """
     d = get_json(f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json")
     recent = ((d or {}).get("filings") or {}).get("recent") or {}
@@ -975,8 +983,14 @@ def delisting_filing(cik: int, get_json) -> dict | None:
         return None
     form, filed = hits[-1]
     effective = _add_business_days(filed, 10) if form in DELISTING_FORMS else filed
-    cutoff = _add_days(filed, 365)
-    still_filing = any(f in ("10-K", "10-Q") and filed < dt <= cutoff
-                       for f, dt in zip(forms, dates))
+    today = today or date.today().isoformat()
+    filed_since = any(f in ("10-K", "10-Q") and dt > filed
+                      for f, dt in zip(forms, dates))
+    if filed_since:
+        likely = False
+    elif today < _add_days(filed, 365):
+        likely = None      # not enough time has passed to say either way
+    else:
+        likely = True
     return {"form": form, "filed": filed, "effective": effective,
-           "likely_primary_delisting": not still_filing}
+           "likely_primary_delisting": likely}

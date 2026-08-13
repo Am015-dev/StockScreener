@@ -780,18 +780,21 @@ def fake_submissions(forms: list, dates: list, tickers: list | None = None):
 # Twitter, Inc. (CIK 1418091): went private in the Musk acquisition.
 # Real filing history, in order — an exchange notice, then deregistration
 # nine days later, then nothing that looks like an operating company.
+# `today` is pinned well over a year past the filing, or the very absence
+# of a later 10-K/10-Q would (correctly) not yet mean anything — see below.
 TWITTER_FORMS = ["10-Q", "8-K", "25-NSE", "4", "4", "SC 13D", "15-12G", "3"]
 TWITTER_DATES = ["2022-07-26", "2022-10-27", "2022-10-28", "2022-10-31",
                  "2022-10-31", "2022-10-31", "2022-11-07", "2022-11-08"]
-tw = credit.delisting_filing(1418091, fake_submissions(TWITTER_FORMS, TWITTER_DATES))
+tw = credit.delisting_filing(1418091, fake_submissions(TWITTER_FORMS, TWITTER_DATES),
+                             today="2026-01-01")
 assert tw is not None
 assert tw["form"] == "15-12G", tw
 assert tw["filed"] == "2022-11-07", tw
 assert tw["effective"] == "2022-11-07", "a Form 15 is effective on filing, not +10 days"
 assert tw["likely_primary_delisting"] is True, \
-    "no periodic report follows the deregistration — this IS a primary delisting"
+    "years of silence after the deregistration — this IS a primary delisting"
 print(f"Twitter's real filing history: {tw['form']} filed {tw['filed']}, "
-      f"read as a primary delisting")
+      f"read as a primary delisting after years of silence")
 
 # American Electric Power (CIK 4904): a real, still-trading utility that
 # ALSO has Form 25-NSE filings on record — for a security other than its
@@ -802,7 +805,8 @@ AEP_FORMS = ["10-K", "25-NSE", "10-Q", "10-Q", "10-Q", "10-K",
 AEP_DATES = ["2023-02-15", "2023-08-14", "2023-11-01", "2024-05-01",
             "2024-08-01", "2025-02-14", "2025-08-13", "2025-11-03",
             "2026-02-13", "2026-05-01"]
-aep = credit.delisting_filing(4904, fake_submissions(AEP_FORMS, AEP_DATES))
+aep = credit.delisting_filing(4904, fake_submissions(AEP_FORMS, AEP_DATES),
+                              today="2026-06-01")
 assert aep is not None
 assert aep["form"] == "25-NSE" and aep["filed"] == "2025-08-13", aep
 assert aep["likely_primary_delisting"] is False, \
@@ -811,16 +815,48 @@ print(f"AEP's real filing history: {aep['form']} filed {aep['filed']}, but a "
       f"10-Q followed on {AEP_DATES[7]} — read as NOT a primary delisting, "
       f"which is the correct answer for a company still filing 10-Ks in 2026")
 
+# ---- the right-censoring bug this actually shipped with, once ----
+# The first version of this check, run for real against 446 companies,
+# called Electronic Arts, Brown-Forman and Philip Morris "delisted" — three
+# ordinary still-trading blue chips. Each had filed a Form 25-NSE only
+# weeks before the check ran, and no 10-Q had had TIME to follow yet — the
+# absence of a filing that has not had a chance to exist was read as
+# evidence of nothing having happened, which is backwards. Reproduced
+# here with EA's real recent filing (25-NSE, 2026-08-04) and `today` set
+# to 9 days later, the same gap the live check actually had:
+ea_recent = credit.delisting_filing(
+    1650, fake_submissions(["10-Q", "25-NSE"], ["2026-05-01", "2026-08-04"]),
+    today="2026-08-13")
+assert ea_recent is not None
+assert ea_recent["likely_primary_delisting"] is None, \
+    (f"a Form 25-NSE only 9 days old was read as a confirmed delisting for "
+     f"a company that simply has not had time to file its next 10-Q: {ea_recent}")
+print(f"a delisting-family filing only 9 days old answers 'not enough time "
+      f"has passed to say' rather than guessing 'delisted' from silence "
+      f"that has not had a chance to end — the exact bug a real run of this "
+      f"check against EA, Brown-Forman and Philip Morris caught")
+
+# and once enough time genuinely has elapsed with nothing filed since, the
+# same shape of company (a Form 25-NSE and silence, this time a full year
+# later) is correctly called a likely delisting
+ea_stale = credit.delisting_filing(
+    1650, fake_submissions(["10-Q", "25-NSE"], ["2026-05-01", "2026-08-04"]),
+    today="2027-09-01")
+assert ea_stale["likely_primary_delisting"] is True, ea_stale
+print("  and a full year of the same silence IS read as a likely delisting")
+
 # a filer with nothing delisting-shaped on record answers None, not a guess
 clean = credit.delisting_filing(320193, fake_submissions(
-    ["10-K", "10-Q", "8-K"], ["2026-01-01", "2026-04-01", "2026-05-01"]))
+    ["10-K", "10-Q", "8-K"], ["2026-01-01", "2026-04-01", "2026-05-01"]),
+    today="2026-06-01")
 assert clean is None
 print("a filer with no delisting-family filing on record answers None")
 
 # the Form 25 effective-date rule: filing date + 10 BUSINESS days, per
 # 17 CFR 240.12d2-2 — not 10 calendar days, which would land on a weekend
 # here and misstate the actual effective date by two days
-form25 = credit.delisting_filing(1, fake_submissions(["25"], ["2026-03-02"]))
+form25 = credit.delisting_filing(1, fake_submissions(["25"], ["2026-03-02"]),
+                                 today="2026-03-05")
 assert form25["effective"] == "2026-03-16", form25
 # 2026-03-02 is a Monday; +10 business days lands on 2026-03-16, a Monday —
 # crossing two weekends, which +10 calendar days (2026-03-12) would miss
