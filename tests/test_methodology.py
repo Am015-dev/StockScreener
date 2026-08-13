@@ -74,14 +74,30 @@ def row(**kw):
 
 
 P = screener.clean_params({})
-neutral, _ = screener.score_row(row(), P)
-buy, _ = screener.score_row(row(analyst_mean=1.8), P)
-sell, _ = screener.score_row(row(analyst_mean=4.2), P)
+neutral, _, _ = screener.score_row(row(), P)
+buy, _, _ = screener.score_row(row(analyst_mean=1.8), P)
+sell, _, _ = screener.score_row(row(analyst_mean=4.2), P)
 assert buy > neutral > sell, (buy, neutral, sell)
 assert neutral - sell >= 25, \
     f"a Sell consensus cost only {neutral - sell} points — it contradicts the " \
     f"entire premise of buying the dip and must not be a rounding error"
 assert sell < 50, f"a Sell-rated name scored {sell}; it must not read as 'okay'"
+
+# ---- the per-row breakdown must sum to exactly the displayed score ----
+# A reader who expands a row on /full sees this arithmetic. Hiding the
+# penalty or the 0-100 clamp inside a rounding gap would make it a lie.
+for label, r in [
+    ("normal", row()),
+    ("penalized", row(analyst_mean=4.2, flags="a,b,c")),
+    ("heavily penalized (forces the clamp)",
+     row(RR=0.1, RSI=90.0, analyst_mean=4.9,
+         flags="a,b,c,d,e,f,g,h,i,j")),
+]:
+    sc, _, parts = screener.score_row(r, P)
+    total = sum(parts.values())
+    assert abs(total - sc) < 1e-6, \
+        f"{label}: breakdown summed to {total}, displayed score is {sc} — {parts}"
+print("score breakdown: sums to the exact displayed score in all three cases")
 print(f"analyst Sell: {neutral} -> {sell} (Buy {buy}) — no longer a top-half score")
 
 # ---- an implausible reward:risk is a data fault, not an opportunity ----

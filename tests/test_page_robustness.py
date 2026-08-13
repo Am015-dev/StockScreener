@@ -239,4 +239,21 @@ for old in ("/brief", "/today"):
     assert r.status_code in (301, 302, 200), (old, r.status_code)
     print(f"{old} still answers ({r.status_code})")
 
+# ---- rows written before the per-row score breakdown existed ----
+# /full's click-to-expand reads row.score_parts client-side; a row from an
+# older CSV reload, a mirrored browser snapshot, or a published payload
+# predating this feature simply won't have the key. /status must keep
+# serving those rows as valid JSON — the JS falls back to the rationale
+# string on its own, but that only works if the row reaches the browser.
+_old_row = dict(GOOD); _old_row.pop("score", None)
+_old_row["score"] = 71
+A._state.update(results=[_old_row], top_picks=[_old_row], pending=[],
+                results_ts=time.time(), status="done")
+_status_r = c.get("/status")
+assert _status_r.status_code == 200
+_status_json = _status_r.get_json()
+assert _status_json["results"][0].get("score_parts") is None, \
+    "a row with no score_parts must round-trip through /status without one being invented"
+print("/status serves rows with no score_parts (old data) as plain 200 JSON")
+
 print("\nNO-RECOMMENDATION AND REACHABILITY PINNED")

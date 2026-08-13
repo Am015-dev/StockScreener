@@ -623,7 +623,11 @@ def _run_scan(params):
         _state["concentration"] = result.get("concentration")
         _state["results_ts"] = time.time()
         if len(df):
-            df.to_csv(RESULTS_CSV, index=False)
+            # score_parts is a dict per row — pandas would stringify it on
+            # write and hand back a broken non-dict on the next read, and
+            # this file exists purely for warm-restart continuity, not as
+            # a permanent store; drop it rather than round-trip it wrong.
+            df.drop(columns=["score_parts"], errors="ignore").to_csv(RESULTS_CSV, index=False)
 
         # track record: log today's picks, grade every still-open past pick
         try:
@@ -2685,9 +2689,14 @@ def results_csv():
     # BLOCKED rows; a CSV that quietly contains only the 25 that passed
     # would let someone act on a filtered list while believing they had
     # the whole scan — the same fail-open the quarantine exists to stop.
-    rows = [dict(r, row_type="pick") for r in _state["results"]]
-    rows += [dict(r, row_type="BLOCKED", score=None, shares=None,
-                  risk_EUR=None, cum_risk_EUR=None)
+    # score_parts is a dict for the /full click-to-expand breakdown, not a
+    # flat CSV cell — drop it here rather than let pandas stringify it into
+    # an unreadable blob for anyone opening this in a spreadsheet.
+    rows = [{k: v for k, v in dict(r, row_type="pick").items() if k != "score_parts"}
+            for r in _state["results"]]
+    rows += [{k: v for k, v in dict(r, row_type="BLOCKED", score=None, shares=None,
+                                     risk_EUR=None, cum_risk_EUR=None).items()
+               if k != "score_parts"}
              for r in (_state.get("pending") or [])]
     df = pd.DataFrame(rows)
     if "row_type" in df.columns:      # lead with it; it changes how to read the row

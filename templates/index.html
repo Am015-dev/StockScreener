@@ -236,6 +236,18 @@
   th.sortable:hover { color: var(--accent); }
   th.sorted { color: var(--accent); }
   .empty { color: var(--ink-3); font-style: italic; }
+  tbody tr.expandable { cursor: pointer; }
+  tr.detailrow > td { background: var(--surface-2); cursor: default; }
+  .bars { display: grid; gap: .3rem; padding: .6rem .2rem; max-width: 32rem; }
+  .bar { display: grid; grid-template-columns: 10rem 1fr auto; gap: .6rem;
+         align-items: center; font-size: .8125rem; }
+  .bar .t { color: var(--ink-2); text-align: left; }
+  .bar .track { display: block; height: 6px; border-radius: 3px; overflow: hidden;
+                background: color-mix(in srgb, var(--ink-3) 18%, transparent); }
+  .bar .fill { display: block; height: 6px; border-radius: 3px;
+               background: var(--accent); min-width: 0; }
+  .bar .fill.neg { background: var(--red); }
+  .bar .v { color: var(--ink-3); font-variant-numeric: tabular-nums; text-align: right; }
   .tablewrap { overflow-x: auto; }
   .hint { font-size: .8125rem; color: var(--ink-2); margin-top: var(--sp-2); }
 
@@ -782,6 +794,86 @@ let poller = null;
 // tool stands behind — a sort is the reader overriding it, so it is not
 // persisted across reloads and the header says which column is active.
 let sortKey = null, sortDesc = true;
+let nearSortKey = null, nearSortDesc = true;
+let rejSortKey = null, rejSortDesc = true;
+let jRecentSortKey = null, jRecentSortDesc = true;
+let jOpenSortKey = null, jOpenSortDesc = true;
+let lastAllRows = [];   // current results table rows, for the click-to-expand handler
+let lastNearRows = [];  // current "Best of the rest" rows, same purpose
+
+// The maximum points each score component can contribute (screener.py's
+// score_row weights), used only to size the bar fills — the numbers
+// themselves come from the row's own score_parts. Also fixes the display
+// order: jsonify sorts object keys alphabetically, which would otherwise
+// scramble "reward vs risk" (30 points) in between "penalties" and
+// "pullback volume".
+const PART_MAX = {"reward vs risk": 30, "strength vs market": 15,
+                   "depth of the dip": 15, "closeness to support": 15,
+                   "pullback volume": 10, "earnings distance": 7.5,
+                   "analyst consensus": 7.5};
+const PART_ORDER = ["reward vs risk", "strength vs market", "depth of the dip",
+                     "closeness to support", "pullback volume", "earnings distance",
+                     "analyst consensus", "penalties", "did not qualify",
+                     "clamp", "rounding"];
+
+function renderScoreBars(parts) {
+  const entries = Object.entries(parts).sort((a, b) =>
+    PART_ORDER.indexOf(a[0]) - PART_ORDER.indexOf(b[0]));
+  return '<div class="bars">' + entries.map(([k, v]) => {
+    const max = PART_MAX[k] || 30;
+    const pct = Math.max(0, Math.min(100, Math.abs(v) / max * 100));
+    const neg = v < 0;
+    const shown = Math.round(v * 10) / 10;
+    return `<div class="bar"><span class="t">${esc(k)}</span>` +
+      `<span class="track"><span class="fill${neg ? " neg" : ""}" style="width:${pct.toFixed(0)}%"></span></span>` +
+      `<span class="v">${shown > 0 ? "+" : ""}${esc(shown)}</span></div>`;
+  }).join("") + "</div>";
+}
+
+// Shared comparator for every sortable table on this page: blanks sort
+// last regardless of direction, numbers compare as numbers, everything
+// else as natural-sort text. One implementation so "Best of the rest",
+// the journal, and the rejection table all sort exactly like the main
+// results table already did.
+function sortRows(rows, key, desc) {
+  if (!key) return rows;
+  const dir = desc ? -1 : 1;
+  return rows.slice().sort((a, b) => {
+    const x = a[key], y = b[key];
+    const xn = x == null || x === "", yn = y == null || y === "";
+    if (xn && yn) return 0;
+    if (xn) return 1;
+    if (yn) return -1;
+    return (typeof x === "number" && typeof y === "number"
+      ? x - y : String(x).localeCompare(String(y), undefined, {numeric: true})) * dir;
+  });
+}
+
+// Wires the same three-click cycle (desc -> asc -> unsorted) the main
+// results table uses, via one delegated listener so re-rendering the
+// table on every poll never leaks listeners. `getState`/`setState` read
+// and update the module-level sort vars for that table; `onChange` is
+// called to re-render.
+function wireSortable(container, getState, setState, onChange) {
+  if (container.dataset.sortWired) return;
+  container.dataset.sortWired = "1";
+  container.addEventListener("click", ev => {
+    const th = ev.target.closest("th[data-sort]");
+    if (!th) return;
+    const k = th.dataset.sort;
+    const {key, desc} = getState();
+    if (key === k && desc) setState(k, false);
+    else if (key === k) setState(null, true);
+    else setState(k, true);
+    onChange();
+  });
+}
+
+function sortHeader(key, label, tip, curKey, curDesc) {
+  return `<th data-tip="${esc(tip)}" data-sort="${esc(key)}" class="sortable` +
+    `${curKey === key ? " sorted" : ""}">${esc(label)}` +
+    `${curKey === key ? (curDesc ? " ▼" : " ▲") : ""}</th>`;
+}
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({
@@ -1076,24 +1168,28 @@ function renderNearBoard(nearRows, hints, nQualified) {
   const sec = document.getElementById("nearSection");
   if (!nearRows || !nearRows.length) { sec.style.display = "none"; return; }
   sec.style.display = "";
-  document.getElementById("nearBoard").innerHTML =
+  const nb = document.getElementById("nearBoard");
+  const sorted = sortRows(nearRows, nearSortKey, nearSortDesc);
+  lastNearRows = sorted;
+  nb.innerHTML =
     "<table class=\"rsp\"><thead><tr>" +
-    `<th data-tip="Ticker — hover for the company name.">Stock</th>` +
-    `<th data-tip="Quality score after a penalty for each failed filter.">Score</th>` +
+    sortHeader("ticker", "Stock", "Ticker — hover for the company name.", nearSortKey, nearSortDesc) +
+    sortHeader("score", "Score", "Quality score after a penalty for each failed filter.", nearSortKey, nearSortDesc) +
     `<th data-tip="Exactly which of your filters this setup failed, with the numbers.">Why it didn't qualify</th>` +
-    `<th data-tip="Industry the company is in.">Sector</th>` +
-    `<th data-tip="Company size (market value) in billions of dollars.">Size</th>` +
+    sortHeader("sector", "Sector", "Industry the company is in.", nearSortKey, nearSortDesc) +
+    sortHeader("mktcap_b", "Size", "Company size (market value) in billions of dollars.", nearSortKey, nearSortDesc) +
     `<th data-tip="Wall Street analyst consensus (via Yahoo). (n) = number of analysts.">Analysts</th>` +
-    `<th data-tip="Latest price the screen used.">Price</th>` +
-    `<th data-tip="Sell-stop level that caps your loss.">Stop-loss</th>` +
-    `<th data-tip="The recent high — where you'd take profit.">Target</th>` +
-    `<th data-tip="Possible gain vs possible loss.">Reward:Risk</th>` +
-    `<th data-tip="Momentum 0–100; your dip zone is set in the filters.">RSI</th>` +
-    `<th data-tip="Suggested share count for your risk settings.">Buy (shares)</th>` +
-    `<th data-tip="Your worst case if the stop-loss is hit.">€ at risk</th>` +
+    sortHeader("price", "Price", "Latest price the screen used.", nearSortKey, nearSortDesc) +
+    sortHeader("stop", "Stop-loss", "Sell-stop level that caps your loss.", nearSortKey, nearSortDesc) +
+    sortHeader("resistance", "Target", "The recent high — where you'd take profit.", nearSortKey, nearSortDesc) +
+    sortHeader("RR", "Reward:Risk", "Possible gain vs possible loss.", nearSortKey, nearSortDesc) +
+    sortHeader("RSI", "RSI", "Momentum 0–100; your dip zone is set in the filters.", nearSortKey, nearSortDesc) +
+    sortHeader("shares", "Buy (shares)", "Suggested share count for your risk settings.", nearSortKey, nearSortDesc) +
+    sortHeader("risk_EUR", "€ at risk", "Your worst case if the stop-loss is hit.", nearSortKey, nearSortDesc) +
     "</tr></thead><tbody>" +
-    nearRows.map(r =>
-      `<tr><td data-l="Stock"${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
+    sorted.map((r, idx) =>
+      `<tr class="expandable" data-idx="${idx}" title="Click for the score breakdown">` +
+      `<td data-l="Stock"${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
       `<td class="score" style="color:${scoreColor(r.score)}" data-l="Score">${esc(r.score)}</td>` +
       `<td class="whynot" data-l="Why not">${esc(r.why_not || "")}</td>` +
       `<td data-l="Sector">${esc(r.sector && r.sector !== "?" ? r.sector : "—")}</td>` +
@@ -1103,6 +1199,29 @@ function renderNearBoard(nearRows, hints, nQualified) {
       `<td class="rr" data-l="Reward:Risk">${esc(r.RR)}</td><td data-l="RSI">${esc(r.RSI)}</td>` +
       `<td data-l="Buy (shares)">${esc(r.shares)}</td><td data-l="€ at risk">€${esc(r.risk_EUR)}</td></tr>`).join("") +
     "</tbody></table>";
+  if (!nb.dataset.expandWired) {
+    nb.dataset.expandWired = "1";
+    nb.addEventListener("click", ev => {
+      if (ev.target.closest("th")) return;
+      const tr = ev.target.closest("tbody tr[data-idx]");
+      if (!tr) return;
+      const next = tr.nextElementSibling;
+      if (next && next.classList.contains("detailrow")) { next.remove(); return; }
+      nb.querySelectorAll("tr.detailrow").forEach(el => el.remove());
+      const row = lastNearRows[Number(tr.dataset.idx)];
+      if (!row) return;
+      const detail = document.createElement("tr");
+      detail.className = "detailrow";
+      detail.innerHTML = `<td colspan="${tr.children.length}">` +
+        (row.score_parts ? renderScoreBars(row.score_parts)
+                          : `<div class="bars">${esc(row.why_not || "")}</div>`) + "</td>";
+      tr.after(detail);
+    });
+  }
+  wireSortable(nb,
+    () => ({key: nearSortKey, desc: nearSortDesc}),
+    (k, d) => { nearSortKey = k; nearSortDesc = d; },
+    refresh);
 }
 
 // ---- simulation ----
@@ -1487,10 +1606,18 @@ function renderJournal(j) {
   const rw = document.getElementById("journalRecentWrap");
   if (j.recent && j.recent.length) {
     rw.style.display = "";
-    document.getElementById("journalRecent").innerHTML =
-      "<table class=\"rsp\"><thead><tr><th>Stock</th><th>Picked</th><th>Resolved</th>" +
-      "<th style='text-align:left'>What happened</th><th>Result</th><th>Score was</th></tr></thead><tbody>" +
-      j.recent.map(r => {
+    const rEl = document.getElementById("journalRecent");
+    const recentRows = sortRows(j.recent, jRecentSortKey, jRecentSortDesc);
+    rEl.innerHTML =
+      "<table class=\"rsp\"><thead><tr>" +
+      sortHeader("ticker", "Stock", "The ticker.", jRecentSortKey, jRecentSortDesc) +
+      sortHeader("scan_date", "Picked", "When this pick was first published.", jRecentSortKey, jRecentSortDesc) +
+      sortHeader("resolved_date", "Resolved", "When the target or stop was hit.", jRecentSortKey, jRecentSortDesc) +
+      `<th style='text-align:left' data-tip="How it resolved.">What happened</th>` +
+      sortHeader("outcome_r", "Result", "Result in units of planned risk.", jRecentSortKey, jRecentSortDesc) +
+      sortHeader("score", "Score was", "The score this pick carried when published.", jRecentSortKey, jRecentSortDesc) +
+      "</tr></thead><tbody>" +
+      recentRows.map(r => {
         const [txt, col] = OUTCOME_TEXT[r.status] || [r.status, "var(--muted)"];
         return `<tr><td data-l="Stock">${esc(r.ticker)}</td><td data-l="Picked">${esc(r.scan_date)}</td>` +
           `<td data-l="Resolved">${esc(r.resolved_date ?? "—")}</td>` +
@@ -1498,18 +1625,34 @@ function renderJournal(j) {
           `<td style="color:${col};font-weight:700" data-l="Result">${esc(rFmt(r.outcome_r))}</td>` +
           `<td data-l="Score was">${esc(r.score ?? "—")}</td></tr>`;
       }).join("") + "</tbody></table>";
+    wireSortable(rEl,
+      () => ({key: jRecentSortKey, desc: jRecentSortDesc}),
+      (k, d) => { jRecentSortKey = k; jRecentSortDesc = d; },
+      refresh);
   } else rw.style.display = "none";
 
   const ow = document.getElementById("journalOpenWrap");
   if (j.open && j.open.length) {
     ow.style.display = "";
-    document.getElementById("journalOpen").innerHTML =
-      "<table class=\"rsp\"><thead><tr><th>Stock</th><th>Picked</th><th>Entry was</th>" +
-      "<th>Stop-loss</th><th>Target</th><th>Days open</th></tr></thead><tbody>" +
-      j.open.map(r =>
+    const oEl = document.getElementById("journalOpen");
+    const openRows = sortRows(j.open, jOpenSortKey, jOpenSortDesc);
+    oEl.innerHTML =
+      "<table class=\"rsp\"><thead><tr>" +
+      sortHeader("ticker", "Stock", "The ticker.", jOpenSortKey, jOpenSortDesc) +
+      sortHeader("scan_date", "Picked", "When this pick was first published.", jOpenSortKey, jOpenSortDesc) +
+      sortHeader("entry", "Entry was", "The price when this pick was published.", jOpenSortKey, jOpenSortDesc) +
+      sortHeader("stop", "Stop-loss", "The sell-stop that caps the loss.", jOpenSortKey, jOpenSortDesc) +
+      sortHeader("target", "Target", "The recent high — where you'd take profit.", jOpenSortKey, jOpenSortDesc) +
+      sortHeader("days_open", "Days open", "Trading days since this pick was published.", jOpenSortKey, jOpenSortDesc) +
+      "</tr></thead><tbody>" +
+      openRows.map(r =>
         `<tr><td data-l="Stock">${esc(r.ticker)}</td><td data-l="Picked">${esc(r.scan_date)}</td><td data-l="Entry was">${esc(r.entry)}</td>` +
         `<td data-l="Stop-loss">${esc(r.stop)}</td><td data-l="Target">${esc(r.target)}</td><td data-l="Days open">${esc(r.days_open)}</td></tr>`)
       .join("") + "</tbody></table>";
+    wireSortable(oEl,
+      () => ({key: jOpenSortKey, desc: jOpenSortDesc}),
+      (k, d) => { jOpenSortKey = k; jOpenSortDesc = d; },
+      refresh);
   } else ow.style.display = "none";
 }
 
@@ -1760,6 +1903,37 @@ async function refresh() {
       refresh();
     });
   }
+  // A second delegated listener, separate from sorting: clicking a row
+  // (not a header) toggles an inline breakdown of the exact arithmetic
+  // behind its score. Reads from lastAllRows rather than re-fetching, so
+  // it works between polls too.
+  if (!res.dataset.expandWired) {
+    res.dataset.expandWired = "1";
+    res.addEventListener("click", ev => {
+      if (ev.target.closest("th")) return;
+      const tr = ev.target.closest("tbody tr[data-idx]");
+      if (!tr) return;
+      const next = tr.nextElementSibling;
+      if (next && next.classList.contains("detailrow")) { next.remove(); return; }
+      res.querySelectorAll("tr.detailrow").forEach(el => el.remove());
+      const row = lastAllRows[Number(tr.dataset.idx)];
+      if (!row) return;
+      const colspan = tr.children.length;
+      let body;
+      if (row.__blocked) {
+        body = `<div class="bars">${esc(row.why_not || "not enough information to say why")}</div>`;
+      } else if (row.score_parts) {
+        body = renderScoreBars(row.score_parts);
+      } else {
+        body = `<div class="bars">${esc(row.rationale || "")}` +
+               `<div class="hint" style="margin-top:.3rem">stored before the breakdown existed — rerun to get one</div></div>`;
+      }
+      const detail = document.createElement("tr");
+      detail.className = "detailrow";
+      detail.innerHTML = `<td colspan="${colspan}">${body}</td>`;
+      tr.after(detail);
+    });
+  }
   const count = document.getElementById("resultCount");
   const csv = document.getElementById("csvLink");
   if (s.results && s.results.length) {
@@ -1801,6 +1975,7 @@ async function refresh() {
       });
     }
     const allRows = blocked.concat(picks);
+    lastAllRows = allRows;
     count.textContent = blocked.length
       ? `(${s.results.length} + ${blocked.length} blocked)` : `(${s.results.length})`;
     csv.style.display = "";
@@ -1811,7 +1986,7 @@ async function refresh() {
         `${sortKey === k ? " sorted" : ""}">${esc(label)}` +
         `${sortKey === k ? (sortDesc ? " ▼" : " ▲") : ""}</th>`).join("") +
       "</tr></thead><tbody>" +
-      allRows.map(row => `<tr${row.__blocked ? ' class="blockedrow"' : ""}>` +
+      allRows.map((row, idx) => `<tr class="expandable${row.__blocked ? " blockedrow" : ""}" data-idx="${idx}" title="Click for the score breakdown">` +
         cols.map(([k, label, tip, fmt]) => {
         if (row.__blocked) {
           // a blocked pick has no score and no share count: showing either
@@ -1883,11 +2058,24 @@ async function refresh() {
     document.getElementById("rejIntro").textContent =
       `${total} stocks were checked and filtered out. This is the funnel doing its job — ` +
       `here is what disqualified them:`;
-    document.getElementById("rejections").innerHTML =
-      "<table><thead><tr><th>Reason</th><th># stocks</th></tr></thead><tbody>" +
-      [...agg.entries()].sort((a, b) => b[1] - a[1]).map(([t, n]) =>
-        `<tr><td style="text-align:left">${esc(t)}</td><td>${esc(n)}</td></tr>`).join("") +
+    // sorted by count descending by default (rejSortKey starts null), same
+    // as before this table could be reordered by hand
+    let rows = [...agg.entries()].map(([reason, n]) => ({reason, n}));
+    rows = rejSortKey ? sortRows(rows, rejSortKey, rejSortDesc)
+                       : rows.sort((a, b) => b.n - a.n);
+    const rejBox = document.getElementById("rejections");
+    rejBox.innerHTML =
+      "<table><thead><tr>" +
+      sortHeader("reason", "Reason", "Why the stock was filtered out.", rejSortKey, rejSortDesc) +
+      sortHeader("n", "# stocks", "How many stocks hit this reason.", rejSortKey, rejSortDesc) +
+      "</tr></thead><tbody>" +
+      rows.map(r =>
+        `<tr><td style="text-align:left">${esc(r.reason)}</td><td>${esc(r.n)}</td></tr>`).join("") +
       "</tbody></table>";
+    wireSortable(rejBox,
+      () => ({key: rejSortKey, desc: rejSortDesc}),
+      (k, d) => { rejSortKey = k; rejSortDesc = d; },
+      refresh);
   }
 
   if (s.status !== "running" && s.bt_status !== "running" && poller && s.status !== "idle") {

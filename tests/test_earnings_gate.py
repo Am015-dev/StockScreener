@@ -173,9 +173,9 @@ def row(**kw):
 
 
 P = screener.clean_params({})
-unknown, _ = screener.score_row(row(), P)
-clear, _ = screener.score_row(row(earnings_in=f">{screener.EARN_CAL_DAYS}d"), P)
-soon, _ = screener.score_row(row(days_to_earnings=4, earnings_in="4d"), P)
+unknown, _, _ = screener.score_row(row(), P)
+clear, _, _ = screener.score_row(row(earnings_in=f">{screener.EARN_CAL_DAYS}d"), P)
+soon, _, _ = screener.score_row(row(days_to_earnings=4, earnings_in="4d"), P)
 assert clear > unknown > soon, (clear, unknown, soon)
 print(f"scoring: verified-clear {clear} > unknown {unknown} > reports-soon {soon}")
 
