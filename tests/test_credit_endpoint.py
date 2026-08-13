@@ -93,6 +93,14 @@ A._sec_json = fake_sec
 A._cik_for = lambda t, timeout=8.0: CIK.get((t or "").upper())
 A._price_book = lambda fetch=False: {t: PRICES for t in LEVERAGE}
 A._state["results"] = [{"ticker": t} for t in LEVERAGE]
+# Split the twelve into two sectors of six — enough for the exact-SIC
+# level to activate on its own (5 OTHER measured names, the same floor
+# percentile() enforces everywhere else). Mocked here for the same reason
+# _sec_json is: without it, every _credit_for() call would make a real,
+# unmocked network request to resolve each fake CIK's identity.
+SIC = {t: ("1000" if i < 6 else "2000") for i, t in enumerate(LEVERAGE)}
+A._company_identity = lambda cik, timeout=10.0: {
+    "sic": SIC.get(BY_CIK.get(cik), None), "sic_desc": None, "name": None}
 
 client = A.app.test_client()
 
@@ -104,6 +112,21 @@ assert first["percentile"] is None, \
     "with no other name measured there is no ranking to report"
 assert first["peers_n"] == 0
 print("cold cache: the distance is reported, the ranking honestly is not")
+
+# ---- a live-fetched report carries its own share count -------------
+# credit.history() needs the share count to re-solve the model at each
+# past close. A report resolved through _credit_for's live SEC-fetch
+# path (nothing published yet) fetched this exact number to price the
+# report — equity = shares x last close — and then threw it away,
+# silently switching the chart off for every ticker not already on a
+# scan's board.
+live_iii = A._credit_for("III")
+assert live_iii["shares"] == SHARES, \
+    f"the fetched share count must survive onto the report, got {live_iii.get('shares')}"
+iii_page = client.get("/credit/III").get_data(as_text=True)
+assert "<polyline" in iii_page, \
+    "a live-fetched (not yet published) company must still get its history chart"
+print("a live-fetched report carries its own share count, and the chart renders from it")
 
 # ---- the warmer measures the board ----------------------------------
 A._warm_credit()
@@ -131,6 +154,48 @@ assert dds == sorted(dds, reverse=True), \
     f"more debt must mean less distance from default: {list(zip(order, dds))}"
 assert ranks[order[0]][1] == 100 and ranks[order[-1]][1] == 0, ranks
 print("more debt ranks lower, every time, across the whole board")
+
+# ---- sector-relative standing rides alongside the whole-board one ----
+# Six names share sic 1000, six share sic 2000 — enough for each to get a
+# genuine exact-SIC comparison (5 other measured names) rather than a
+# fallback to the whole board. A middling name (its OWN sector's median)
+# must not read as the same percentile against the whole 12-name board,
+# which mixes both sectors' leverage ranges together.
+sector_of = {t: client.post("/credit", json={"ticker": t}).get_json()
+            for t in LEVERAGE}
+for t, d in sector_of.items():
+    assert d["sector"] == SIC[t] and d["sector_level"] == "sic", \
+        f"{t} should get a genuine exact-SIC comparison: {d}"
+    assert d["sector_peers_n"] == 5, d          # 6 in the sector, 5 others
+    assert d["sector_fallback"] is False, d
+sector_1 = [t for t in LEVERAGE if SIC[t] == "1000"]
+sector_1_page = client.get(f"/credit/{sector_1[2]}").get_data(as_text=True)
+assert "the same industry" in sector_1_page or "a related part of the market" \
+    in sector_1_page, "the sector comparison must say it is a sector comparison"
+print(f"each name gets its own sector's percentile ({sector_of[sector_1[0]]['sector']}), "
+      f"alongside — not instead of — the whole-board one")
+
+# ---- the leverage/volatility decomposition moves the SAME direction ----
+# checked WITHIN each sector separately, since leverage_percentile is a
+# sector-relative figure — GGG carries more absolute debt than FFF but
+# still reads as its OWN sector's safest, because sector 2000's scale
+# resets independently of sector 1000's. A naive whole-board percentile()
+# on leverage would also rank the MOST indebted name highest; this must
+# not, in EITHER sector.
+for sec in ("1000", "2000"):
+    names = [t for t in LEVERAGE if SIC[t] == sec]
+    lev_order = sorted(names, key=lambda t: LEVERAGE[t])         # safest first
+    lev_pcts = [sector_of[t]["leverage_percentile"] for t in lev_order]
+    assert all(v is not None for v in lev_pcts), lev_pcts
+    assert lev_pcts == sorted(lev_pcts, reverse=True), \
+        (f"less debt must read as a HIGHER leverage percentile within its "
+         f"own sector, always: {list(zip(lev_order, lev_pcts))}")
+    assert lev_pcts[0] == 100, "the least-levered name in its sector must be safest"
+_lev_page = client.get(f"/credit/AAA").get_data(as_text=True)
+assert "safer than" in _lev_page and "on how hard its" in _lev_page, \
+    "the risk decomposition must be visible on the page, not just in the JSON"
+print("leverage percentile reads 'higher = safer' consistently within each "
+      "sector, and is on the page")
 
 # ---- a name off the board is still measurable, just unranked ---------
 A._state["results"] = []
@@ -370,18 +435,32 @@ A._price_book = lambda fetch=False: _prices
 PUBLISHED_CREDIT["P05"].update(shares=1e9, default_point=4e10, equity_vol=0.30,
                                equity=1e11, asset_vol=0.22, market_leverage=0.35,
                                as_of="2026-06-28", vol_obs=1180,
-                               shares_as_of="2026-07-18", source="Liabilities")
+                               shares_as_of="2026-07-18", source="Liabilities",
+                               name="Placeholder Five, Inc.",
+                               sic_desc="Electronic Computers")
 page = client.get("/credit/P05")
 assert page.status_code == 200, page.status_code
 html = page.get_data(as_text=True)
+assert "Placeholder Five, Inc." in html and "Electronic Computers" in html, \
+    "the company's name and sector are on the page, not just the ticker"
 
 for want in ("P05", "standard deviations", "Where it has been",
              "What is driving it", "Nearest companies measured",
-             "Where the figures came from", "<polyline"):
+             "Where the figures came from", "<polyline",
+             "Over a longer or shorter window"):
     assert want in html, f"the report is missing: {want}"
 # the honest limit has to be ON the page, not in a docstring
 assert "no percentage is quoted" in html
 assert "0.000000%" in html, "the reason no probability is given must be concrete"
+
+# ---- the multi-horizon table: distance only, never a percentage ----
+_hi = html.find("Over a longer or shorter window")
+assert _hi != -1, "the multi-horizon card did not render"
+_hc = html[_hi:html.find('<div class="card">', _hi)]
+assert "0.5" in _hc and ">5 years<" in _hc, \
+    f"the 0.5 and 5 year horizons must both be on the page: {_hc[:300]}"
+assert "%" not in _hc, "the multi-horizon table must never show a percentage"
+print("the multi-horizon table shows distances at several windows, no percentage anywhere in it")
 # and the held-constant caveat, because the line moves with price alone
 assert "held at the" in html and "filing across this" in html
 print("the report carries the metric, the history, the drivers, the peers "
@@ -395,7 +474,7 @@ blank = client.get("/credit/NOPE").get_data(as_text=True)
 assert "Not measured" in blank
 assert "never as safe" in blank, \
     "an unmeasured company must be told apart from a safe one, on the page"
-for banned in ("<polyline", "standard deviations —"):
+for banned in ("<polyline", "standard deviations —", "Over a longer or shorter window"):
     assert banned not in blank, f"an unmeasured company must not render {banned}"
 print("an unmeasured company gets a page that states it, with no chart and no band")
 
@@ -407,11 +486,13 @@ print("\nPUBLISHED CREDIT BOOK PINNED")
 # published book fell through to the live SEC fetch and was fully
 # modelled: Cigna's $55bn of claims payable read as debt coming due,
 # with a band, a colour and a peer percentile. Same defect, other door.
-_saved_sic = A._sic_of
+_saved_identity = A._company_identity
 _saved_cik = A._cik_for
 _saved_book = A._credit_book
 try:
-    A._sic_of = lambda cik, timeout=10.0: "6324"
+    A._company_identity = lambda cik, timeout=10.0: {
+        "sic": "6324", "sic_desc": "Hospital & Medical Service Plans",
+        "name": "CIGNA GROUP"}
     A._cik_for = lambda t, timeout=8.0: 1739940
     A._credit_book = lambda fetch=False: {}
     A._creds.update(data={}, ts=0.0)
@@ -419,15 +500,19 @@ try:
     rep = A._credit_for("CI")
     assert rep["dd"] is None and rep.get("not_modelled"), rep
     assert "not modelled" in (rep.get("verdict") or ""), rep
-    print("a financial reached through the live path is refused, not modelled")
+    assert rep["sic_desc"] == "Hospital & Medical Service Plans", rep
+    assert rep["name"] == "CIGNA GROUP", rep
+    print("a financial reached through the live path is refused, not modelled, "
+          "and still carries its name and sector")
 
     # and the refusal is cached, so the next ask costs nothing
-    A._sic_of = lambda cik, timeout=10.0: (_ for _ in ()).throw(AssertionError("hit the network"))
+    A._company_identity = lambda cik, timeout=10.0: (
+        _ for _ in ()).throw(AssertionError("hit the network"))
     rep2 = A._credit_for("CI")
     assert rep2.get("not_modelled"), rep2
     print("the refusal is cached like any other answer")
 finally:
-    A._sic_of = _saved_sic
+    A._company_identity = _saved_identity
     A._cik_for = _saved_cik
     A._credit_book = _saved_book
 

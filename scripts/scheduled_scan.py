@@ -354,11 +354,21 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
             # sector first, and cheaply: a bank or insurer costs one small
             # streamed read and is refused with its reason published, so a
             # reader who asks about it gets the honest answer instead of a
-            # number the model cannot mean
-            sic = (out.get(t) or {}).get("sic") or _sic_of(cik)
+            # number the model cannot mean. Name and sector name ride the
+            # same streamed read — carried forward once known, exactly
+            # like sic, so a company already identified is never fetched
+            # a second time just to relearn its own name.
+            carried = out.get(t) or {}
+            sic, sic_desc, name = (carried.get("sic"), carried.get("sic_desc"),
+                                   carried.get("name"))
+            if sic is None:
+                identity = _company_identity(cik)
+                sic, sic_desc, name = (identity["sic"], identity["sic_desc"],
+                                       identity["name"])
             if credit.is_financial(sic):
                 out[t] = {"ticker": t, "dd": None, "band": None,
-                          "sic": sic, "not_modelled": True, "built": now,
+                          "sic": sic, "sic_desc": sic_desc, "name": name,
+                          "not_modelled": True, "built": now,
                           "verdict": credit.NOT_MODELLED}
                 done += 1
                 continue
@@ -372,6 +382,7 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
             cap_clash = credit.equity_vs_cap(equity, (caps or {}).get(t))
             if cap_clash:
                 out[t] = {"ticker": t, "dd": None, "band": None, "sic": sic,
+                          "sic_desc": sic_desc, "name": name,
                           "built": now, "unmeasurable": True,
                           "verdict": f"Cannot assess — {cap_clash}."}
                 done += 1
@@ -386,6 +397,8 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
             rep["shares_as_of"] = sh.get("as_of")
             rep["shares_tag"] = sh.get("tag")
             rep["sic"] = sic
+            rep["sic_desc"] = sic_desc
+            rep["name"] = name
             rep["capck"] = True
             rep["built"] = now
             if rep.get("dd") is not None:
@@ -419,16 +432,18 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
             break
         time.sleep(0.12)          # SEC asks for 10/second
 
-    # the ranking only means something across the whole set, so it is
-    # recomputed over everything carried plus everything measured
-    dds = sorted(r["dd"] for r in out.values() if r.get("dd") is not None)
-    for r in out.values():
+    # The ranking only means something across the whole set, so it is
+    # recomputed over everything carried plus everything measured — whole
+    # book AND, where enough of the book shares a sector, a sector-relative
+    # standing too (credit.peer_standings widens SIC -> its 2-digit major
+    # group -> the whole book, so a name with a well-covered exact industry
+    # gets a genuinely tight comparison instead of the same wide net every
+    # other name gets).
+    stand = credit.peer_standings(out)
+    for t, r in out.items():
         if r.get("dd") is None:
             continue
-        below = sum(1 for d in dds if d < r["dd"])
-        r["peers_n"] = len(dds) - 1
-        r["percentile"] = (int(round(100.0 * below / (len(dds) - 1)))
-                           if len(dds) >= 6 else None)
+        r.update(stand.get(t, {}))
     print(f"credit book: measured {done} this run, {len(out)} carried in total")
     return out
 
@@ -441,34 +456,35 @@ def _sec_get(url: str, timeout: float = 20):
     return r.json()
 
 
-def _sic_of(cik: int) -> str | None:
-    """The company's SIC code, read from the head of its submissions file.
+def _company_identity(cik: int) -> dict:
+    """SIC code, sector name and legal name, read from the head of the
+    submissions file — same contract as the web instance's copy.
 
-    The submissions JSON runs to a megabyte for a large filer, but the
-    sic field sits in the first few hundred bytes — so this streams and
+    The submissions JSON runs to a megabyte for a large filer, but all
+    three fields sit in the first few hundred bytes — so this streams and
     stops rather than downloading a filing history nobody asked for. A
     regex on a truncated buffer instead of json.loads, deliberately: the
     buffer is not valid JSON and never will be.
     """
-    import re as _re
+    import credit
     import requests
+    empty = {"sic": None, "sic_desc": None, "name": None}
     try:
         r = requests.get(
             f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json",
             headers={"User-Agent": screener.SEC_UA}, timeout=20, stream=True)
         if r.status_code != 200:
             r.close()
-            return None
+            return dict(empty)
         buf = b""
         for chunk in r.iter_content(8192):
             buf += chunk
             if b'"sicDescription"' in buf or len(buf) > 65536:
                 break
         r.close()
-        m = _re.search(rb'"sic"\s*:\s*"?(\d{2,4})"?', buf)
-        return m.group(1).decode() if m else None
     except Exception:
-        return None
+        return dict(empty)
+    return credit.parse_submissions_identity(buf)
 
 
 def _sec_ciks() -> dict:

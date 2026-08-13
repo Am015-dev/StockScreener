@@ -1472,33 +1472,37 @@ def _cik_for(ticker: str, timeout: float = 8.0) -> int | None:
     return m.get(t) or m.get(t.replace(".", "-"))
 
 
-def _sic_of(cik: int, timeout: float = 10.0) -> str | None:
-    """The company's SIC code, streamed from the head of its submissions
-    file and abandoned after 64KB. Same contract as the runner's copy:
-    None means unknown, and unknown is NOT treated as financial."""
-    import re as _re
+def _company_identity(cik: int, timeout: float = 10.0) -> dict:
+    """SIC code, sector name and legal name, streamed from the head of the
+    submissions file and abandoned after 64KB — same contract as the
+    runner's copy. All three sit in the first few hundred bytes of any
+    real filer's submissions JSON, so this costs no more than the SIC
+    lookup already did. Any field not found is None; an unknown SIC is
+    NOT treated as financial."""
     import requests as rq
+    empty = {"sic": None, "sic_desc": None, "name": None}
     try:
         r = rq.get(f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json",
                    headers={"User-Agent": screener.SEC_UA},
                    timeout=timeout, stream=True)
         if r.status_code != 200:
             r.close()
-            return None
+            return dict(empty)
         buf = b""
         for chunk in r.iter_content(8192):
             buf += chunk
             if b'"sicDescription"' in buf or len(buf) > 65536:
                 break
         r.close()
-        m = _re.search(rb'"sic"\s*:\s*"?(\d{2,4})"?', buf)
-        return m.group(1).decode() if m else None
     except Exception:
-        return None
+        return dict(empty)
+    return credit.parse_submissions_identity(buf)
 
 
 def _with_peers(rep: dict) -> dict:
-    """Rank a distance against every other measured name on today's board.
+    """Rank a distance against every other measured name on today's board
+    — the whole book, and again within its own sector when enough of the
+    board shares one (see credit.peer_standings).
 
     Computed on read rather than stored with the report, because the peer
     set grows as the board is measured: the first company measured has no
@@ -1511,21 +1515,20 @@ def _with_peers(rep: dict) -> dict:
     me = (rep.get("ticker") or "").upper()
     published = _credit_view() or {}
     if len(published) >= 5:
-        peers = [r["dd"] for t2, r in published.items()
-                 if t2.upper() != me and r.get("dd") is not None]
-        return dict(rep, peers_n=len(peers),
-                    percentile=credit.percentile(rep["dd"], peers))
-    peers = []
+        book = {t2.upper(): r for t2, r in published.items()}
+        book[me] = rep
+        stand = credit.peer_standings(book)
+        return dict(rep, **stand.get(me, {}))
+    book = {me: rep}
     for other in (_state.get("results") or []):
         t2 = (other.get("ticker") or "").upper()
         if not t2 or t2 == me:
             continue
         hit, c = cache_store.fetch(f"credit:{t2}", CREDIT_TTL)
         if hit and isinstance(c, dict) and c.get("dd") is not None:
-            peers.append(c["dd"])
-    rep = dict(rep, peers_n=len(peers),
-               percentile=credit.percentile(rep["dd"], peers))
-    return rep
+            book[t2] = c
+    stand = credit.peer_standings(book)
+    return dict(rep, **stand.get(me, {}))
 
 
 def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
@@ -1598,10 +1601,12 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     # through to here and was fully modelled — Cigna's $55bn of claims
     # payable read as debt coming due, with a band and a percentile. The
     # exact defect the guard exists for, resurrected by the fallback.
-    sic = _sic_of(cik)
+    identity = _company_identity(cik)
+    sic = identity["sic"]
     if credit.is_financial(sic):
         rep = {"ok": True, "ticker": ticker, "dd": None, "band": None,
-               "sic": sic, "not_modelled": True,
+               "sic": sic, "sic_desc": identity["sic_desc"],
+               "name": identity["name"], "not_modelled": True,
                "verdict": credit.NOT_MODELLED}
         cache_store.put(key, rep)
         return rep
@@ -1651,6 +1656,19 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     rep["endpoint"] = bs.get("source_endpoint")
     rep["shares_as_of"] = shares.get("as_of")
     rep["shares_tag"] = shares.get("tag")
+    rep["sic"] = sic
+    rep["sic_desc"] = identity["sic_desc"]
+    rep["name"] = identity["name"]
+    # credit.history() needs a share count to re-solve the model at each
+    # past close, and this report's own equity already IS shares x price —
+    # dividing it back out recovers the count exactly when equity came
+    # from shares_outstanding(), and derives a reasonable implied count
+    # (consistent with today's own headline dd) when it came from today's
+    # market cap instead. Either way beats the gap this closes: every
+    # ticker not already in the published book got a live report with no
+    # chart at all, because history() silently returns None the instant
+    # shares is None.
+    rep["shares"] = (equity / float(closes[-1])) if (equity and closes) else None
     _sec_note(rep.get("dd") is not None or not sec.expired)
     # a report that ran out of time is not a report about a company that
     # files nothing, and must not be worded as one — or cached as one
@@ -1697,6 +1715,7 @@ def credit_page(ticker: str):
     pairs = [(d, c) for d, c in zip(all_dates, raw) if c]
     closes = [c for _, c in pairs]
     hist, hdates = None, []
+    horizons = None
     if rep.get("dd") is not None:
         full = credit.history(closes, rep.get("shares"),
                               rep.get("default_point"), rep.get("equity_vol"))
@@ -1704,8 +1723,30 @@ def credit_page(ticker: str):
             pts = [(d, h) for (d, _), h in zip(pairs, full) if h is not None]
             hist = [h for _, h in pts] or None
             hdates = [d for d, _ in pts if d]
-    # nearest neighbours, so "65th percentile" has faces attached to it
-    book = _credit_view() or {}
+        # Different question from the chart above: that one holds the
+        # balance sheet fixed and moves the price through past dates.
+        # This holds TODAY's price and balance sheet fixed and moves the
+        # horizon instead — one extra solve per horizon, no network call,
+        # cheap enough to do for a single page view; not precomputed into
+        # the published book, since restate() would then have to redo it
+        # for the whole ~800-name universe on every read for a card
+        # almost nobody scrolls to.
+        if rep.get("equity") and rep.get("default_point") and rep.get("equity_vol"):
+            horizons = credit.horizon_view(rep["equity"], rep["default_point"],
+                                           rep["equity_vol"])
+    # nearest neighbours, so "65th percentile" has faces attached to it —
+    # from the SAME pool the percentile prose was computed against
+    # (_with_peers already decided sector vs. whole-book for this exact
+    # ticker), so the two parts of the page never describe different sets.
+    # n_measured stays the WHOLE book's count regardless — it is quoted
+    # against "the other companies" figure near the top of the page, and
+    # narrowing it to a sector subset here would make that count lie.
+    whole_book = _credit_view() or {}
+    n_book = sum(1 for r2 in whole_book.values()
+                 if isinstance(r2, dict) and r2.get("dd") is not None)
+    book = whole_book
+    if rep.get("sector_level") in ("sic", "sic_major"):
+        book = credit.filter_sector(book, rep.get("sic"), level=rep["sector_level"])
     peers = sorted(((r.get("dd"), k) for k, r in book.items()
                     if r.get("dd") is not None and k != t))
     near = []
@@ -1716,10 +1757,8 @@ def credit_page(ticker: str):
         i = next(j for j, (_, k) in enumerate(rows) if k == t)
         near = [{"ticker": k, "dd": d, "band": credit.band(d)}
                 for d, k in rows[max(0, i - 2):i + 3]]
-    n_book = sum(1 for r2 in book.values()
-                 if isinstance(r2, dict) and r2.get("dd") is not None)
     return render_template("credit.html", r=rep, t=t, hist=hist, near=near,
-                           dates=hdates,
+                           dates=hdates, horizons=horizons,
                            # the filing date and the price date are different
                            # facts and the report has to carry both — and the
                            # price date is THIS ticker's last real close, not

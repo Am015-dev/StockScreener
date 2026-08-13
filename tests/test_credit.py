@@ -737,6 +737,164 @@ print("financials are recognised by SIC and refused with a reason")
 print("\nSECTOR GUARD PINNED")
 
 
+# ---- identity: real bytes, not an invented shape ----
+# A byte-for-byte capture of what data.sec.gov/submissions/CIK0000320193.json
+# actually starts with (Apple), truncated the same way app.py and
+# scheduled_scan.py truncate it — after "sicDescription" appears. Includes
+# a formerNames array with its OWN nested "name" keys, appearing AFTER the
+# top-level one, because a naive regex that took the wrong match would
+# silently report a company's OLD name instead of its current one.
+_APPLE_BUF = (
+    b'{"cik":"0000320193","entityType":"operating","sic":"3571",'
+    b'"sicDescription":"Electronic Computers","ownerOrg":"06 Technology",'
+    b'"insiderTransactionForOwnerExists":0,'
+    b'"insiderTransactionForIssuerExists":1,"name":"Apple Inc.",'
+    b'"tickers":["AAPL"],"exchanges":["Nasdaq"],'
+    b'"formerNames":[{"name":"APPLE COMPUTER INC","from":"1994-01-01",'
+    b'"to":"2007-01-01"}]}')
+identity = credit.parse_submissions_identity(_APPLE_BUF)
+assert identity == {"sic": "3571", "sic_desc": "Electronic Computers",
+                    "name": "Apple Inc."}, identity
+print(f"a real captured buffer parses to {identity}, "
+      f"not the former name buried later in the same payload")
+
+# a truncated or garbage buffer is a data gap, not a crash
+assert credit.parse_submissions_identity(b"") == \
+    {"sic": None, "sic_desc": None, "name": None}
+assert credit.parse_submissions_identity(b'{"cik":"000') == \
+    {"sic": None, "sic_desc": None, "name": None}
+print("a truncated buffer answers all-None rather than raising")
+
+print("\nIDENTITY PARSING PINNED")
+
+
+# ---- safety_percentile: "higher always means safer", on any metric ----
+# Distance to default is already read that way. Leverage and volatility
+# are the opposite — more of either is worse — so scoring them with a
+# plain percentile() would report a highly-levered company as ranking
+# HIGH: good news, read backwards, for exactly the companies where
+# getting the direction right matters most.
+_lev_peers = [0.20, 0.30, 0.40, 0.50, 0.60]
+assert credit.safety_percentile(0.10, _lev_peers, lower_is_safer=True) == 100, \
+    "the lowest leverage in the group must be the SAFEST, not the worst"
+assert credit.safety_percentile(0.35, _lev_peers, lower_is_safer=True) == 60
+assert credit.safety_percentile(0.60, [0.10, 0.20, 0.30, 0.40, 0.50],
+                                lower_is_safer=True) == 0, \
+    "the highest leverage in the group must be the LEAST safe"
+assert credit.safety_percentile(0.5, [0.1, 0.2, 0.3], lower_is_safer=True) is None, \
+    "under 5 peers must refuse, the same floor percentile() already enforces"
+assert credit.safety_percentile(None, _lev_peers, lower_is_safer=True) is None
+print("higher leverage reads as LESS safe, and lower as MORE — the inversion "
+      "a plain percentile() would get backwards")
+
+# ---- sic_major_group ----
+assert credit.sic_major_group("3571") == "35"
+assert credit.sic_major_group("35") == "35"
+assert credit.sic_major_group(None) is None
+assert credit.sic_major_group("") is None
+assert credit.sic_major_group("9") is None, "one digit is not a major group"
+print("the 2-digit major group is read off the front of the SIC code")
+
+# ---- peer_standings: exact SIC, then its major group, then the whole book ----
+# Six companies share sic 3571 — enough for T1 to get a genuine exact-SIC
+# comparison (5 others, the same floor percentile() itself enforces). Two
+# more share only the 3-major-group "35" (sic 3572) — not enough exact-SIC
+# peers on their own, so S1 falls back one level, to the major group, and
+# picks up the six 3571 companies too. One company (U1) shares its major
+# group with nobody, so it falls all the way to the whole book — the same
+# floor, never "not enough data" when a wider pool exists.
+_book = {
+    "T1": {"dd": 5, "sic": "3571", "market_leverage": 0.10, "asset_vol": 0.15},
+    "T2": {"dd": 4, "sic": "3571", "market_leverage": 0.20, "asset_vol": 0.25},
+    "T3": {"dd": 3, "sic": "3571", "market_leverage": 0.30, "asset_vol": 0.35},
+    "T4": {"dd": 6, "sic": "3571", "market_leverage": 0.40, "asset_vol": 0.45},
+    "T5": {"dd": 2, "sic": "3571", "market_leverage": 0.50, "asset_vol": 0.55},
+    "T6": {"dd": 7, "sic": "3571", "market_leverage": 0.60, "asset_vol": 0.65},
+    "S1": {"dd": 8, "sic": "3572", "market_leverage": 0.05, "asset_vol": 0.10},
+    "S2": {"dd": 9, "sic": "3572", "market_leverage": 0.90, "asset_vol": 0.95},
+    "U1": {"dd": 1, "sic": "9999", "market_leverage": 0.99, "asset_vol": 0.99},
+}
+_stand = credit.peer_standings(_book)
+
+t1 = _stand["T1"]
+assert t1["sector_level"] == "sic" and t1["sector"] == "3571", t1
+assert t1["sector_peers_n"] == 5 and t1["sector_fallback"] is False, t1
+assert t1["percentile"] == 50 and t1["sector_percentile"] == 60, t1
+assert t1["leverage_percentile"] == 100 and t1["volatility_percentile"] == 100, \
+    "the least-levered, calmest company in its exact sector reads as safest on both"
+print(f"T1: exact-SIC comparison ({t1['sector_peers_n']} peers), "
+      f"whole-market {t1['percentile']}% vs sector {t1['sector_percentile']}%")
+
+s1 = _stand["S1"]
+assert s1["sector_level"] == "sic_major" and s1["sector"] == "35", s1
+assert s1["sector_peers_n"] == 7, \
+    "S1's exact sic has only 1 other member, so it must widen to the major group"
+assert s1["percentile"] == 88 and s1["sector_percentile"] == 86, s1
+print(f"S1: exact SIC too thin (1 peer), widened to the major group "
+      f"({s1['sector_peers_n']} peers) rather than refusing")
+
+u1 = _stand["U1"]
+assert u1["sector_level"] == "whole" and u1["sector"] is None, u1
+assert u1["sector_fallback"] is True and u1["sector_percentile"] is None, \
+    "no real sector comparison exists for U1 — a real zero must not be invented"
+assert u1["percentile"] == 0, u1        # the lowest distance in the whole book
+assert u1["leverage_percentile"] == 0 and u1["volatility_percentile"] == 0, \
+    "U1 is the most levered AND the most volatile name in its (whole-book) pool"
+print("U1: no sector peers at any width — falls to the whole book, and says so "
+      "rather than showing a sector percentile that would mean nothing")
+
+# ---- filter_sector must use the SAME level peer_standings() chose ----
+# Passing the wrong level here would show "nearest companies" from a
+# different pool than the one the percentile prose just described.
+exact_group = credit.filter_sector(_book, "3571", level="sic")
+assert set(exact_group) == {"T1", "T2", "T3", "T4", "T5", "T6"}, exact_group
+major_group = credit.filter_sector(_book, "3572", level="sic_major")
+assert set(major_group) == {"T1", "T2", "T3", "T4", "T5", "T6", "S1", "S2"}, major_group
+# U1 shares its major group with nobody ELSE — so the group is itself alone,
+# not empty (it does not know which ticker is "self"; the caller handles
+# that, the same way it already does for "nearest companies measured")
+assert set(credit.filter_sector(_book, "9999", level="sic_major")) == {"U1"}
+# a sic that matches no one in the book at all — genuinely empty
+assert credit.filter_sector(_book, "0100", level="sic_major") == {}, \
+    "a major group nobody in the book shares must return empty"
+print("nearest-companies filtering reuses the exact same level and key the "
+      "percentile prose was computed against")
+
+print("\nSECTOR PEERS PINNED")
+
+
+# ---- horizon_view: the same distance, asked over different windows ----
+# The T=1.0 entry MUST reproduce the standalone T=1 solve above exactly
+# (E0, D, sE0 are the same fixture, at the same 0.0375 risk-free rate;
+# dd is that solve's own result) — it is not a new number, it is the
+# anchor the other horizons are judged against for plausibility. (`r` is
+# reused elsewhere in this file for a report dict by the time this runs,
+# so the rate is written out rather than trusted to still be a float.)
+hv = credit.horizon_view(E0, D, sE0, 0.0375, horizons=(0.5, 1.0, 2.0, 5.0))
+assert [h["years"] for h in hv] == [0.5, 1.0, 2.0, 5.0], hv
+one_yr = next(h for h in hv if h["years"] == 1.0)
+assert abs(one_yr["dd"] - dd) < 0.01, (one_yr, dd)
+assert one_yr["band"] == credit.band(dd)
+print(f"the 1-year entry in the horizon view ({one_yr['dd']}) matches the "
+      f"standalone 1-year solve ({dd:.2f}) exactly")
+
+# every entry is a real distance in the same units, never a percentage —
+# and never silently dropped, even where it cannot be solved
+assert all(isinstance(h["dd"], float) or h["dd"] is None for h in hv)
+assert all("%" not in str(h) for h in hv), \
+    "a multi-horizon view must never smuggle in a probability"
+print("every horizon reports a distance, in the same units, never a percentage")
+
+# an input that cannot be solved at ANY horizon answers with every entry
+# present and every dd/band None — not a shorter list
+hv_bad = credit.horizon_view(1.0, 1.0, 0.0, 0.0375)   # equity_vol=0: unsolvable
+assert len(hv_bad) == 4, hv_bad
+assert all(h["dd"] is None and h["band"] is None for h in hv_bad), hv_bad
+print("an unsolvable input answers None at every horizon, not a shorter list")
+
+print("\nHORIZON VIEW PINNED")
+
+
 # ---- a price line that cannot price the filings is refused ----
 # BABAF — Alibaba's OTC ordinary-share line — was the front page's #1
 # "closest to trouble": the filing's ADS-equivalent share count times
