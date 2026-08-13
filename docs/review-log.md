@@ -106,3 +106,24 @@ volatility, a share count sized to a stated risk budget, a deadline, the
 report date, and the condition that would make it wrong. It ranks on
 survivability, not direction, and twenty of its hundred points sit
 unused at zero because no shape has earned them. The page says so.
+
+## Round 4 — research-driven enhancements: adopt what exists
+
+Per the new CLAUDE.md rule ("never reinvent the wheel"): searched GitHub
+for each gap before writing code.
+
+- **Sortable tables + per-row score breakdown** (closed a KNOWN_ISSUES
+  "not implemented" bullet). No external library — `/full` already had a
+  working sort pattern on its main results table; extracted it into a
+  shared `sortRows`/`wireSortable` helper and applied it to "Best of the
+  rest", both journal tables, and the rejection-summary table.
+  `screener.py::score_row` now returns the exact arithmetic behind each
+  score (penalties and the 0-100 clamp included, summing to the displayed
+  number by construction) as a third return value, shown on click.
+  **Built, not borrowed** — nothing on GitHub fits a bespoke scoring
+  formula's own weights.
+- Remaining items from the plan (`exchange_calendars` for the trading
+  calendar, real dollar-volume liquidity, IFRS credit coverage via
+  borrowed `ifrs-full` tag knowledge, EU earnings verification) are
+  tracked for follow-up rounds; this entry covers what shipped in this
+  pass.

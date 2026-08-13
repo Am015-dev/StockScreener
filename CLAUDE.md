@@ -29,6 +29,26 @@ reasoning going wrong.
   error message. A vague entry ("was confused about caching") is nearly
   as useless as no entry.
 
+## Never reinvent the wheel
+
+Before building any capability, search GitHub/PyPI for an existing
+maintained solution. Prefer, in order: (1) **adopt** a well-maintained
+library outright, (2) **borrow** its approach or data with attribution in
+a code comment, (3) **build** fresh — only when nothing suitable exists,
+and say so.
+
+- Weigh every candidate dependency against the 512MB Render instance and
+  the deliberately short `requirements.txt`: import-time RSS, transitive
+  deps, wheel health. "Too heavy" is a measurement (name the number), not
+  a mood.
+- Record what was searched and what was decided — adopted,
+  borrowed-with-attribution, or rejected-and-why — in the commit message
+  or `docs/review-log.md`, so the next person doesn't re-run the same
+  search. Two worked examples: `exchange_calendars` (adopted, replaced the
+  hand-typed trading calendar) and `edgartools` (rejected as a dependency
+  — too heavy for this instance — but its `ifrs-full` XBRL tag mapping was
+  borrowed with attribution into `credit.py`).
+
 ## Everything else
 
 - Standing product rules — the falsified entry signal, no invented

@@ -221,7 +221,6 @@ rather than taken on trust.
 
 ## Things that are not implemented
 
-- Sortable table columns, and a per-row score breakdown on click.
 - Any non-US earnings calendar.
 - Intraday data. Everything here is daily bars.
 - Any notion of tax, in a tool that sizes positions in euros.

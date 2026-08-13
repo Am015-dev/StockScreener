@@ -1418,13 +1418,19 @@ def _clamp01(x: float) -> float:
     return min(max(x, 0.0), 1.0)
 
 
-def score_row(row: dict, p: dict) -> tuple[int, str]:
-    """0-100 composite quality score + a one-line human rationale.
+def score_row(row: dict, p: dict) -> tuple[int, str, dict]:
+    """0-100 composite quality score + a one-line human rationale + the
+    exact arithmetic behind it.
 
     Weights: R:R (30%), relative strength vs benchmark (15%), pullback depth
     within the RSI band (15%), entry proximity to support (15%), pullback
     volume character (10%), distance to earnings (7.5%), analyst consensus
     (7.5%, neutral when unknown). Each data-quality flag costs 5 points.
+
+    The third return value is a breakdown that sums to exactly `score` —
+    penalties and the 0-100 clamp included, never smoothed away, so a
+    reader who expands a row sees the real arithmetic and not a rounded
+    approximation of it.
     """
     rr_score = min(row["RR"] / 5.0, 1.0)
     span = max(p["rsi_high"] - p["rsi_low"], 1e-9)
@@ -1445,16 +1451,36 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
     am = row.get("analyst_mean")
     an_score = 0.5 if am is None else _clamp01((4.0 - am) / 3.0)     # 1.0 -> 1, 4.0 -> 0
 
+    contributions = {
+        "reward vs risk": 30.0 * rr_score,
+        "strength vs market": 15.0 * rs_score,
+        "depth of the dip": 15.0 * pullback,
+        "closeness to support": 15.0 * support_prox,
+        "pullback volume": 10.0 * vol_score,
+        "earnings distance": 7.5 * earn,
+        "analyst consensus": 7.5 * an_score,
+    }
+
     flags = [f for f in str(row.get("flags") or "").split(",") if f]
     # A consensus of Sell is not worth 7.5% of a score. Analysts covering a
     # name and concluding "sell" contradicts the whole premise of buying its
     # dip, so it is a standing deduction, not a weighted input.
     sell_penalty = 25 if (am is not None and am >= 3.5) else 0
-    score = round(100 * (0.30 * rr_score + 0.15 * rs_score + 0.15 * pullback +
-                         0.15 * support_prox + 0.10 * vol_score +
-                         0.075 * earn + 0.075 * an_score) - sell_penalty
-                  - 5 * len(flags))
-    score = max(min(score, 100), 0)
+    penalty = sell_penalty + 5 * len(flags)
+    pre_clamp = round(sum(contributions.values()) - penalty)
+    score = max(min(pre_clamp, 100), 0)
+
+    parts = {k: round(v, 1) for k, v in contributions.items()}
+    parts["penalties"] = -float(penalty)
+    clamp_adj = score - pre_clamp
+    if clamp_adj:
+        parts["clamp"] = float(clamp_adj)
+    # Absorbs the gap between summing seven independently-rounded
+    # contributions and the single rounding the headline score actually
+    # got — a few tenths at most, shown rather than hidden.
+    rounding = score - sum(parts.values())
+    if rounding:
+        parts["rounding"] = rounding
 
     bits = [f"R:R {row['RR']:.1f}",
             f"entry {dist_to_support * 100:.1f}% above support",
@@ -1474,7 +1500,7 @@ def score_row(row: dict, p: dict) -> tuple[int, str]:
         bits.append("earnings date unknown")
     if row.get("analyst"):
         bits.append(f"analysts: {row['analyst']}")
-    return score, " · ".join(bits)
+    return score, " · ".join(bits), parts
 
 
 # ----------------------- the scan -----------------------
@@ -1640,8 +1666,17 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                            "days_to_earnings": None, "earnings_in": None,
                            "dollar_vol_m": round(dollar_vol / 1e6, 1),
                            "flags": ",".join(list(extra_flags))}
-                    score, _ = score_row(row, p)
-                    row["score"] = max(score - NEAR_MISS_PENALTY * len(misses), 0)
+                    score, _, parts = score_row(row, p)
+                    near_penalty = NEAR_MISS_PENALTY * len(misses)
+                    row["score"] = max(score - near_penalty, 0)
+                    if near_penalty:
+                        parts["did not qualify"] = -near_penalty
+                    # the clamp above can eat part of the penalty just shown;
+                    # keep the breakdown honest about that too
+                    clamp_gap = row["score"] - (score - near_penalty)
+                    if clamp_gap:
+                        parts["clamp"] = parts.get("clamp", 0) + clamp_gap
+                    row["score_parts"] = parts
                     row["why_not"] = "; ".join(m[1] for m in misses)
                     return row
 
@@ -1855,7 +1890,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                     "earnings_in": earn_txt,
                     "flags": ",".join(flags),
                 }
-                row["score"], row["rationale"] = score_row(row, p)
+                row["score"], row["rationale"], row["score_parts"] = score_row(row, p)
                 rows.append(row)
             except Exception as e:
                 reject(ticker, f"data error: {e}")
