@@ -264,6 +264,28 @@ def main() -> int:
         check(over <= 0, "/patterns does not scroll sideways on a phone",
               f"{over}px of overflow")
 
+        # A row cannot be badged "confirmed" ("worth trading") on statistical
+        # survival alone — that is the regression this whole holdout apparatus
+        # exists to prevent. Every confirmed row must show the number it held
+        # up to beside it, in the same row, on the deployed page itself.
+        unbacked = pg.evaluate("""() => {
+            const bad = [];
+            for (const row of document.querySelectorAll('table tbody tr')) {
+                const verdict = row.querySelector('.verdict');
+                if (!verdict || !verdict.querySelector('.pill.yes')) continue;
+                const cells = row.querySelectorAll('td.r');
+                const held = cells.length ? cells[cells.length - 2] : null;
+                const name = row.querySelector('.name');
+                if (!held || !/%/.test(held.textContent)) {
+                    bad.push((name ? name.textContent.trim() : '?'));
+                }
+            }
+            return bad;
+        }""")
+        check(len(unbacked) == 0,
+              '/patterns never shows "confirmed" without a held-up-on-holdout number',
+              ", ".join(unbacked))
+
         check(not js_errors, "no JavaScript errors anywhere",
               "; ".join(js_errors[:3]))
         b.close()
