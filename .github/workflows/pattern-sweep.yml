@@ -1,9 +1,10 @@
 # Test the pattern library against real market history, and publish the
 # result whatever it is.
 #
-# It runs here because it needs a year of daily bars for several hundred
-# companies — about ten minutes of polite fetching, which is fine on a
-# runner and impossible in a web request. No API key is needed.
+# It runs here because it needs two years of daily bars for several
+# hundred companies — enough for ~190 scoreable sessions on each side of
+# the holdout split — which is fine on a runner and impossible in a web
+# request. No API key is needed.
 #
 # The history is cached on the data branch between runs, so later runs
 # fetch only the companies they do not already hold.
@@ -19,7 +20,7 @@ on:
     inputs:
       span:
         description: "How much history to ask for (1y, 2y, 5y)"
-        default: "1y"
+        default: "2y"
       tickers:
         description: "Companies to test on, after ranking"
         default: "400"
@@ -64,7 +65,7 @@ jobs:
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
           python scripts/pattern_sweep.py \
-            --span "${{ github.event.inputs.span || '1y' }}" \
+            --span "${{ github.event.inputs.span || '2y' }}" \
             --tickers "${{ github.event.inputs.tickers || '400' }}" \
             --candidates "${{ github.event.inputs.candidates || '800' }}" \
             --horizons "${{ github.event.inputs.horizons || '3,5,10' }}" \
