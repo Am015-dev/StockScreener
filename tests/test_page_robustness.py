@@ -1,14 +1,18 @@
-"""The brief page must render whatever ends up in a results row.
+"""Corrupted scan rows must never turn into a 500, on whatever still renders them.
 
 Rows arrive from a scan, a CSV reload, a published payload and a snapshot
 mirrored out of someone's browser. Any of them can be a schema older than
-the running code. A 500 here loses the credit directory and the pre-trade check
-at once.
+the running code.
 
-This exercises /brief rather than the root. It was written when the
-brief WAS the root; the root is now Today's Five, which reads none
-of these fields and would make this six hundred rescorings of the
-whole universe testing nothing.
+This used to sweep /brief, which Jinja-rendered `_state["results"]`
+directly into HTML — the one place a stray None or NaN could raise inside
+a template filter. /brief is retired now (folded into "/", which reads
+the published books, not `_state`, and never touches these rows at all),
+so nothing server-side Jinja-renders this data any more. The place a
+corrupted row can still blow up a request is /results.csv, which builds a
+pandas DataFrame straight out of it — a different failure mode (column
+alignment, dtype coercion) but the same shape of bug, and pandas is
+considerably more likely than jsonify to choke on a mixed-type column.
 """
 import os, sys, tempfile, time, itertools, random
 T = tempfile.mkdtemp()
@@ -45,7 +49,7 @@ for fld, junk in itertools.product(FIELDS, JUNK):
     A._state.update(results=[row], top_picks=[row], pending=[],
                     results_ts=time.time(), status="done")
     n += 1
-    if c.get("/brief").status_code != 200:
+    if c.get("/results.csv").status_code != 200:
         bad.append((fld, repr(junk)))
 
 # whole rows of junk, and missing keys
@@ -55,75 +59,81 @@ for _ in range(400):
                     results_ts=random.choice([None, time.time(), 0]),
                     status="done")
     n += 1
-    if c.get("/brief").status_code != 200:
+    if c.get("/results.csv").status_code != 200:
         bad.append(("random", repr(row)[:120]))
 
-print(f"{n} corrupted-row renders")
+print(f"{n} corrupted-row exports")
 if bad:
     print(f"FAILED {len(bad)}:")
     for b in bad[:12]: print("   ", b)
     sys.exit(1)
-print("the home page rendered every one of them")
-
-# ---- the table's columns must line up with its header ----
-# Adding the credit column replaced the RSI cell instead of sitting beside
-# it, so every row was one short and every value after RSI displayed under
-# the wrong heading. Nothing else in the suite would have noticed.
-import re as _re
-
-A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
-                top_picks=[GOOD], pending=[], results_ts=time.time(),
-                status="done")
-_html = c.get("/brief").get_data(as_text=True)
-_tbl = _re.search(r'<table class="wl".*?</table>', _html, _re.S)
-assert _tbl, "the watchlist table did not render"
-_rows = _re.findall(r"<tr[^>]*>(.*?)</tr>", _tbl.group(0), _re.S)
-_head = len(_re.findall(r"<th", _rows[0]))
-assert _head >= 7, _head
-for _r in _rows[1:]:
-    _n = len(_re.findall(r"<td", _r))
-    assert _n == _head, f"{_n} cells under {_head} headings — the columns are shifted"
-print(f"every row has {_head} cells under {_head} headings")
+print("/results.csv built a file from every one of them")
 
 print("\nPAGE ROBUSTNESS PINNED")
 
 
+# ---- the front page must not depend on _state at all ----
+# The whole point of moving off /brief: a corrupted scan row must not be
+# able to take down the page a reader actually lands on. Today reads the
+# published books, not the live scan state — prove that by corrupting
+# _state as badly as the sweep above and confirming the root is
+# unaffected.
+A._state.update(results=[{"ticker": None, "price": float("nan")}],
+                top_picks=[{}], pending=[{"ticker": []}],
+                results_ts="not a number", status="running")
+_r = c.get("/")
+assert _r.status_code == 200, _r.status_code
+print("the front page is unaffected by garbage in the live scan state")
+
+
 # ---- the credit report must be reachable from the front page ----
-# It was not. The report rendered, the route answered 200, and the only
-# link to it on the home page was inside <details> — collapsed, so the
-# reader never saw it and told me the report did not exist. This asserts
-# on the page as served, above that collapsed section, because that is
-# where the claim "a reader can find it" is either true or false.
+# It was not, once: the report rendered, the route answered 200, and the
+# only link to it was inside a <details> nested inside another collapsed
+# table — nothing on the page hinted it existed. That is a different bug
+# from what's here now: the credit lookup sits inside its own top-level,
+# clearly-labelled "check something before you trade" toggle, which is
+# the same progressive-disclosure pattern already used for "why it ranks
+# where it does" and the excluded-names list elsewhere on this page. The
+# property worth pinning is narrower — the toggle exists, says plainly
+# what is behind it, and the tools it reveals are actually there in the
+# HTML, not synthesised by JS after the fact.
+import re as _re
+
 _BOOK = {f"CR{i}": {"dd": 1.0 + i, "band": "comfortable"} for i in range(6)}
 _saved_cb = A._credit_book
 A._credit_book = lambda fetch=False: _BOOK
 try:
-    A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
-                    top_picks=[GOOD], pending=[], results_ts=time.time(),
-                    status="done")
-    _html = c.get("/brief").get_data(as_text=True)
-    _above = _html.split("<details")[0]
-    _links = _re.findall(r'href="/credit/([A-Z0-9.\-]+)"', _above)
-    assert _links, "no link to a credit report before the collapsed section"
-    assert len(set(_links)) >= 4, sorted(set(_links))
-    print(f"{len(set(_links))} credit reports are one click away, above the fold")
+    _html = c.get("/").get_data(as_text=True)
+    _m = _re.search(r'<details class="card" id="ownGate">\s*<summary[^>]*>(.*?)</summary>',
+                    _html, _re.S)
+    assert _m, "the check-something-before-you-trade toggle is missing"
+    _summary = _re.sub(r"\s+", " ", _m.group(1)).strip()
+    assert "credit" in _summary.lower() or "check" in _summary.lower(), _summary
+    print(f"the check toggle says what it opens: {_summary[:70]}...")
 
-    # and the lookup box, which is the path for a company that is not on
-    # today's board at all — which is most of them
-    assert 'id="crTicker"' in _above and 'id="crGo"' in _above
-    assert "/credit/" in _html.split("openCredit")[1][:300]
-    print("any company can be looked up by name, not just today's picks")
+    _links = _re.findall(r'href="/credit/([A-Z0-9.\-]+)"', _html)
+    assert len(set(_links)) >= 4, sorted(set(_links))
+    print(f"{len(set(_links))} credit reports are reachable from the front page")
+
+    assert 'id="crTicker"' in _html and 'id="crGo"' in _html
+    assert 'id="ckTicker"' in _html and 'id="ckGo"' in _html
+    print("any company can be looked up by name, and the pre-trade check is there too")
 finally:
     A._credit_book = _saved_cb
 
-# with an empty book the card is still there, and still says something
+# with an empty book the toggle is still there, and still says something
 # true — an absence of measurements must not read as an absence of the
 # feature
 A._credit_book = lambda fetch=False: {}
+A._credit_view_memo["key"] = None   # bust the restated-book cache — its key is
+                                    # (_creds.ts, _book.ts), neither of which
+                                    # this swap touches, so a stale memo would
+                                    # otherwise still show the old six rows
 try:
-    _html = c.get("/brief").get_data(as_text=True)
-    assert 'id="crTicker"' in _html.split("<details")[0]
-    assert "No company has been measured yet" in _html
+    _html = c.get("/").get_data(as_text=True)
+    _flat = _re.sub(r"\s+", " ", _html)
+    assert 'id="crTicker"' in _html
+    assert "No company has been measured yet" in _flat
     print("with nothing measured the way in is still there, and says why it is empty")
 finally:
     A._credit_book = _saved_cb
@@ -131,61 +141,40 @@ finally:
 print("\nCREDIT REPORT REACHABILITY PINNED")
 
 
-# ---- the page must not hide itself behind a question ----
-# This is what "I do not see any Moodys like report anywhere" actually
-# was. #main shipped display:none and only saving holdings or clicking
-# skip revealed it — and the skip lived in sessionStorage, so it was
-# forgotten when the tab closed. A visitor arriving on a phone saw one
-# question and a blank page under it: no brief, no pre-trade check, no
-# credit reports. Rendered it in a real browser to find that out, which
-# is the only way a display:none is visible at all.
-_html = c.get("/brief").get_data(as_text=True)
-
-assert '<div id="main">' in _html, \
-    "the page's own content must not ship hidden"
-assert 'id="main" style="display:none"' not in _html
-print("the page does not ship with its content hidden")
-
-# and nothing may hide it afterwards either
-_js = _html.split("<script")[-1]
-import re as _re2
-for _m in _re2.finditer(r'main\.style\.display\s*=\s*([^;\n]+)', _js):
-    assert _m.group(1).strip().strip('"') == "block", \
-        f"something can still hide the page: {_m.group(0)}"
-print("and no code path sets it back to hidden")
-
-# the dismissal has to outlive the tab, or the question returns forever
-assert 'localStorage.setItem("dipfinder_skipped"' in _js, \
-    "skip must persist across visits, not just the session"
-print("skipping the holdings question is remembered on the next visit")
+# ---- the page must not hide its content behind a question ----
+# "I do not see any Moodys like report anywhere" was a display:none gate
+# that only an answer or a skip revealed — and the skip lived in
+# sessionStorage, so it came back on every visit. Today has no such gate:
+# the picks (or the "nothing cleared" explanation) render unconditionally,
+# and the one optional question — what do you own — is a closed toggle a
+# reader opens by choice, not a wall in front of everything else.
+A._state.update(results=[], top_picks=[], pending=[], results_ts=None, status="idle")
+_html = c.get("/").get_data(as_text=True)
+assert "<h1>" in _html, "no headline rendered server-side"
+assert 'style="display:none"' not in _html.split("<h1>")[0][-400:], \
+    "something upstream of the headline can hide the page"
+_gate_m = _re.search(r'<details class="card" id="ownGate">', _html)
+assert _gate_m, "the holdings/check toggle is missing"
+assert "open" not in _html[_gate_m.start():_gate_m.start() + 60].split(">")[0], \
+    "the check toggle ships open — it is meant to stay closed until asked for"
+print("the page does not ship with its content hidden, and the one question waits to be asked")
 
 
 # ---- the page must not recommend a trade its own test falsified ----
 # The permutation test ran twice — balanced (p = 0.50, 25 seeds, 376
 # stocks) and wide-net (p = 0.41, 40 seeds, 657 stocks) — and coin-flip
-# entry did as well or better both times. The headline used to be
-# "Closest to the setup today: <ticker>", with the refutation in small
-# print underneath. A tool that headlines a number it has proven means
-# nothing is a toy; the pick is gone, and this pins it gone.
-A._state.update(results=[dict(GOOD, ticker=f"T{i}") for i in range(3)],
-                top_picks=[GOOD], pending=[], results_ts=time.time(),
-                status="done")
-_html = c.get("/brief").get_data(as_text=True)
+# entry did as well or better both times. The old headline was "Closest
+# to the setup today: <ticker>", with the refutation in small print
+# underneath. A tool that headlines a number it has proven means nothing
+# is a toy.
 assert "Closest to the setup today" not in _html
 assert "Nothing to do today" not in _html
-print("no trade is recommended anywhere on the page")
+print("no trade is recommended anywhere on the front page")
 
-# the falsification is stated WITH the list it applies to, in words
-assert "no better than random entry" in _html
-assert "Not a recommendation" in _html.replace("\n          ", " ")
-print("the pattern list carries its own refutation, in full sentences")
-
-# and the working tools lead: both check inputs sit above the collapsed
-# pattern section
-_above = _html.split("<details")[0]
-for _id in ('id="ckTicker"', 'id="crTicker"'):
-    assert _id in _above, f"{_id} is below the fold"
-print("the pre-trade check and the credit report lead the page")
+# and the page states plainly, in its own words, that nothing here is a
+# forecast — not just by omission
+assert "no price target" in _html.lower() or "coin flip" in _html.lower()
+print("the absence of a recommendation is stated, not just implied by omission")
 
 
 # ---- /full carries the verdict too ----
@@ -199,24 +188,16 @@ _i_table = _full.find("<table")
 assert _i_verdict != -1 and (_i_table == -1 or _i_verdict < _i_table)
 assert "Finds strong, rising stocks" not in _full, \
     "the old sales pitch is back"
-print("/full states the falsification before it shows a row")
+assert "copyTicket(" not in _full, \
+    "a ready-to-send bracket order is back beneath the falsification banner"
+print("/full states the falsification before it shows a row, "
+      "and does not hand out an order ticket")
 
 
-# ---- the page opens with information, not with a question ----
-# "What do you own?" as a full card was the first thing every visitor
-# saw, and the review's biggest single deduction for value density. The
-# ask is now one line above the day's news; the form appears only when
-# the reader asks for it.
-_html = c.get("/brief").get_data(as_text=True)
-assert 'id="ownInvite"' in _html, "the slim invitation must exist"
-_i_invite = _html.find('id="ownInvite"')
-_i_gate = _html.find('id="ownGate"')
-assert _i_invite < _i_gate, "the invitation comes before the full form"
-assert 'id="ownGate" style="display:none"' in _html, \
-    "the full form must not ship visible"
-# and the ask itself is short: the old card ran to four paragraphs
-_invite = _html[_i_invite:_html.find("</p>", _i_invite)]
-import re as _re3
-_words = len(_re3.sub(r"<[^>]+>", " ", _invite).split())
-assert _words < 40, f"the invitation is {_words} words — it is meant to be a line"
-print(f"the holdings ask is a {_words}-word line, and the form waits to be asked for")
+# ---- old links must still land somewhere, not 404 ----
+for old in ("/brief", "/today"):
+    r = c.get(old)
+    assert r.status_code in (301, 302, 200), (old, r.status_code)
+    print(f"{old} still answers ({r.status_code})")
+
+print("\nNO-RECOMMENDATION AND REACHABILITY PINNED")

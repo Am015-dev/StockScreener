@@ -292,7 +292,11 @@
     <b>This pattern was tested against random entry and failed — twice.</b>
     On both shipped rule sets it was statistically indistinguishable from
     coin-flip entry on the same stocks through identical stop/target/exit code
-    (p&nbsp;=&nbsp;0.50 and 0.41; on the first test random entry actually did better).
+    (p&nbsp;=&nbsp;0.50 and 0.41; on the first test random entry actually did better) —
+    no better than random entry. It is a filter, not a signal.
+    <span style="opacity:.85">In plain terms: a coin flip matched or beat this
+    pattern's entries about as often as not — the timing itself adds
+    nothing.</span>
     Everything on this page is a factual screen output and a research record.
     None of it is evidence that buying these stocks makes money.
     <a href="/limits" style="color:inherit">The full test</a>.
@@ -531,7 +535,7 @@
   <section id="btSection">
     <h2>Simulation — would these rules have made money?</h2>
     <div class="secsub">Replays your exact filter settings over <b>every stock and every
-      trading day of the replay window (about four years of history)</b> for the
+      trading day of the replay window (about five years of history)</b> for the
       scanned stocks, and grades each signal
       the same way as the track record: did it hit the target or the stop first?
       The first run downloads the deep history (a few minutes); it is cached for the day.</div>
@@ -634,7 +638,6 @@
     <a href="/limits" target="_blank" rel="noopener"><b>Known issues &amp; limits</b></a>
     — what this tool cannot do, and the fact that its own strategy does not
     currently clear its bar. Read it before acting on anything here.<br>
-    <a href="/changelog" target="_blank" rel="noopener">Changelog</a> ·
     <a href="/results.csv">Download this scan (CSV)</a> ·
     <span>Picks are a hypothesis, not advice. Verify earnings dates yourself.</span>
   </footer>
@@ -1013,28 +1016,15 @@ function renderTopPicks(picks, near) {
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
       ${flagText(p.flags, "warn") ? `<div class="warn">⚠ ${esc(flagText(p.flags, "warn"))}</div>` : ""}
       ${flagText(p.flags, "source") ? `<div class="why">${esc(flagText(p.flags, "source"))}</div>` : ""}
-      <button type="button" class="ghost" style="margin-top:.6rem;font-size:.78rem;padding:.3rem .8rem"
-        data-tip="Copies the complete bracket order — buy, stop-loss, take-profit, share count — ready to paste into your broker."
-        onclick="copyTicket(${i}, this)">📋 Copy order ticket</button>
     </div>`).join("");
   window.__topPicks = picks;
 }
-
-function copyTicket(i, btn) {
-  const p = (window.__topPicks || [])[i];
-  if (!p) return;
-  const t = [
-    `BUY ${p.ticker} — ${p.shares} shares @ limit ≤ ${p.price}`,
-    `STOP-LOSS (sell stop) @ ${p.stop}`,
-    `TAKE-PROFIT (sell limit) @ ${p.resistance}`,
-    `max risk ≈ €${p.risk_EUR} · reward:risk ${p.RR} · ${new Date().toISOString().slice(0, 10)}`,
-    `(bracket/OCO order — from Dip Finder, verify before sending)`,
-  ].join("\n");
-  navigator.clipboard.writeText(t).then(() => {
-    btn.textContent = "✓ copied";
-    setTimeout(() => { btn.textContent = "📋 Copy order ticket"; }, 1500);
-  }).catch(() => { btn.textContent = "⚠ copy failed"; });
-}
+// A "Copy order ticket" button used to sit here — a one-click BUY /
+// STOP-LOSS / TAKE-PROFIT bracket, ready to paste into a broker — directly
+// beneath the banner above stating this pattern failed testing twice and
+// is not evidence of anything to buy. Removed rather than reworded: a
+// ready-to-send order is the one shape of "not evidence" a page cannot
+// also hand a reader on the same screen.
 
 // ---- best of the rest (near-miss board + one-click filter relaxations) ----
 function applyHint(changes) {
@@ -1233,12 +1223,16 @@ function renderBacktest(bt, btStatus) {
     checks.push([sortino_v >= 1.0, `Sortino ${sortino_v} (need ≥ 1.0)`]);
   const gate = document.getElementById("btGate");
   if (checks.length) {
-    const pass = checks.every(c => c[0]);
+    // Not a verdict. This used to read "Clears / Fails the tradeable bar"
+    // in green or red, which is a pass/fail recommendation sitting on a
+    // page whose own banner says the underlying pattern already failed
+    // testing twice. It is a description of one backtest configuration
+    // against three reference thresholds, nothing more.
     gate.style.display = "block";
-    gate.style.color = pass ? "var(--green)" : "var(--red)";
-    gate.innerHTML = (pass ? "✅ Clears the tradeable bar: " : "❌ Fails the tradeable bar: ") +
+    gate.style.color = "var(--text)";
+    gate.innerHTML = "Backtest profile — reference only, not a recommendation: " +
       checks.map(([ok, txt]) => `${ok ? "✓" : "✗"} ${esc(txt)}`).join(" · ") +
-      (pass ? "" : `<div class="hint" style="color:var(--muted)">Adjust the filters and re-run the simulation — the bar must clear before trusting this configuration with money.</div>`);
+      `<div class="hint" style="color:var(--muted)">These thresholds describe a configuration's simulated history; they do not mean it will work going forward, and the entry signal behind all of it already failed testing against random entry.</div>`;
   } else gate.style.display = "none";
   drawCurve((pf_v && pf_v.curve && pf_v.curve.length ? pf_v.curve : bt.curve) || []);
   document.getElementById("btCurveNote").textContent = pf_v

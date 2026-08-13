@@ -18,7 +18,7 @@ from collections import Counter
 
 import pandas as pd
 import yfinance as yf
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, redirect, render_template, request
 
 import backtest as backtest_mod
 import brief
@@ -706,26 +706,23 @@ def _auto_reverify(params, attempts=12, wait=30):
 
 @app.route("/brief")
 def index():
-    """One card, one decision — rendered on the server, so the page is
-    complete when it arrives and never starts a scan to fill itself in.
+    """Retired: this was the front page before Today's Five existed.
 
-    This was the front page until /today existed. It still carries the
-    credit directory and the pre-trade check, which are worth keeping;
-    what it never carried was an answer to "so what do I buy", and that
-    is now the root's job.
+    It carried two things worth keeping — the pre-trade check and the
+    credit lookup — and they are on the root page now, in a collapsed
+    "check something before you trade" section, rather than living
+    behind a second URL a reader had to already know about. Everything
+    else it carried (a collapsed pattern-screen table showing Stop/Target
+    numbers from the entry rule the same table called a coin flip) is
+    gone rather than moved: /full and /patterns already carry that
+    ground, and a third copy was a third place for it to drift.
+
+    Redirects rather than 404s, so an old bookmark still lands somewhere.
+    A literal "/" rather than url_for("today_page") — that endpoint has
+    two rules ("/" and "/today") and which one url_for resolves to is not
+    a contract worth depending on here.
     """
-    try:
-        m = market_clock.state()
-        f = (market_clock.staleness(float(_state["results_ts"]))
-             if _state.get("results_ts") else None)
-    except Exception:
-        m, f = None, None
-    return render_template(
-        "brief.html",
-        b=brief.build(_state, m, f, credit=_credit_view(),
-                      earnings=_published_earnings()[0],
-                      publishing=(_publishing_state(float(_state["results_ts"]), f)
-                                  if _state.get("results_ts") else None)))
+    return redirect("/", code=302)
 
 
 @app.route("/full")
@@ -1827,10 +1824,12 @@ def today_page():
     # through. Five confident-looking plans with the one check that
     # matters silently switched off is precisely the failure this project
     # keeps having, so the list is withheld instead.
+    credit_index = brief.credit_directory(_credit_view())
     if not earn:
         return render_template("today.html", picks=[], res=res, budget=budget,
                                horizon=horizon, cost=ranking.ROUND_TRIP_COST_PCT,
-                               blocked="the earnings calendar could not be read")
+                               blocked="the earnings calendar could not be read",
+                               credit_index=credit_index)
 
     picks = []
     for row in res["ranked"][:5]:
@@ -1845,7 +1844,8 @@ def today_page():
         picks.append(p)
     return render_template("today.html", picks=picks, res=res,
                            budget=budget, horizon=horizon,
-                           cost=ranking.ROUND_TRIP_COST_PCT)
+                           cost=ranking.ROUND_TRIP_COST_PCT,
+                           credit_index=credit_index)
 
 
 @app.route("/patterns")
@@ -1928,7 +1928,7 @@ def limits():
     except OSError:
         return Response("Known-issues file is missing from this build.\n",
                         status=500, mimetype="text/plain")
-    return Response(text, mimetype="text/markdown; charset=utf-8")
+    return Response(text, mimetype="text/markdown")
 
 
 @app.route("/changelog")
@@ -1975,8 +1975,7 @@ def changelog():
         lines.append("_This build carries only a shallow slice of history, so "
                      "the entries above are merge points rather than changes; "
                      "the repository holds the full record._")
-    return Response("\n".join(lines) + "\n",
-                    mimetype="text/markdown; charset=utf-8")
+    return Response("\n".join(lines) + "\n", mimetype="text/markdown")
 
 
 @app.route("/configs")

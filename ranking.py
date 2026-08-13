@@ -191,9 +191,24 @@ def score(candidates: list, holdings: list | None = None,
             excluded.append({"ticker": c.get("ticker"), "why": why,
                              "name": c.get("name")})
 
-    # ---- the forward-looking component, and whether it has been earned ----
+    # ---- the two components that only score when they have been earned ----
     confirmed = _confirmed_shapes(patterns_report)
     active = bool(confirmed)
+
+    # `corr_by_ticker` is None whenever no holdings were supplied — which,
+    # today, is every request, because nothing upstream of this call ever
+    # passes a portfolio in. It used to fall back to fit_v = 1.0 for
+    # everyone in that case, which is a CONSTANT: identical for every row,
+    # so it never changes the ranking, only inflates every score by the
+    # same 20 points while a bar on the page implied it was discriminating
+    # between names. That is the same shape of error the pattern component
+    # already guards against — a score dressed as a measurement with
+    # nothing behind it — so it gets the same treatment: zero, and
+    # excluded from the total, until a real portfolio is wired in. An
+    # EMPTY dict is different from None: it means holdings were supplied
+    # and none of them correlate, which is a real (and good) measurement,
+    # so only None disables the component.
+    fit_active = corr_by_ticker is not None
 
     credit_v, vol_v, fit_v, edge_v = {}, {}, {}, {}
     for r in passed:
@@ -207,12 +222,13 @@ def score(candidates: list, holdings: list | None = None,
         # without that filter this preference would be pushing towards
         # trades that cannot pay for themselves.
         vol_v[t] = -float(r["annual_vol"])
-        mx = (corr_by_ticker or {}).get(t)
-        fit_v[t] = 1.0 - abs(mx) if mx is not None else 1.0
+        if fit_active:
+            mx = corr_by_ticker.get(t)
+            fit_v[t] = 1.0 - abs(mx) if mx is not None else 1.0
         edge_v[t] = _edge_for(r, confirmed) if active else 0.0
 
     credit_p, vol_p = _pctile(credit_v), _pctile(vol_v)
-    fit_p = _pctile(fit_v)
+    fit_p = _pctile(fit_v) if fit_active else {}
     edge_p = _pctile(edge_v) if active and len(set(edge_v.values())) > 1 else {}
 
     for r in passed:
@@ -221,7 +237,7 @@ def score(candidates: list, holdings: list | None = None,
         # rather than the top: unknown is not the same as excellent
         credit_pts = 30.0 * credit_p.get(t, 0.5)
         vol_pts = 30.0 * vol_p.get(t, 0.5)
-        fit_pts = 20.0 * fit_p.get(t, 1.0)
+        fit_pts = 20.0 * fit_p.get(t, 1.0) if fit_active else 0.0
         edge_pts = 20.0 * edge_p.get(t, 0.0) if active else 0.0
         move = typical_move_pct(r["annual_vol"], horizon) or 0.0
         r["components"] = {
@@ -246,10 +262,12 @@ def score(candidates: list, holdings: list | None = None,
         "universe": universe,
         "passed_filters": len(passed),
         "pattern_component_active": active,
+        "portfolio_component_active": fit_active,
         "confirmed_shapes": [c["pattern"] for c in confirmed],
         "horizon": horizon,
         "risk_budget": risk_budget,
-        "max_points_available": 80.0 if not active else 100.0,
+        "max_points_available": 60.0 + (20.0 if active else 0.0)
+                                       + (20.0 if fit_active else 0.0),
     }
 
 

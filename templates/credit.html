@@ -91,10 +91,13 @@
     {% endif %}
     <details class="tiny"><summary style="cursor:pointer">A distance, not a
       probability — why no percentage is shown</summary>
-      <p style="margin:.4rem 0 0">The commercial version converts this distance into
-      a default probability using a proprietary database of companies that actually
-      defaulted. The free substitute returns 0.000000% for companies that do
-      sometimes default, so no percentage is quoted here.</p></details>
+      <p style="margin:.4rem 0 0">Converting this distance into an actual default
+      probability needs a calibration table built from real historical
+      defaults, which the free data source behind this project does not
+      provide. Without that table, the raw formula for it returns
+      0.000000% even for companies that do go on to default — accurate to
+      the arithmetic and wrong about the world.
+      So no percentage is quoted here; the distance itself is shown instead of a fabricated one.</p></details>
   </div>
 
   {% if hist and hist|length > 5 %}
@@ -165,9 +168,12 @@
       {% endfor %}
       </tbody>
     </table></div>
-    <p class="tiny" style="margin-top:.7rem">A ranking needs no calibration, which is
-      why it is the part of this report that loses nothing by being free. {{ n_measured }}
-      companies are measured today; coverage widens with each scan.</p>
+    <p class="tiny" style="margin-top:.7rem">Ranking companies against each other
+      does not need the missing calibration step above, so this part of the
+      report is unaffected by it. {{ n_measured }} companies are measured
+      today, {{ t }} among them — one more than the "other companies" count
+      near the top of this page, which is this company's own peer set and so
+      leaves it out. Coverage widens with each scan.</p>
   </div>
   {% endif %}
 

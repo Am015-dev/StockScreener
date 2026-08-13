@@ -132,47 +132,60 @@ def main() -> int:
         js_errors: list[str] = []
         pg.on("pageerror", lambda e: js_errors.append(str(e)))
 
-        # ---- the brief, as a first-time phone visitor ----
-        # This was the front page and is now /brief; Today's Five took the
-        # root. These assertions are about the brief's own furniture — the
-        # pre-trade check, the credit lookup, the collapsed pattern list —
-        # so they follow it rather than staying pointed at a URL that no
-        # longer serves any of them.
-        pg.goto(base + "/brief", wait_until="load", timeout=90000)
-        pg.wait_for_timeout(1500)
-        body = pg.inner_text("body")
+        # ---- the decision page, as a first-time phone visitor ----
+        # This is the one page the whole site exists to have. Everything
+        # else measures; this decides, and if it is wrong it is wrong in
+        # the direction of somebody losing money. It also now carries what
+        # used to be a separate "/brief" page — the pre-trade check, the
+        # credit lookup — folded into one collapsed section, so those
+        # checks happen here, on the page a reader actually lands on.
+        pg.goto(base + "/", wait_until="load", timeout=90000)
+        pg.wait_for_timeout(1000)
+        td = pg.inner_text("body")
+        check("{{" not in td, "no unrendered template on the front page")
+        cards = pg.locator(".card.pick").count()
+        check(cards <= 5, "at most five names are shown", f"showed {cards}")
+        if cards:
+            # a name without a stop and a share count is not a plan, it is
+            # a tip — which is the thing this product refuses to be
+            check(pg.locator("dl.plan dt", has_text="Stop").count() == cards,
+                  "every name carries a stop")
+            check(pg.locator("dl.plan dt", has_text="Size").count() == cards,
+                  "every name carries a share count")
+            check(pg.locator("dl.plan dt", has_text="Wrong if").count() == cards,
+                  "every name says what would make it wrong")
+        # A price target implies a forecast that was measured here and not
+        # found. It must not creep back in through a template edit.
+        #
+        # Scoped to the plan blocks on purpose: the page itself contains
+        # the sentence "there is no price target anywhere on this page",
+        # so a naive search of the whole body fails on the very promise it
+        # is checking.
+        plans = " ".join(pg.locator(".card.pick dl.plan").all_inner_texts())
+        check("target" not in plans.lower(),
+              "no trade plan prints a price target")
+        check("Risk 1% of your account" in td,
+              "the position-sizing rule is on the page")
+        over = pg.evaluate("() => document.documentElement.scrollWidth - "
+                           "document.documentElement.clientWidth")
+        check(over <= 0, "the front page does not scroll sideways on a phone",
+              f"{over}px of overflow")
 
-        check(pg.locator("#main").is_visible(),
-              "the page content is visible without answering anything")
+        # ---- the folded-in check tools, opened the way a reader opens them ----
+        gate = pg.locator("#ownGate")
+        check(gate.count() > 0, "the pre-trade check section exists")
+        gate.locator("summary").first.click()
+        pg.wait_for_timeout(300)
         check(pg.locator("#ckTicker").is_visible(),
-              "the pre-trade check is on screen")
+              "the pre-trade check is reachable")
         check(pg.locator("#crTicker").is_visible(),
-              "the credit lookup is on screen")
-        check("Closest to the setup today" not in body,
-              "no trade is recommended")
-        # The refutation lives inside the collapsed pattern section, so a
-        # reader meets it exactly when they meet the list it refutes. The
-        # gate does what the reader does: checks the summary line is
-        # visible, opens it, and checks the sentence is actually there —
-        # inner_text of a closed <details> is empty, which is also why an
-        # HTML grep is not evidence of anything here.
-        check("no recommendation" in body,
-              "the pattern section says up front it recommends nothing")
-        try:
-            pg.locator("details summary").first.click()
-            pg.wait_for_timeout(300)
-            check("no better than random entry" in pg.inner_text("details"),
-                  "opening the pattern list reveals its refutation")
-        except Exception as e:
-            check(False, "opening the pattern list reveals its refutation",
-                  type(e).__name__)
+              "the credit lookup is reachable")
         n_credit = pg.locator('a[href^="/credit/"]').count()
         check(n_credit >= 4, "credit reports are one click away",
               f"{n_credit} links")
         for junk in ("undefined", "NaN", "[object", "{{"):
-            check(junk not in body, f"no leaked '{junk}' on the page")
+            check(junk not in td, f"no leaked '{junk}' on the page")
 
-        # ---- the check flow, by pressing the actual button ----
         pg.fill("#ckTicker", "AAPL")
         pg.click("#ckGo")
         try:
@@ -215,40 +228,15 @@ def main() -> int:
         check("0.50" in lim and "0.41" in lim,
               "/limits carries both permutation results")
 
-        # ---- the decision page ----
-        # This is the one page the whole site exists to have. Everything
-        # else measures; this decides, and if it is wrong it is wrong in
-        # the direction of somebody losing money.
-        pg.goto(base + "/today", wait_until="load", timeout=90000)
-        td = pg.inner_text("body")
-        check("{{" not in td, "no unrendered template on /today")
-        cards = pg.locator(".card.pick").count()
-        check(cards <= 5, "/today shows at most five names", f"showed {cards}")
-        if cards:
-            # a name without a stop and a share count is not a plan, it is
-            # a tip — which is the thing this product refuses to be
-            check(pg.locator("dl.plan dt", has_text="Stop").count() == cards,
-                  "every name carries a stop")
-            check(pg.locator("dl.plan dt", has_text="Size").count() == cards,
-                  "every name carries a share count")
-            check(pg.locator("dl.plan dt", has_text="Wrong if").count() == cards,
-                  "every name says what would make it wrong")
-        # A price target implies a forecast that was measured here and not
-        # found. It must not creep back in through a template edit.
-        #
-        # Scoped to the plan blocks on purpose: the page itself contains
-        # the sentence "there is no price target anywhere on this page",
-        # so a naive search of the whole body fails on the very promise it
-        # is checking.
-        plans = " ".join(pg.locator(".card.pick dl.plan").all_inner_texts())
-        check("target" not in plans.lower(),
-              "no trade plan prints a price target")
-        check("Risk 1% of your account" in td,
-              "/today carries the position-sizing rule")
-        over = pg.evaluate("() => document.documentElement.scrollWidth - "
-                           "document.documentElement.clientWidth")
-        check(over <= 0, "/today does not scroll sideways on a phone",
-              f"{over}px of overflow")
+        # ---- /brief and /today still answer, as redirects ----
+        # Old links must not 404. Both now serve the same page as "/".
+        for old_path in ("/brief", "/today"):
+            r = pg.goto(base + old_path, wait_until="load", timeout=90000)
+            check(r is not None and r.ok, f"{old_path} still answers (redirects to /)",
+                  str(r.status) if r else "no response")
+            check(pg.locator(".card.pick").count() >= 0
+                  and "{{" not in pg.inner_text("body"),
+                  f"{old_path} lands on a real page, not a template error")
 
         # ---- the pattern sweep ----
         # The credit report shipped once with no route to it from anywhere

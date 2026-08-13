@@ -85,16 +85,18 @@
 <div class="wrap">
 
   <div class="card">
-    <h1>Today's Five</h1>
+    <h1>{{ "Today's Five" if picks else ("No list today" if blocked else "Nothing cleared today") }}</h1>
     {% if picks %}
     <p class="lead" style="margin-top:.5rem">{{ picks|length }} name{{ '' if picks|length == 1 else 's' }}
       cleared everything, out of {{ res.universe }} looked at.</p>
     <p class="muted">Each one below has an entry, a stop, and a share count
-      already worked out for {{ '%.0f'|format(budget) }} of risk. Nothing here
-      predicts a price. What it does is pick names that will not blow up on you
-      and size them so that being wrong costs a known amount.</p>
+      already worked out for ${{ '%.0f'|format(budget) }} of risk — that is a
+      default, not your account size; add <code>?risk=</code> and a number to
+      the address bar to change it. Nothing here predicts a price. What it
+      does is pick names that are unlikely to blow up on you and size them so
+      that being wrong costs a known amount.</p>
     {% elif blocked %}
-    <p class="lead" style="margin-top:.5rem">No list today — {{ blocked }}.</p>
+    <p class="lead" style="margin-top:.5rem">{{ blocked|capitalize }}.</p>
     <p class="muted">A stop does not protect you across an earnings report; the
       price gaps straight through it. Without the calendar that check cannot run,
       and every name would come back "date unknown" and pass. Five confident
@@ -102,15 +104,16 @@
       so there is no list.</p>
     <p class="muted">{{ res.universe }} names were read and {{ res.passed_filters }}
       cleared every other filter. They are not shown, because the missing check
-      is the one that decides whether a stop means anything. This usually fixes
-      itself within a few minutes of a restart — reload shortly.</p>
+      is the one that decides whether a stop means anything. This is a startup
+      condition, not an outage — it clears on its own within a few minutes of
+      the server starting; reload shortly.</p>
     {% else %}
-    <p class="lead" style="margin-top:.5rem">Nothing cleared today.</p>
-    <p class="muted">{{ res.universe }} names were looked at and
-      {{ res.passed_filters }} got through the filters. That is a real answer:
-      no position is a position, and it is the one that costs nothing when the
-      alternative was a name that failed on liquidity, debts or a report due
-      inside the hold.</p>
+    <p class="lead" style="margin-top:.5rem">{{ res.universe }} names were looked
+      at and {{ res.passed_filters }} got through the filters — none by enough
+      to make the list.</p>
+    <p class="muted">That is a real answer: no position is a position, and it
+      is the one that costs nothing when the alternative was a name that
+      failed on liquidity, debt, or a report due inside the hold.</p>
     {% endif %}
   </div>
 
@@ -119,7 +122,8 @@
     <div style="display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap">
       <span class="tk">{{ p.ticker }}</span>
       {% if p.name and p.name != p.ticker %}<span class="co">{{ p.name }}</span>{% endif %}
-      <span class="tiny" style="margin-left:auto">{{ '%.0f'|format(p.score) }}/{{ '%.0f'|format(res.max_points_available) }}</span>
+      <a href="#scoring" class="tiny" style="margin-left:auto;color:inherit;text-decoration:underline dotted"
+         title="Why not out of 100? See 'What decided this' below.">{{ '%.0f'|format(p.score) }}/{{ '%.0f'|format(res.max_points_available) }}</a>
     </div>
     <p class="thesis">{{ p.thesis }}</p>
 
@@ -145,8 +149,8 @@
         {% for k, v in p.components.items() %}
         <div class="bar">
           <span class="t">{{ k }}</span>
-          <span class="track"><span class="fill" style="width:{{ (v / (p.component_max.get(k) or 20) * 100)|round|int }}%"></span></span>
-          <span class="v">{{ '%.0f'|format(v) }}/{{ p.component_max.get(k) or 20 }}</span>
+          <span class="track"><span class="fill" style="width:{{ (v / p.component_max[k] * 100)|round|int }}%"></span></span>
+          <span class="v">{{ '%.0f'|format(v) }}/{{ p.component_max[k] }}</span>
         </div>
         {% endfor %}
       </div>
@@ -173,35 +177,136 @@
     </ol>
   </div>
 
-  <div class="card">
+  <div class="card" id="scoring">
     <h2>What decided this, and what did not</h2>
-    <p class="muted">Names are scored on four things, all of them arithmetic on
-      measured figures: how much room a company has on its debts, how violently
-      the share moves, how big its typical {{ horizon }}-session move is against the
-      {{ cost }}% it costs to trade, and how much it adds to a book you already
-      hold.</p>
-    {% if res.pattern_component_active %}
-    <p class="muted"><b>A price shape is contributing today.</b>
-      {{ res.confirmed_shapes|join(', ') }} — confirmed on data it was not chosen
-      on. <a href="/patterns">The measurement</a>.</p>
-    {% else %}
-    <p class="muted"><b>No price shape is contributing.</b> Twenty of the hundred
-      points are reserved for one, and they are sitting at zero for every name
-      because nothing has yet held up on data it was not chosen on — so today's
-      scores are out of {{ '%.0f'|format(res.max_points_available) }}, not 100.
-      <a href="/patterns">Everything that was tried, and how it failed</a>.</p>
-    {% endif %}
+    <p class="muted">Every score is out of {{ '%.0f'|format(res.max_points_available) }}
+      points today, not a flat 100 — two of the four things below only count
+      once they have actually been earned, and neither has been yet:</p>
+    <dl class="plan" style="margin-bottom:.9rem">
+      <dt>Debts</dt><dd>how much room a company has on its debts — always scored.</dd>
+      <dt>Calm</dt><dd>how violently the share moves against a sensible position size — always scored.</dd>
+      <dt>Fit</dt><dd>
+        {%- if res.portfolio_component_active -%}
+        how little a name overlaps with what you already hold — active today.
+        {%- else -%}
+        how little a name overlaps with what you already hold — <b>not scored
+        today</b>. No holdings were supplied for this page, so this component
+        would be the same constant number for every name, which is not a
+        measurement; it counts for nothing rather than pretending to.
+        {%- endif -%}</dd>
+      <dt>Pattern</dt><dd>
+        {%- if res.pattern_component_active -%}
+        {{ res.confirmed_shapes|join(', ') }}, confirmed on data it was not
+        chosen on — active today. <a href="/patterns">The measurement</a>.
+        {%- else -%}
+        <b>not scored today</b>. Nothing has yet held up on data it was not
+        chosen on. <a href="/patterns">Everything that was tried, and how it
+        failed</a>.
+        {%- endif -%}</dd>
+    </dl>
     <p class="tiny">There is no price target anywhere on this page, deliberately.
       A target is a forecast, and the one entry signal this project did test
       against a null lost to a coin flip twice. "Usual move" is the same
       arithmetic without the claim.</p>
   </div>
 
+  <details class="card" id="ownGate">
+    <summary class="tiny">Check something before you trade — a ticker you're
+      considering, whether it overlaps what you hold, or any company's credit
+      standing</summary>
+    <div style="margin-top:1rem">
+
+      <div style="margin:0 0 1.2rem">
+        <p style="margin:0 0 .5rem"><b>What do you own?</b></p>
+        <p class="muted" style="margin:0 0 .8rem">Kept in this browser only,
+          never sent to the server. Answering this switches on the overlap
+          check below — whether a trade you're considering is one you already
+          hold under another name.</p>
+        <label class="tiny" for="ownText">One per line — <code>TICKER, shares, cost</code></label>
+        <textarea id="ownText" rows="3" spellcheck="false"
+          placeholder="NVDA, 4, 118.20&#10;KO, 30, 61.05"
+          style="width:100%;padding:.6rem .7rem;margin:.25rem 0 .7rem;border:1px solid var(--line);
+                 border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;font-size:.95rem"></textarea>
+        <div style="display:flex;gap:.7rem;flex-wrap:wrap;align-items:center">
+          <button id="ownSave" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
+            background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer">Save</button>
+          <label class="tiny" style="cursor:pointer;text-decoration:underline">or drop a broker CSV
+            <input type="file" id="ownCsv" accept=".csv,text/csv" style="display:none"></label>
+        </div>
+        <p class="tiny" id="ownNote" style="margin:.6rem 0 0"></p>
+        <p class="tiny" id="ownSummary" style="margin:.6rem 0 0"></p>
+      </div>
+
+      <div style="margin:0 0 1.2rem;padding-top:1rem;border-top:1px solid var(--line)">
+        <p style="margin:0 0 .5rem"><b>Thinking of buying something?</b></p>
+        <p class="muted" style="margin:0 0 .8rem">Checked against what you
+          already own, whether earnings are due, how far the company sits
+          from trouble on its debts, and whether it genuinely spreads your
+          money wider.</p>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <input id="ckTicker" placeholder="Ticker" autocomplete="off"
+            style="flex:1 1 8rem;padding:.55rem .7rem;border:1px solid var(--line);
+                   border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem">
+          <button id="ckGo" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
+            background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer">Check it</button>
+        </div>
+        <div id="ckOut" style="margin-top:.9rem"></div>
+      </div>
+
+      <div style="padding-top:1rem;border-top:1px solid var(--line)">
+        <p style="margin:0 0 .5rem"><b>Can this company pay its debts?</b></p>
+        <p class="muted" style="margin:0 0 .8rem">A full report on any company,
+          read from its own filings — nothing surveyed, nothing bought.</p>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <input id="crTicker" placeholder="Ticker" autocomplete="off"
+            style="flex:1 1 8rem;padding:.55rem .7rem;border:1px solid var(--line);
+                   border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem">
+          <button id="crGo" style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid var(--accent);
+            background:none;color:var(--accent);font-size:.95rem;cursor:pointer">Open the report</button>
+        </div>
+        {% if credit_index %}
+        <div style="display:flex;gap:1.6rem;flex-wrap:wrap;margin-top:1rem">
+          <div style="flex:1 1 11rem">
+            <p class="tiny" style="margin:0 0 .35rem;text-transform:uppercase;
+               letter-spacing:.07em">Closest to trouble</p>
+            {% for c in credit_index.weakest %}
+            <p style="margin:0 0 .2rem;font-size:.92rem"><a href="/credit/{{ c.ticker }}"
+              style="text-decoration:none"><b class="tk" style="font-size:1rem">{{ c.ticker }}</b></a>
+              <span class="tiny {{ 'ok' if c.level == 'ok' else 'warn' if c.level == 'warn' else 'loss' }}"
+                >{{ '%.2f'|format(c.dd) }} — {{ c.band }}</span></p>
+            {% endfor %}
+          </div>
+          <div style="flex:1 1 11rem">
+            <p class="tiny" style="margin:0 0 .35rem;text-transform:uppercase;
+               letter-spacing:.07em">Furthest from it</p>
+            {% for c in credit_index.strongest %}
+            <p style="margin:0 0 .2rem;font-size:.92rem"><a href="/credit/{{ c.ticker }}"
+              style="text-decoration:none"><b class="tk" style="font-size:1rem">{{ c.ticker }}</b></a>
+              <span class="tiny ok">{{ '%.2f'|format(c.dd) }} — {{ c.band }}</span></p>
+            {% endfor %}
+          </div>
+        </div>
+        <p class="tiny" style="margin:.9rem 0 0">{{ credit_index.n }} companies
+          measured today; the ranking is between those. Coverage widens with
+          each scan.</p>
+        {% else %}
+        <p class="tiny" style="margin:.9rem 0 0">No company has been measured
+          yet today. Type a ticker above and the report will be worked out on
+          the spot — that path is slower, and it can fail, in which case it
+          says so rather than showing you a number it did not compute.</p>
+        {% endif %}
+      </div>
+
+    </div>
+  </details>
+
   {% if res.excluded %}
   <details class="card">
     <summary class="tiny">{{ res.excluded|length }} names were thrown out — and why</summary>
     <p class="tiny" style="margin:.8rem 0">A screen that shows only what passed
-      is not evidence of anything. This is the rest of it.</p>
+      is not evidence of anything.
+      {%- if res.excluded|length > 80 %} The first 80 of the rest are below.
+      {%- else %} This is the rest of it.{% endif %}</p>
     <div class="scroll">
       <table>
         <thead><tr><th>Name</th><th>Thrown out because</th></tr></thead>
@@ -220,10 +325,254 @@
   {% endif %}
 
   <p class="tiny" style="text-align:center;margin-top:1.4rem">
-    <a href="/brief">Today's brief</a> ·
-    <a href="/patterns">Patterns</a> ·
-    <a href="/full">Full board</a> ·
-    <a href="/limits">Limits</a> ·
-    <a href="/changelog">Changelog</a>
+    <a href="/patterns">Patterns tested</a> ·
+    <a href="/full">Full screener</a> ·
+    <a href="/limits">Limits &amp; data notes</a>
   </p>
 </div>
+
+<script>
+// ---- holdings: browser-only, feeds the overlap check below ----
+const HKEY = "dipfinder_holdings_v1";
+const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function loadHoldings() {
+  try { return JSON.parse(localStorage.getItem(HKEY) || "null"); }
+  catch (e) { return null; }
+}
+function parseHoldings(text) {
+  return String(text || "").split(/[\n;]+/).map(l => l.trim()).filter(Boolean)
+    .map(line => {
+      const [t, sh, cost] = line.split(",").map(x => (x || "").trim());
+      if (!t) return null;
+      const o = {ticker: t.toUpperCase()};
+      if (sh && isFinite(parseFloat(sh))) o.shares = parseFloat(sh);
+      if (cost && isFinite(parseFloat(cost))) o.cost = parseFloat(cost);
+      return o;
+    }).filter(Boolean);
+}
+function paintHoldings() {
+  const h = loadHoldings() || [];
+  const sum = document.getElementById("ownSummary");
+  if (h.length) {
+    sum.textContent = `Saved: ${h.length} position${h.length === 1 ? "" : "s"} — ` +
+      h.slice(0, 8).map(x => x.ticker).join(", ") + (h.length > 8 ? `, +${h.length - 8} more` : "");
+    document.getElementById("ownText").value =
+      h.map(x => [x.ticker, x.shares, x.cost].filter(v => v != null).join(", ")).join("\n");
+  } else {
+    sum.textContent = "";
+  }
+}
+document.getElementById("ownSave").addEventListener("click", () => {
+  const list = parseHoldings(document.getElementById("ownText").value);
+  const n = document.getElementById("ownNote");
+  if (!list.length) {
+    n.textContent = "Nothing recognised. One per line: TICKER, shares, cost.";
+    n.style.color = "var(--amber)"; return;
+  }
+  try { localStorage.setItem(HKEY, JSON.stringify(list)); } catch (e) {}
+  n.textContent = `Saved ${list.length} position(s).`;
+  n.style.color = "var(--green)";
+  paintHoldings();
+});
+document.getElementById("ownCsv").addEventListener("change", async ev => {
+  const file = ev.target.files[0];
+  const n = document.getElementById("ownNote");
+  ev.target.value = "";
+  if (!file) return;
+  n.style.color = "var(--ink-2)"; n.textContent = "Reading " + file.name + "…";
+  const uctl = new AbortController();
+  const ubail = setTimeout(() => uctl.abort(), 25000);
+  try {
+    const r = await fetch("/parse_portfolio", {method: "POST",
+      signal: uctl.signal, body: await file.text()});
+    const d = await r.json();
+    if (!d.ok) { n.textContent = (d.error || "That file could not be read as a broker export")
+                   + " — type the positions in the box above instead: TICKER, shares, cost.";
+                 n.style.color = "var(--amber)"; return; }
+    const list = (d.holdings || []).map(x => ({ticker: String(x.ticker).toUpperCase(),
+                                               shares: x.shares, cost: x.cost}));
+    if (!list.length) { n.textContent = "No positions found in that file.";
+                        n.style.color = "var(--amber)"; return; }
+    try { localStorage.setItem(HKEY, JSON.stringify(list)); } catch (e) {}
+    n.textContent = `Read ${list.length} position(s) from ${file.name}.`;
+    n.style.color = "var(--green)";
+    paintHoldings();
+  } catch (e) {
+    n.textContent = e && e.name === "AbortError"
+      ? "That file took too long to read. Try pasting the positions instead."
+      : "Could not read that file.";
+    n.style.color = "var(--amber)";
+  } finally { clearTimeout(ubail); }
+});
+paintHoldings();
+
+// ---- the check ----
+const ICON = {ok: "✓", note: "·", warn: "⚠", block: "⛔"};
+const COLOR = {ok: "var(--green)", note: "var(--ink-2)", warn: "var(--amber)",
+               block: "var(--red)"};
+// Distance to Default, from the company's own filings. The commercial
+// version of this maps the distance onto an observed default frequency
+// using a proprietary default database; that step is missing here and
+// nothing is invented in its place, so the line reports the distance and
+// the ranking and stops there.
+//
+// This mapping must match _credit_cell's "level" logic in brief.py
+// exactly — ok / watch it→warn / everything worse→block (brief.py calls
+// the last one "bad", same severity, different name). They used to
+// disagree: "watch it" rendered as a neutral grey note here while the
+// leaderboard painted the identical word amber, and "close to the edge"
+// rendered amber here against red on the leaderboard. Same company, same
+// word, two colors on the same screen.
+const CREDIT_LEVEL = {"very far from trouble": "ok", "comfortable": "ok",
+                      "watch it": "warn",
+                      "close to the edge": "block", "in distress on this measure": "block"};
+
+let ckRun = 0;
+
+function paintCredit(d, run) {
+  if (run !== ckRun) return;
+  const el = document.getElementById("ckCredit");
+  if (!el) return;
+  if (!d || !d.ok) {
+    el.innerHTML = '<p class="tiny" style="color:var(--ink-3)">Credit standing ' +
+      'could not be read this time. The rest of the check above is unaffected.</p>';
+    return;
+  }
+  if (d.dd === null || d.dd === undefined) {
+    el.innerHTML = '<p class="tiny" style="color:var(--ink-3)">Credit standing: ' +
+      esc(d.verdict || "could not be established from filings.") + '</p>';
+    return;
+  }
+  const lvl = CREDIT_LEVEL[d.band] || "note";
+  const lev = (d.market_leverage !== null && d.market_leverage !== undefined)
+    ? Math.round(d.market_leverage * 100) : null;
+  let lead;
+  if (lev === null) lead = "";
+  else if (lev < 25) lead = `It owes little next to what it is worth: debts are ` +
+    `${lev}% of what the whole business is worth.`;
+  else if (lev < 60) lead = `It carries real debt — ${lev}% of what the whole ` +
+    `business is worth — but with clear room beyond it.`;
+  else lead = `It is heavily borrowed: debts are ${lev}% of what the whole ` +
+    `business is worth, so a fall in the share price closes the gap quickly.`;
+
+  const extra = [];
+  if (d.percentile !== null && d.percentile !== undefined)
+    extra.push(`Against the ${d.peers_n} other companies measured today it sits ` +
+               `at the ${d.percentile >= 50 ? "stronger" : "weaker"} end — safer ` +
+               `than ${d.percentile}% of them.`);
+  if (d.shares_tag && d.shares_tag.indexOf("WeightedAverage") > -1)
+    extra.push("Its share count is a quarterly average, because this company " +
+               "stopped publishing a current one.");
+  const precise = d.vol_thin
+    ? `The estimate is rough: only ${d.vol_obs} days of share-price history ` +
+      `went into it, so treat the band, not the figure.`
+    : `Distance to default ${d.dd}, from ${d.vol_obs} days of share prices and ` +
+      `its balance sheet filed to ${esc(d.as_of || "an unknown date")}.`;
+
+  el.innerHTML = `<p style="margin:0 0 .6rem"><b style="color:${COLOR[lvl]}">` +
+    `${ICON[lvl]} Credit standing: ${esc(d.band)}</b> ` +
+    `<a class="tiny" href="/credit/${encodeURIComponent(d.ticker || "")}">full report →</a><br>` +
+    `<span class="tiny">${esc(lead)} ${esc(extra.join(" "))} ${esc(precise)}</span></p>`;
+}
+
+async function runCheck() {
+  const t = document.getElementById("ckTicker").value.trim();
+  const out = document.getElementById("ckOut");
+  const btn = document.getElementById("ckGo");
+  if (!t) { out.innerHTML = '<p class="tiny">Type a ticker first.</p>'; return; }
+  const run = ++ckRun;
+  btn.disabled = true; btn.style.opacity = ".6"; btn.textContent = "Checking…";
+  const t0 = Date.now();
+  out.innerHTML = '<p class="tiny" id="ckWait">Checking ' + esc(t.toUpperCase()) +
+    ' against your holdings… <b id="ckSecs">0s</b></p>';
+  const tick = setInterval(() => {
+    const el = document.getElementById("ckSecs");
+    if (!el) return;
+    const s = Math.round((Date.now() - t0) / 1000);
+    el.textContent = s + "s";
+    if (s >= 4 && !document.getElementById("ckSlow"))
+      document.getElementById("ckWait").insertAdjacentHTML("beforeend",
+        '<br><span id="ckSlow" style="color:var(--ink-3)">First check after a ' +
+        'restart builds the earnings calendar — this one is slower than the rest.</span>');
+  }, 250);
+  const ctl = new AbortController();
+  const bail = setTimeout(() => ctl.abort(), 25000);
+  const done = () => { clearInterval(tick); clearTimeout(bail);
+    btn.disabled = false; btn.style.opacity = ""; btn.textContent = "Check it"; };
+  const cctl = new AbortController();
+  const cbail = setTimeout(() => cctl.abort(), 20000);
+  const credit = fetch("/credit", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      signal: cctl.signal,
+      body: JSON.stringify({ticker: t})})
+    .then(r => r.json()).catch(() => null)
+    .finally(() => clearTimeout(cbail));
+  try {
+    const held = loadHoldings() || [];
+    const r = await fetch("/check", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      signal: ctl.signal,
+      body: JSON.stringify({ticker: t, holdings: held})});
+    const d = await r.json();
+    done();
+    if (!d.ok) { out.innerHTML = '<p class="tiny">' +
+                   esc(d.error || "The check did not run") +
+                   ' — press Check it again; if it repeats, the server is restarting ' +
+                   'and needs a minute.</p>';
+                 return; }
+    let html = "";
+    const an = d.analysis;
+    if (an && an.headline) {
+      html += `<p style="margin:0 0 .5rem;font-size:1.12rem;font-weight:640;` +
+              `line-height:1.35">${esc(an.headline)}</p>`;
+      if (an.evidence && an.evidence.length) {
+        html += `<div style="margin:0 0 .9rem;border-left:3px solid var(--line);` +
+                `padding-left:.85rem">` +
+          an.evidence.map(e =>
+            `<p style="margin:0 0 .45rem;font-size:.93rem"><b style="color:var(--ink-2)">` +
+            `${esc(e.label)}:</b> ${esc(e.text)}</p>`).join("") +
+          `</div>`;
+      }
+    }
+    if (d.bottom_line) {
+      const tone = d.verdict === "block" ? COLOR.block
+                 : d.verdict === "warn" ? COLOR.warn : COLOR.ok;
+      html += `<p style="margin:0 0 .7rem;font-weight:640;color:${tone}">` +
+              esc(d.bottom_line) + `</p>`;
+    }
+    html += (d.findings || []).map(f =>
+      `<p style="margin:0 0 .6rem"><b style="color:${COLOR[f.level]}">` +
+      `${ICON[f.level]} ${esc(f.headline)}</b><br>` +
+      `<span class="tiny">${esc(f.detail)}</span></p>`).join("");
+    if (!d.book_size) html += '<p class="tiny">No price book published yet, so overlap ' +
+      'could not be measured. It arrives with the next scheduled scan.</p>';
+    out.innerHTML = (html || '<p class="tiny">Nothing to report.</p>') +
+      '<div id="ckCredit"><p class="tiny" style="color:var(--ink-3)">' +
+      'Reading its filed balance sheet…</p></div>';
+    paintCredit(await credit, run);
+  } catch (e) {
+    done();
+    out.innerHTML = e && e.name === "AbortError"
+      ? '<p class="tiny">Gave up after 25 seconds. The server is still preparing its ' +
+        'data after a restart — try again in a minute.</p>'
+      : '<p class="tiny">Could not reach the checker.</p>';
+  }
+}
+
+document.getElementById("ckGo").addEventListener("click", runCheck);
+document.getElementById("ckTicker").addEventListener("keydown", ev => {
+  if (ev.key === "Enter") { ev.preventDefault(); runCheck(); }
+});
+
+function openCredit() {
+  const t = (document.getElementById("crTicker").value || "").trim().toUpperCase();
+  if (!t) return;
+  location.href = "/credit/" + encodeURIComponent(t);
+}
+document.getElementById("crGo").addEventListener("click", openCredit);
+document.getElementById("crTicker").addEventListener("keydown", ev => {
+  if (ev.key === "Enter") { ev.preventDefault(); openCredit(); }
+});
+</script>

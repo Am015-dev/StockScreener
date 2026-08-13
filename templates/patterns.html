@@ -1,5 +1,5 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Which price shapes actually work</title>
+<title>{{ "Which patterns actually work" if tradeable else "Patterns tested" }}</title>
 <style>
   :root {
     --bg:#faf9f7; --card:#fff; --line:#e3e1dc; --ink:#1a1917; --ink-2:#5c5a55;
@@ -49,6 +49,12 @@
   .pill.no { background:color-mix(in srgb, var(--flat) 15%, transparent); color:var(--ink-3); }
   .pill.yes { background:color-mix(in srgb, var(--green) 18%, transparent); color:var(--green); }
   .pill.thin { background:color-mix(in srgb, var(--amber) 18%, transparent); color:var(--amber); }
+  /* Distinct on purpose from .thin: this is the row that looked real while
+     it was being searched for and then failed the check on data it was not
+     chosen on — the specific failure this whole page exists to catch, not
+     a close miss on cost like .thin is. Red, not amber, so a reader
+     skimming by color does not read the two as the same kind of "almost". */
+  .pill.gone { background:color-mix(in srgb, var(--red) 14%, transparent); color:var(--red); }
   tr.dim td { color:var(--ink-2); }
   .num.neg { color:var(--ink-2); }
   dl { margin:0; } dt { font-weight:640; margin:.9rem 0 .15rem; font-size:.95rem; }
@@ -81,7 +87,7 @@
 
   {% if not rows %}
   <div class="card">
-    <h1>Which price shapes actually work</h1>
+    <h1>Patterns tested</h1>
     <p class="lead" style="margin-top:.6rem">Not measured yet on this build.</p>
     <p class="muted">The sweep needs a year of daily closes for several hundred
       companies, so it runs weekly on a build machine rather than here. Until it
@@ -93,40 +99,41 @@
   {% else %}
 
   <div class="card">
-    <h1>Which price shapes actually work</h1>
     {% if tradeable %}
+    <h1>Which patterns actually work</h1>
     <p class="lead" style="margin-top:.6rem">
-      {{ tradeable|length }} of {{ measured|length }} shapes beat a random stock
-      that was moving just as much — and then held up on data they were not
-      chosen on.</p>
+      {{ tradeable|length }} of {{ measured|length }} patterns beat a random
+      stock that was moving just as much — and then held up on data they were
+      not chosen on.</p>
     <p class="muted">Two hurdles, not one. The first is beating a stock of the
       same volatility on the same day, which removes both the market's move and
-      the shape's habit of picking violent names. The second is being re-measured
-      on the half of the history the search never saw. Only these cleared both.</p>
+      the pattern's habit of picking violent names. The second is being
+      re-measured on the half of the history the search never saw. Only these
+      cleared both.</p>
     {% else %}
+    <h1>Nothing tested here holds up</h1>
     <p class="lead" style="margin-top:.6rem">
-      Nothing held up. None of the {{ measured|length }} shapes tested is worth
-      trading.</p>
-    <p class="muted">That is the finding, not a failure to find one. Every shape
-      here is sold somewhere as a signal. Each was measured against buying a
-      random stock <em>that was moving just as much</em>, on the same day — which
-      removes the market's move and the fact that most of these shapes only fire
-      in violent stocks. What survived that was then re-tested on the half of the
-      history it was not chosen on.</p>
+      None of the {{ measured|length }} patterns tested is worth trading.</p>
+    <p class="muted">That is the finding, not a failure to find one. Every
+      pattern here is sold somewhere as a signal. Each was measured against
+      buying a random stock <em>that was moving just as much</em>, on the same
+      day — which removes the market's move and the fact that most of these
+      patterns only fire in violent stocks. What survived that was then
+      re-tested on the half of the history it was not chosen on.</p>
     <p class="muted"><strong>What this is worth to you:</strong> it is the list of
-      things not to spend money on. This project lost months to a shape nobody
+      things not to spend money on. This project lost months to a pattern nobody
       tested until the end, and a coin flip turned out to do the same job.
       Everything below was tested first.</p>
     {% endif %}
   </div>
 
   <div class="card">
-    <h2>Every shape tried, including the ones that failed</h2>
+    <h2>Every pattern tried, including the ones that failed</h2>
     <div class="scroll">
       <table>
         <thead>
           <tr>
-            <th class="name">Shape</th>
+            <th class="name">Pattern</th>
             <th class="r">Held</th>
             <th class="r">Edge</th>
             <th class="r">After costs</th>
@@ -151,7 +158,7 @@
               {% elif r.survives %}—{% endif %}</td>
             <td class="r verdict">
               {% if r.tradeable %}<span class="pill yes">confirmed</span>
-              {% elif r.survives and not r.confirmed %}<span class="pill thin">found, did not hold up</span>
+              {% elif r.survives and not r.confirmed %}<span class="pill gone">found, did not hold up</span>
               {% elif r.survives %}<span class="pill thin">real, too small</span>
               {% else %}<span class="pill no">no better than random</span>{% endif %}
             </td>
@@ -164,7 +171,7 @@
         </tbody>
       </table>
     </div>
-    <p class="tiny" style="margin-top:.9rem">"Edge" is the shape's average return
+    <p class="tiny" style="margin-top:.9rem">"Edge" is the pattern's average return
       minus the average return of every stock trading on the same days, so a day
       the whole market rose counts for nothing. "After costs" subtracts a
       {{ cost }}% round trip. "p" is how often random entry on those same days did
@@ -175,38 +182,46 @@
     <h2>How this is measured</h2>
     <dl>
       <dt>The market's move is removed before anything else</dt>
-      <dd>A shape that happens to fire on days the whole market rallied will show
-        a beautiful average return and mean nothing. Every shape here is scored
-        against what a random stock did on exactly the same days.</dd>
+      <dd>A pattern that happens to fire on days the whole market rallied will
+        show a beautiful average return and mean nothing. Every pattern here is
+        scored against what a random stock did on exactly the same days.</dd>
 
       <dt>And so is the stock's own violence</dt>
-      <dd>That still is not enough. Most of these shapes — a 3% day, a week of
+      <dd>That still is not enough. Most of these patterns — a 3% day, a week of
         big moves, a new low — only ever fire in stocks that are moving hard, and
         stocks that move hard behave differently from the quiet majority whatever
-        shape they made. Measured against any stock at all, this list produced
-        eleven "winners", every one of them a volatility shape. So the comparison
-        group is drawn from the same volatility bucket on the same day: what did
-        stocks moving <em>this</em> much, on <em>this</em> day, do next? What is
-        left after that belongs to the shape.</dd>
+        pattern they made. Measured against any stock at all, this list produced
+        eleven "winners", every one of them a volatility pattern. So the
+        comparison group is drawn from the same volatility bucket on the same
+        day: what did stocks moving <em>this</em> much, on <em>this</em> day, do
+        next? What is left after that belongs to the pattern.</dd>
 
       <dt>The day is the unit, not the stock</dt>
       <dd>Three hundred stocks firing on four days is four observations, not three
         hundred — they all shared those four days' weather. This is not a
         technicality: it is the exact error that made this framework declare a
-        known-worthless rule significant the first time it met real data. A shape
-        must appear on at least {{ min_days }} separate days to be scored at all.</dd>
+        known-worthless rule significant the first time it met real data. A
+        pattern must appear on at least {{ min_days }} separate days to be
+        scored at all.</dd>
 
       <dt>Testing many things is paid for</dt>
-      <dd>At the usual threshold, one shape in twenty looks significant by luck
-        alone.{% if family %} All {{ family }} measurements — every shape at every
-        holding period — are corrected together, so trying a second holding
-        period does not buy a second free ticket in the same lottery, and a lucky
-        row cannot be lifted out and shown on its own.{% endif %}</dd>
+      <dd>At the usual threshold, one pattern in twenty looks significant by
+        luck alone.{% if family %} All {{ family }} measurements — every pattern
+        at every holding period — are corrected together, so trying a second
+        holding period does not buy a second free ticket in the same lottery,
+        and a lucky row cannot be lifted out and shown on its own.{% endif %}</dd>
 
       <dt>Costs come out before the verdict</dt>
       <dd>A real effect smaller than the spread is a way to pay a broker. Anything
         that survives the statistics but not the {{ cost }}% round trip is labelled
         "real, too small" rather than sold as an edge.</dd>
+
+      <dt>Surviving the search is not enough either</dt>
+      <dd>A pattern is only "confirmed" if it also held up on the half of the
+        history it was not chosen on. One that looked real while being searched
+        for and then failed that check is shown as "found, did not hold up" —
+        a different, more specific failure than never having looked promising
+        at all.</dd>
 
       <dt>A known-worthless rule is left in on purpose</dt>
       <dd>This project's own pullback rule is in the list above. It was falsified
@@ -218,23 +233,24 @@
 
   <div class="card">
     <h2>What this was measured on</h2>
-    <p class="muted">{{ d.tickers }} of the most heavily traded US companies,
-      {{ d.sessions }} trading sessions{% if d.from %} from {{ d['from'] }} to
-      {{ d.to }}{% endif %}. {{ rows|length }} shape-and-holding-period
-      combinations, each against {{ d.seeds }} random redraws{% if unmeasured %};
-      {{ unmeasured }} of them appeared on too few separate days to score{% endif %}.</p>
-    <p class="tiny">One window of one market. A shape that did nothing here may
-      have worked in another decade, and a shape that worked here may not work
-      next year — which is why the whole list is published rather than the best
-      row of it.</p>
-    <p class="tiny"><strong>The bias that is still in here:</strong> those
-      companies were picked because they are heavily traded <em>today</em>, and
-      then the year was replayed. Names that collapsed over the year fell out of
-      that list and names that took off joined it, so the whole pool is tilted
-      towards things that went up. It is why the comparison group is drawn from
-      the same pool — both sides carry the same tilt, so it largely cancels — but
-      "largely" is not "entirely", and any positive number here should be read
-      as the optimistic end.{% if source %} Read from the {{ source }}.{% endif %}</p>
+    <p class="muted">{{ d.tickers }} US companies{% if d.universe %},
+      {{ d.universe }}{% endif %}, over {{ d.sessions }} trading
+      sessions{% if d.from %} from {{ d['from'] }} to {{ d.to }}{% endif %}.
+      {{ rows|length }} pattern-and-holding-period combinations, each against
+      {{ d.seeds }} random redraws{% if unmeasured %}; {{ unmeasured }} of them
+      appeared on too few separate days to score{% endif %}.</p>
+    <p class="tiny">One window of one market. A pattern that did nothing here
+      may have worked in another decade, and a pattern that worked here may
+      not work next year — which is why the whole list is published rather
+      than the best row of it.</p>
+    <p class="tiny"><strong>The bias that is still in here:</strong> companies
+      delisted during the window — taken over, gone bankrupt, gone private —
+      are absent from the price source altogether, and nothing here brings
+      them back. That tilts the whole pool towards names that survived to be
+      measured. It is why the comparison group is drawn from the same pool —
+      both sides carry the same tilt, so it largely cancels — but "largely" is
+      not "entirely", and any positive number here should be read as the
+      optimistic end.{% if source %} Read from the {{ source }}.{% endif %}</p>
   </div>
   {% endif %}
 </div>
