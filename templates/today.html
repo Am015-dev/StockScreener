@@ -93,6 +93,17 @@
       already worked out for {{ '%.0f'|format(budget) }} of risk. Nothing here
       predicts a price. What it does is pick names that will not blow up on you
       and size them so that being wrong costs a known amount.</p>
+    {% elif blocked %}
+    <p class="lead" style="margin-top:.5rem">No list today — {{ blocked }}.</p>
+    <p class="muted">A stop does not protect you across an earnings report; the
+      price gaps straight through it. Without the calendar that check cannot run,
+      and every name would come back "date unknown" and pass. Five confident
+      plans with the one check that matters switched off is worse than no list,
+      so there is no list.</p>
+    <p class="muted">{{ res.universe }} names were read and {{ res.passed_filters }}
+      cleared every other filter. They are not shown, because the missing check
+      is the one that decides whether a stop means anything. This usually fixes
+      itself within a few minutes of a restart — reload shortly.</p>
     {% else %}
     <p class="lead" style="margin-top:.5rem">Nothing cleared today.</p>
     <p class="muted">{{ res.universe }} names were looked at and

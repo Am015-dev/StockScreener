@@ -1781,6 +1781,20 @@ def today_page():
                         patterns_report=_published_get("patterns.json"),
                         risk_budget=budget, horizon=horizon,
                         corr_by_ticker=corr)
+
+    # A stop does not protect you across a report — the price gaps
+    # straight through it. That is the whole reason the earnings filter
+    # exists, and when the calendar cannot be read it excludes nothing:
+    # every name comes back "date unknown", gets a flag, and sails
+    # through. Five confident-looking plans with the one check that
+    # matters silently switched off is precisely the failure this project
+    # keeps having, so the list is withheld instead.
+    earn, cal_complete = _published_earnings()
+    if not earn:
+        return render_template("today.html", picks=[], res=res, budget=budget,
+                               horizon=horizon, cost=ranking.ROUND_TRIP_COST_PCT,
+                               blocked="the earnings calendar could not be read")
+
     picks = []
     for row in res["ranked"][:5]:
         p = plan.trade_plan(row, risk_budget=budget, horizon=horizon)

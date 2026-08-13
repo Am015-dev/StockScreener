@@ -216,8 +216,14 @@ def main() -> int:
                   "every name says what would make it wrong")
         # A price target implies a forecast that was measured here and not
         # found. It must not creep back in through a template edit.
-        check("target" not in td.lower(),
-              "/today prints no price target anywhere")
+        #
+        # Scoped to the plan blocks on purpose: the page itself contains
+        # the sentence "there is no price target anywhere on this page",
+        # so a naive search of the whole body fails on the very promise it
+        # is checking.
+        plans = " ".join(pg.locator(".card.pick dl.plan").all_inner_texts())
+        check("target" not in plans.lower(),
+              "no trade plan prints a price target")
         check("Risk 1% of your account" in td,
               "/today carries the position-sizing rule")
         over = pg.evaluate("() => document.documentElement.scrollWidth - "
