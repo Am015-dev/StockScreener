@@ -704,10 +704,16 @@ def _auto_reverify(params, attempts=12, wait=30):
         _auto["running"] = False
 
 
-@app.route("/")
+@app.route("/brief")
 def index():
     """One card, one decision — rendered on the server, so the page is
-    complete when it arrives and never starts a scan to fill itself in."""
+    complete when it arrives and never starts a scan to fill itself in.
+
+    This was the front page until /today existed. It still carries the
+    credit directory and the pre-trade check, which are worth keeping;
+    what it never carried was an answer to "so what do I buy", and that
+    is now the root's job.
+    """
     try:
         m = market_clock.state()
         f = (market_clock.staleness(float(_state["results_ts"]))
@@ -1747,6 +1753,7 @@ def _today_candidates(horizon: int) -> list:
     return out
 
 
+@app.route("/")
 @app.route("/today")
 def today_page():
     """The five names, with the plan for each — the point of the whole site.
@@ -1822,7 +1829,14 @@ def patterns_page():
                          "p_text": patterns.p_words(r.get("p")),
                          "family_size": r.get("family_size"),
                          "survives": bool(r.get("survives")),
+                         # confirmed = it also held up on the half of the
+                         # history it was NOT chosen on. Surviving the
+                         # search alone never earns the badge.
+                         "confirmed": bool(r.get("confirmed")),
+                         "holdout": r.get("holdout"),
+                         "holdout_note": r.get("holdout_note"),
                          "tradeable": bool(r.get("survives")
+                                           and r.get("confirmed")
                                            and (r.get("after_costs_pct") or 0) > 0),
                          "verdict": patterns.verdict(r)})
     # strongest first, so the page is read top-down and the reader does

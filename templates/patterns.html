@@ -77,7 +77,7 @@
 </style>
 
 <div class="wrap">
-  <p class="tiny" style="margin:0 0 1rem"><a href="/">← Today's brief</a></p>
+  <p class="tiny" style="margin:0 0 1rem"><a href="/">← Today's Five</a></p>
 
   {% if not rows %}
   <div class="card">
@@ -96,25 +96,27 @@
     <h1>Which price shapes actually work</h1>
     {% if tradeable %}
     <p class="lead" style="margin-top:.6rem">
-      {{ tradeable|length }} of {{ measured|length }} shapes tested beat random
-      entry by more than it costs to trade them.</p>
-    <p class="muted">Each one below is measured against buying a random stock on
-      the same days, so the market's own move is already removed. What is left
-      is the shape's own contribution, and the "after costs" column is what
-      reaches your account.</p>
+      {{ tradeable|length }} of {{ measured|length }} shapes beat a random stock
+      that was moving just as much — and then held up on data they were not
+      chosen on.</p>
+    <p class="muted">Two hurdles, not one. The first is beating a stock of the
+      same volatility on the same day, which removes both the market's move and
+      the shape's habit of picking violent names. The second is being re-measured
+      on the half of the history the search never saw. Only these cleared both.</p>
     {% else %}
     <p class="lead" style="margin-top:.6rem">
-      None of the {{ measured|length }} shapes tested beat random entry by more
-      than it costs to trade them.</p>
-    <p class="muted">That is the finding, not a failure to find one. Every one of
-      these shapes is sold somewhere as a signal. Measured against buying a
-      random stock on the same days — which removes the market's own move, the
-      thing that makes all of them look good — none of them left enough behind
-      to cover the {{ cost }}% round trip.</p>
+      Nothing held up. None of the {{ measured|length }} shapes tested is worth
+      trading.</p>
+    <p class="muted">That is the finding, not a failure to find one. Every shape
+      here is sold somewhere as a signal. Each was measured against buying a
+      random stock <em>that was moving just as much</em>, on the same day — which
+      removes the market's move and the fact that most of these shapes only fire
+      in violent stocks. What survived that was then re-tested on the half of the
+      history it was not chosen on.</p>
     <p class="muted"><strong>What this is worth to you:</strong> it is the list of
-      things not to spend money on. This project already lost months to a shape
-      that was never tested until the end, and it turned out a coin flip did the
-      same job. Everything below has now been tested first.</p>
+      things not to spend money on. This project lost months to a shape nobody
+      tested until the end, and a coin flip turned out to do the same job.
+      Everything below was tested first.</p>
     {% endif %}
   </div>
 
@@ -130,6 +132,7 @@
             <th class="r">After costs</th>
             <th class="r">Days</th>
             <th class="r">p</th>
+            <th class="r">Held up after</th>
             <th class="r">Verdict</th>
           </tr>
         </thead>
@@ -143,13 +146,17 @@
             <td class="r num {{ '' if r.after_costs_pct > 0 else 'neg' }}" data-l="After costs">{{ '%+.2f'|format(r.after_costs_pct) }}%</td>
             <td class="r" data-l="Days">{{ r.days }}</td>
             <td class="r" data-l="p">{{ r.p_text }}</td>
+            <td class="r" data-l="Held up after">
+              {% if r.holdout %}{{ '%+.2f'|format(r.holdout.edge_pct) }}%
+              {% elif r.survives %}—{% endif %}</td>
             <td class="r verdict">
-              {% if r.tradeable %}<span class="pill yes">worth trading</span>
+              {% if r.tradeable %}<span class="pill yes">confirmed</span>
+              {% elif r.survives and not r.confirmed %}<span class="pill thin">found, did not hold up</span>
               {% elif r.survives %}<span class="pill thin">real, too small</span>
               {% else %}<span class="pill no">no better than random</span>{% endif %}
             </td>
             {% else %}
-            <td class="r verdict" colspan="5" style="text-align:left;color:var(--ink-3)">
+            <td class="r verdict" colspan="6" style="text-align:left;color:var(--ink-3)">
               did not appear on {{ min_days }} separate days — too rare here to measure</td>
             {% endif %}
           </tr>

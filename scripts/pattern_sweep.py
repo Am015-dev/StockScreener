@@ -132,10 +132,13 @@ def main() -> int:
                           "of the window, not the last",
               "horizons": {}}
 
-    # One correction across every shape at every holding period. Doing it
-    # per horizon would mean three holding periods bought three separate
-    # lotteries at the price of one.
-    all_res = patterns.sweep_many(tested, horizons, seeds=a.seeds, progress=log)
+    # Search the first half, confirm on the second. One correction across
+    # every shape at every holding period within the search — doing it per
+    # horizon would mean three holding periods bought three separate
+    # lotteries at the price of one — and then a single pre-specified
+    # re-test of each survivor on data it was not chosen on.
+    all_res = patterns.sweep_with_holdout(tested, horizons, seeds=a.seeds,
+                                          progress=log)
     for h in horizons:
         res = all_res[h]
         report["horizons"][str(h)] = res
@@ -148,10 +151,19 @@ def main() -> int:
     total = sum(len(v) for v in report["horizons"].values())
     # `v` is None for a shape too rare to measure — those rows are kept in
     # the report on purpose, so the page can say so rather than hide them
+    # Surviving the search is not enough to be called tradeable. It has to
+    # have held up on the half of the history it was not chosen on.
     survivors = [(h, k, v) for h, rows in report["horizons"].items()
                  for k, v in rows.items()
-                 if v and v.get("survives")
+                 if v and v.get("survives") and v.get("confirmed")
                  and (v.get("after_costs_pct") or -1) > 0]
+    found_only = [(h, k, v) for h, rows in report["horizons"].items()
+                  for k, v in rows.items()
+                  if v and v.get("survives") and not v.get("confirmed")]
+    report["found_but_unconfirmed"] = [
+        {"horizon": h, "pattern": k, "edge_pct": v.get("edge_pct"),
+         "p": v.get("p"), "holdout": v.get("holdout"),
+         "note": v.get("holdout_note")} for h, k, v in found_only]
     report["total_tests"] = total
     report["tradeable"] = [{"horizon": h, "pattern": k, **v}
                            for h, k, v in survivors]
@@ -165,12 +177,17 @@ def main() -> int:
         f"sessions and {len(tested)} companies")
     if survivors:
         for h, k, v in survivors:
-            log(f"  SURVIVED  {k} @ {h}d: {patterns.verdict(v)}")
+            log(f"  CONFIRMED  {k} @ {h}d: {patterns.verdict(v)}")
     else:
-        log("  NOTHING SURVIVED. No pattern in the library beat a random stock")
-        log("  that was moving just as much, on the same days, by more than")
-        log("  costs, after correcting for how many were tried. That is the")
-        log("  expected result, and publishing it is the point.")
+        log("  NOTHING CONFIRMED. No pattern in the library beat a random")
+        log("  stock that was moving just as much, on the same days, by more")
+        log("  than costs — and then held up on the half of the history it")
+        log("  was not chosen on. That is the expected result, and publishing")
+        log("  it is the point.")
+    for h, k, v in found_only:
+        log(f"  found, NOT confirmed  {k} @ {h}d: "
+            f"{v.get('edge_pct', 0):+.3f}% while it was being looked for; "
+            f"{v.get('holdout_note') or 'no holdout'}")
     log("=" * 66)
     return 0
 

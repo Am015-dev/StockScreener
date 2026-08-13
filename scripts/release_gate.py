@@ -196,6 +196,35 @@ def main() -> int:
         check("0.50" in lim and "0.41" in lim,
               "/limits carries both permutation results")
 
+        # ---- the decision page ----
+        # This is the one page the whole site exists to have. Everything
+        # else measures; this decides, and if it is wrong it is wrong in
+        # the direction of somebody losing money.
+        pg.goto(base + "/today", wait_until="load", timeout=90000)
+        td = pg.inner_text("body")
+        check("{{" not in td, "no unrendered template on /today")
+        cards = pg.locator(".card.pick").count()
+        check(cards <= 5, "/today shows at most five names", f"showed {cards}")
+        if cards:
+            # a name without a stop and a share count is not a plan, it is
+            # a tip — which is the thing this product refuses to be
+            check(pg.locator("dl.plan dt", has_text="Stop").count() == cards,
+                  "every name carries a stop")
+            check(pg.locator("dl.plan dt", has_text="Size").count() == cards,
+                  "every name carries a share count")
+            check(pg.locator("dl.plan dt", has_text="Wrong if").count() == cards,
+                  "every name says what would make it wrong")
+        # A price target implies a forecast that was measured here and not
+        # found. It must not creep back in through a template edit.
+        check("target" not in td.lower(),
+              "/today prints no price target anywhere")
+        check("Risk 1% of your account" in td,
+              "/today carries the position-sizing rule")
+        over = pg.evaluate("() => document.documentElement.scrollWidth - "
+                           "document.documentElement.clientWidth")
+        check(over <= 0, "/today does not scroll sideways on a phone",
+              f"{over}px of overflow")
+
         # ---- the pattern sweep ----
         # The credit report shipped once with no route to it from anywhere
         # a reader would look, and nobody found it for weeks. A page that
