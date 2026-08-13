@@ -152,11 +152,15 @@ w = b["watchlist"][0]
 for k in ("ticker", "price", "stop", "target", "rsi", "earnings"):
     assert k in w, (k, w)
 assert w["support_dist"] is not None
-src = (ROOT / "templates" / "brief.html").read_text()
-# The banner must state the permutation-test finding, not a softer
-# version of it. "Has not been profitable" invites the thought that
-# tuning might fix it; "indistinguishable from random entry" does not.
-assert "filter, not a" in src, "the card must not present the list as a signal"
+# brief.html carried this banner until the pattern-screen table moved to
+# /full and /patterns and brief.html itself was retired in favour of one
+# front door; the same static claim now lives in index.html, and that is
+# what a reader actually sees. The banner must state the permutation-test
+# finding, not a softer version of it. "Has not been profitable" invites
+# the thought that tuning might fix it; "indistinguishable from random
+# entry" does not.
+src = (ROOT / "templates" / "index.html").read_text()
+assert "filter, not a" in src, "the page must not present the list as a signal"
 # "worse than a coin flip" was itself an overclaim: on the wide-net run
 # the signal LED random entry by a third of a standard deviation, which
 # is noise, not defeat. The statistically defensible claim — and now the

@@ -83,13 +83,37 @@ print(f"an unmeasured credit scores mid-range ({by['UNKNOWN']}), between "
       f"the best ({by['BEST']}) and the worst ({by['WORST']})")
 
 # ---- 3. with nothing confirmed, the forward-looking component is ZERO ----
+# Neither optional component is wired in this call (no patterns_report worth
+# anything, no corr_by_ticker at all), so both sit at zero and the total
+# reflects it: 60, not 100.
 res = ranking.score([cand("A"), cand("B", annual_vol=0.5)],
                     patterns_report={"tradeable": []})
 assert res["pattern_component_active"] is False
 assert all(r["components"]["confirmed pattern"] == 0 for r in res["ranked"])
-assert res["max_points_available"] == 80.0, res["max_points_available"]
+assert res["portfolio_component_active"] is False
+assert all(r["components"]["adds to what you own"] == 0 for r in res["ranked"])
+assert res["max_points_available"] == 60.0, res["max_points_available"]
 print("with no shape confirmed, every name scores 0 on the pattern component")
-print("  and the page is told only 80 points were available, not 100")
+print("with no holdings supplied, every name scores 0 on the portfolio component")
+print("  and the page is told only 60 points were available, not 100")
+
+# The old behaviour: corr_by_ticker=None made fit_v fall back to a constant
+# 1.0 for EVERY ticker — never zero, never different between names, so it
+# inflated every score by the same 20 points while a bar on the page
+# implied it was measuring something. That is worse than showing zero: a
+# constant dressed as a differentiator. Pinned so it cannot come back.
+same_score_gap = res["ranked"][0]["score"] - res["ranked"][1]["score"]
+assert res["ranked"][0]["components"]["adds to what you own"] == \
+    res["ranked"][1]["components"]["adds to what you own"] == 0, \
+    "an inactive portfolio component must be zero, not a shared constant"
+print("  and it is a real zero, not the old silent constant of 20")
+
+# An EMPTY dict is not the same as no dict: it means holdings were supplied
+# and none of them correlate, which is a real measurement and should score.
+res_empty = ranking.score([cand("A"), cand("B")], corr_by_ticker={})
+assert res_empty["portfolio_component_active"] is True
+assert res_empty["max_points_available"] == 80.0, res_empty["max_points_available"]
+print("an empty (but present) holdings dict activates the component, unlike None")
 
 # a shape that survived the search but NOT the holdout must not count
 res2 = ranking.score([cand("A")], patterns_report={"tradeable": [
