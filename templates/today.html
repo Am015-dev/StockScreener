@@ -36,6 +36,7 @@
   a { color:var(--accent); }
 
   .pick { border-left:3px solid var(--rail); }
+  .notice { border-left:3px solid var(--amber); }
   .tk { font-size:1.5rem; font-weight:700; letter-spacing:-.02em;
         font-variant-numeric:tabular-nums; }
   .co { color:var(--ink-3); font-size:.86rem; }
@@ -116,6 +117,13 @@
       failed on liquidity, debt, or a report due inside the hold.</p>
     {% endif %}
   </div>
+
+  {% if regime_notes %}
+  <div class="card notice">
+    <h2>Market backdrop</h2>
+    {% for note in regime_notes %}<p class="muted">{{ note }}</p>{% endfor %}
+  </div>
+  {% endif %}
 
   {% for p in picks %}
   <div class="card pick">

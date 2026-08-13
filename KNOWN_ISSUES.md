@@ -162,7 +162,28 @@ rather than taken on trust.
   took off no longer join the list retroactively. What remains is that
   companies delisted during the window are absent from the price source
   altogether, and nothing here brings them back. Any positive number on
-  /patterns should be read as the optimistic end.
+  /patterns should be read as the optimistic end. `pattern_sweep.py` now
+  publishes the exact tickers each run tested (`universe_tickers` in
+  `patterns.json`) so a future run's candidate pool can be checked
+  directly; the run that produced the current numbers on /patterns did
+  not, and cannot be checked retroactively. `credit.delisting_filing()`
+  is the tool for that check when a ticker list exists: it reads SEC
+  EDGAR's Form 25/25-NSE/15 filings and cross-checks against subsequent
+  10-K/10-Q filings, because a bare Form 25 is not proof by itself —
+  American Electric Power has three of them on file for a security other
+  than its common stock and filed a 10-K in 2026 regardless. Run once for
+  real against the 455 names in the CURRENT fallback universe
+  (`universe_static.US_CORE`, not the pattern sweep's own window) as a
+  sanity check on the tool itself: 446 resolved to a CIK, 152 had SOME
+  delisting-family filing on record, and after the periodic-filing
+  cross-check, zero were confirmed delisted — three (EA, Brown-Forman,
+  Philip Morris) had filed within the past month and were correctly left
+  unclassified rather than guessed at, and nine tickers had no CIK at all
+  in the SEC's own bulk ticker file, a gap in that file rather than in
+  the companies. That is a measurement of today's fallback list, not of
+  the window /patterns actually ran over, and it should not be read as
+  "survivorship bias is smaller than feared" — it says the tool works and
+  the CURRENT list is not visibly stale, nothing more.
 - **A shape covering half the market is largely compared against
   itself.** The comparison group deliberately includes the pattern's own
   hits, because the question is whether picking this shape beats picking

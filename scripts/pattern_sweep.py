@@ -130,6 +130,15 @@ def main() -> int:
               "min_days": patterns.MIN_DAYS,
               "universe": "ranked by dollar volume over the first 20 sessions "
                           "of the window, not the last",
+              # The actual names, not just the count — published so the
+              # survivorship-bias caveat below can be checked against what
+              # this run actually tested instead of stated only in prose.
+              # A name absent from this list at the window's start and
+              # absent from a later run's list may simply be a company
+              # that fell out of the volume ranking; credit.delisting_filing()
+              # against each CIK is what turns "absent" into "confirmed
+              # delisted" versus "still trades, just smaller now".
+              "universe_tickers": sorted(tested.keys()),
               "horizons": {}}
 
     # Search the first half, confirm on the second. One correction across
