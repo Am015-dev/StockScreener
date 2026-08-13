@@ -86,22 +86,15 @@
   h1 { font-size: 1.75rem; line-height: 1.15; letter-spacing: -.02em;
        font-weight: 680; margin: 0 0 var(--sp-2); }
   .sub { color: var(--ink-2); margin: 0 0 var(--sp-5); max-width: 68ch; font-size: .95rem; }
-  h2 { font-size: 1.0625rem; font-weight: 640; letter-spacing: -.01em;
-       margin: 0 0 var(--sp-1); color: var(--ink); text-transform: none;
-       display: flex; align-items: center; gap: .55rem; }
-  h2::before { content: ""; flex: 0 0 auto; width: 3px; height: 1.05em;
-               border-radius: 2px; background: var(--series-1); }
-  section:has(#nearWrap) h2::before,
-  #nearSection h2::before { background: var(--series-4); }
-  #journalSection h2::before { background: var(--series-3); }
-  #btSection h2::before { background: var(--series-2); }
+  h2 { font-size: .78rem; font-weight: 640; letter-spacing: .09em;
+       margin: 0 0 var(--sp-2); color: var(--ink-3); text-transform: uppercase; }
   .secsub { font-size: .875rem; color: var(--ink-2); margin: 0 0 var(--sp-4); max-width: 72ch; }
   .subhead { font-size: .9375rem; font-weight: 620; color: var(--ink);
              margin: var(--sp-5) 0 var(--sp-2); }
 
   section { background: var(--surface-1); border: 1px solid var(--line);
             border-radius: var(--r-lg); padding: var(--sp-5);
-            margin-bottom: var(--sp-4); box-shadow: var(--shadow); }
+            margin-bottom: var(--sp-4); }
 
   .bar { display: flex; gap: var(--sp-3); align-items: center;
          flex-wrap: wrap; margin-bottom: var(--sp-4); }
@@ -287,31 +280,34 @@
     level buyers previously defended, with earnings dates verified, plus the stop,
     target and position size the rules would have used.</div>
 
-  <div style="margin:.2rem 0 .8rem;padding:.7rem .9rem;border:1px solid var(--red);
-       border-radius:8px;color:var(--red);font-size:.92rem">
-    <b>This pattern was tested against random entry and failed — twice.</b>
+  <div style="margin:.2rem 0 .8rem;padding:.85rem 1rem;background:var(--surface-1);
+       border:1px solid var(--line);border-left:3px solid var(--red);
+       border-radius:var(--r);color:var(--ink);font-size:.92rem">
+    <b style="color:var(--red)">This pattern was tested against random entry and failed — twice.</b>
     On both shipped rule sets it was statistically indistinguishable from
     coin-flip entry on the same stocks through identical stop/target/exit code
     (p&nbsp;=&nbsp;0.50 and 0.41; on the first test random entry actually did better) —
     no better than random entry. It is a filter, not a signal.
-    <span style="opacity:.85">In plain terms: a coin flip matched or beat this
+    <span style="color:var(--ink-2)">In plain terms: a coin flip matched or beat this
     pattern's entries about as often as not — the timing itself adds
     nothing.</span>
     Everything on this page is a factual screen output and a research record.
     None of it is evidence that buying these stocks makes money.
-    <a href="/limits" style="color:inherit">The full test</a>.
+    <a href="/limits">The full test</a>.
   </div>
 
 
-  <div id="stallBox" style="display:none;margin:.3rem 0 .6rem;padding:.6rem .8rem;
-       border:1px solid var(--amber);border-radius:8px;color:var(--amber)">
-    <b>⚠ This scan has stopped responding.</b>
-    <span id="stallText"></span>
+  <div id="stallBox" style="display:none;margin:.3rem 0 .6rem;padding:.7rem .9rem;
+       background:var(--surface-1);border:1px solid var(--line);
+       border-left:3px solid var(--amber);border-radius:var(--r);color:var(--ink)">
+    <b style="color:var(--amber)">⚠ This scan has stopped responding.</b>
+    <span id="stallText" style="color:var(--ink-2)"></span>
     <button class="ghost" style="margin-left:.5rem" onclick="cancelScan()">
       Abandon it and show my last results</button>
   </div>
   <div id="topFallback" class="hint" style="display:none;margin:.2rem 0 .6rem;
-       padding:.55rem .8rem;border:1px solid var(--amber);border-radius:8px;color:var(--amber)"></div>
+       padding:.6rem .9rem;background:var(--surface-1);border:1px solid var(--line);
+       border-left:3px solid var(--amber);border-radius:var(--r);color:var(--ink-2)"></div>
   <div id="asOf" style="display:none;font-weight:600;margin:.1rem 0 .4rem"></div>
   <div id="snapNote" class="hint" style="display:none;margin:.2rem 0 .6rem"></div>
 
@@ -333,10 +329,11 @@
     <div class="hint" id="errorHint"></div>
   </div>
 
-  <div id="healthBox" style="display:none;background:rgba(232,182,76,.08);border:1px solid var(--amber);border-radius:10px;padding:.9rem 1.1rem;margin-bottom:1rem">
+  <div id="healthBox" style="display:none;background:var(--surface-1);border:1px solid var(--line);
+       border-left:3px solid var(--amber);border-radius:var(--r);padding:.85rem 1rem;margin-bottom:1rem;color:var(--ink)">
     <b style="color:var(--amber)">Safety checks degraded this scan.</b>
-    <span id="healthText"></span>
-    <div class="hint">Fail-closed: unverifiable picks are shown as "awaiting
+    <span id="healthText" style="color:var(--ink-2)"></span>
+    <div class="hint" style="color:var(--ink-2)">Fail-closed: unverifiable picks are shown as "awaiting
       verification" above the results — never as if they passed. The server
       re-verifies them automatically once the data source responds.</div>
   </div>
@@ -472,7 +469,9 @@
   <section>
     <h2>All results <span id="resultCount"></span></h2>
     <div id="verdict" style="display:none;font-size:1.05rem;font-weight:600;margin:0 0 .6rem"></div>
-    <div id="cappedBox" style="display:none;margin:0 0 .8rem;background:rgba(232,182,76,.08);border:1px solid var(--amber);border-radius:var(--r);padding:.8rem 1rem">
+    <div id="cappedBox" style="display:none;margin:0 0 .8rem;background:var(--surface-1);
+         border:1px solid var(--line);border-left:3px solid var(--amber);
+         border-radius:var(--r);padding:.8rem 1rem">
       <div id="cappedText" style="font-weight:620;color:var(--amber)"></div>
       <div class="hint" style="margin:.3rem 0 .5rem">Scans started from this page are
         limited so they finish on this server — the full universe is scanned on a
@@ -480,7 +479,9 @@
       <button type="button" class="ghost" id="restorePublished"
         style="font-size:.82rem;padding:.35rem .9rem">↩ Show the full scheduled scan again</button>
     </div>
-    <div id="concBox" style="display:none;margin:0 0 .8rem;background:rgba(42,120,214,.07);border:1px solid var(--accent);border-radius:var(--r);padding:.8rem 1rem">
+    <div id="concBox" style="display:none;margin:0 0 .8rem;background:var(--surface-1);
+         border:1px solid var(--line);border-left:3px solid var(--accent);
+         border-radius:var(--r);padding:.8rem 1rem">
       <div id="concHead" style="font-weight:640"></div>
       <div id="concBody" class="hint" style="margin:.3rem 0 0"></div>
       <details id="concDetails" style="margin-top:.4rem"><summary class="hint"
