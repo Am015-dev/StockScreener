@@ -2071,11 +2071,22 @@ def today_page():
     # matters silently switched off is precisely the failure this project
     # keeps having, so the list is withheld instead.
     credit_index = brief.credit_directory(_credit_view())
+    # The one freshness question a returning visitor actually has —
+    # "is this today's close or three days old" — had no answer anywhere
+    # on this page (found in a live site review: grepped the rendered
+    # page for "as of"/"updated"/"scanned" and got zero hits for the
+    # picks themselves). The last entry in the published price book's own
+    # date list is the session the picks were priced on; the market
+    # state label says whether that is today's close or a stale carry.
+    price_dates = (_price_book() or {}).get("dates") or []
+    price_date = price_dates[-1] if price_dates else None
+    market_state = market_clock.state()
     if not earn:
         return render_template("today.html", picks=[], res=res, budget=budget,
                                horizon=horizon, cost=ranking.ROUND_TRIP_COST_PCT,
                                blocked="the earnings calendar could not be read",
-                               credit_index=credit_index, regime_notes=regime_notes)
+                               credit_index=credit_index, regime_notes=regime_notes,
+                               price_date=price_date, market_state=market_state)
 
     picks = []
     for row in res["ranked"][:5]:
@@ -2095,7 +2106,8 @@ def today_page():
     return render_template("today.html", picks=picks, res=res,
                            budget=budget, horizon=horizon,
                            cost=ranking.ROUND_TRIP_COST_PCT,
-                           credit_index=credit_index, regime_notes=regime_notes)
+                           credit_index=credit_index, regime_notes=regime_notes,
+                           price_date=price_date, market_state=market_state)
 
 
 @app.route("/patterns")

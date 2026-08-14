@@ -100,6 +100,9 @@
 
   <div class="card">
     <h1>{{ "Today's Five" if picks else ("No list today" if blocked else "Nothing cleared today") }}</h1>
+    {% if price_date %}
+    <p class="tiny" style="margin:.15rem 0 0">Priced as of {{ price_date }}{% if market_state %} &middot; {{ market_state.label }}{% endif %}</p>
+    {% endif %}
     {% if picks %}
     <p class="lead" style="margin-top:.5rem">{{ picks|length }} name{{ '' if picks|length == 1 else 's' }}
       cleared everything, out of {{ res.universe }} looked at.</p>

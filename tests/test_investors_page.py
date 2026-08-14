@@ -112,6 +112,17 @@ else:
     print("AAPL did not make today's board this run (real scoring, not "
           "guaranteed) — field-flow already verified directly above")
 
+# ---- freshness: the one question a returning visitor actually has ----
+# A live site review found /today gave no answer anywhere to "is this
+# today's close or three days old" — grepped the rendered page for
+# "as of"/"updated"/"scanned" and got zero hits for the picks themselves.
+assert "Priced as of" in body, \
+    "the front page must say what session the picks were priced on"
+assert dates[-1] in body, \
+    ("the freshness line must show the LATEST published price date, not "
+     "some other date")
+print("/today states what session the picks were priced on")
+
 # ---- /check: note-level only, never the bottom line ----
 r = c.post("/check", json={"ticker": "AAPL", "holdings": ""})
 assert r.status_code == 200, r.status_code

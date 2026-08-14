@@ -283,3 +283,90 @@ against it.
   `display: ticker or issuer or key`. Fixed before this shipped; not
   logged in `MISTAKES.md` because it was caught by the test written
   alongside the code in the same session, not by a later live check.
+
+## Round 6 — 2026-08-14, build 564f19a — **85/100** (independent scorer)
+
+Reported directly: "the full website is really awful... impossible to
+understand." Read UX/readability research first (Nielsen Norman on
+plain-language scanning, sentence-length guidance, fintech dashboard
+practice) before auditing, per the standing request to ground design
+work in real sources rather than intuition. Audited every live page —
+curl for raw HTML/headers, WebFetch for a first-time-reader text
+extraction, and a local Flask instance mirroring the real published data
+branch, screenshotted with Playwright at 390px (headless Chromium in
+this environment cannot reach the deployed Render URL directly, a
+known sandbox limitation — curl and a local mirror serving identical
+code are the substitute this project has used before).
+
+Two defects, both confirmed live before fixing, accounted for nearly
+all of it:
+
+- **`/limits` and `/changelog` served raw markdown source with
+  `mimetype="text/markdown"`.** Every browser renders that as unstyled
+  plain text — headings, tables and bold shown as the literal
+  characters `#`, `|---|`, `**`. `/limits` is the site's own methodology
+  page, linked from every other page's footer, so this alone plausibly
+  explains most of the complaint. Confirmed with `curl -I`:
+  `Content-Type: text/markdown`.
+- **Every jargon term on `/full`** (RSI, ATR, profit factor, R, Sortino,
+  stop room) already carried a genuinely well-written plain-language
+  explanation — in a `data-tip` attribute shown only on CSS `:hover`,
+  which does not exist on a touchscreen, the primary way anyone reads
+  this site. The writing was mostly fine; the explanations were simply
+  unreachable on a phone.
+
+Fixes, and the adopt/borrow/build calls behind them:
+
+- **[`mistune`](https://github.com/lepture/mistune) — adopted** for
+  `/limits`: pure Python, zero transitive dependencies, ~65KB wheel,
+  CommonMark-compliant with a table plugin — checked against every
+  markdown feature `KNOWN_ISSUES.md` actually uses (headings, lists,
+  code spans, bold, pipe tables) before adopting, not assumed. `/limits`
+  now renders through it into real HTML in a new `markdown_page.html`
+  template matching the site's existing CSS token system.
+- **`/changelog` — built, not routed through markdown.** A commit
+  subject is uncontrolled text that could itself contain
+  underscores/asterisks/backticks; running it through a markdown parser
+  would let a commit message's own characters be silently reinterpreted
+  as formatting. Built as a plain HTML list directly in a new
+  `changelog.html` template instead, with Jinja's autoescaping doing
+  both the safety and the correct literal rendering in one step
+  (verified with a fixture commit subject
+  `` "Rename `_credit_for()` to use __slots__ and *args safely" `` —
+  every special character renders literally, none reinterpreted).
+- **Tap-to-open tooltips — built.** One delegated click listener toggles
+  a `.tip-active` class that the existing tooltip CSS already responds
+  to (it already had a `:focus` rule alongside `:hover`, this just adds
+  the third trigger) — fixes every current and future `data-tip` element
+  on `/full` in one change. Confirmed against a real element in a real
+  browser context: computed `::after` content was `"none"` before tap,
+  the actual explanation text after.
+- **A CSS-only scroll shadow** on every `.scroll` table container
+  (credit, investors, patterns, today) — `overflow-x:auto` alone gave no
+  on-screen sign a wide table was swipeable at 390px, which read as
+  missing columns rather than "there's more here."
+- **A freshness line on `/today`**, found by the independent scorer
+  (below): the flagship daily page had no answer anywhere to "is this
+  today's close or three days old" — zero hits searching the rendered
+  page for "as of"/"updated"/"scanned". Now states the published price
+  book's own latest session date plus `market_clock.state()`'s label.
+
+`scripts/release_gate.py` gained checks for the first two fixes (real
+HTML tags on `/limits`, no leaked markdown syntax, tap-reveals-tooltip
+on `/full`), so a regression to either the old mimetype or the old
+hover-only behavior fails the gate. Full local run: 41/41 passed, zero
+console errors across every page. The full Python suite (33 files,
+including two new files this round) passed throughout.
+
+**Independent score: 85/100** (a fresh agent with no prior context on
+this session, auditing the live site via curl/WebFetch only): decisive
+answers 23/25, clarity 16/20, value density 17/20, honesty 14/15,
+correctness 10/10, coverage/freshness 5/10 — the freshness gap above was
+the scorer's top-named defect and is fixed in this same round. The
+scorer also flagged `/changelog` showing only a raw merge-commit
+message on this build; checked directly and found the pre-existing
+"shallow slice of history" fallback note correctly present alongside
+it — Render's shallow git clone genuinely holds nothing but merge
+commits at this point in the branch's history, a known, already-handled
+edge case (see the code's own comment on it), not a regression from this
+round's changes.
