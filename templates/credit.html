@@ -24,7 +24,17 @@
          -webkit-font-smoothing:antialiased; }
   .wrap { max-width:44rem; margin:0 auto; padding:2rem 1.15rem 4rem; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
-          padding:1.4rem 1.35rem; margin:0 0 1.1rem; }
+          padding:1.4rem 1.35rem; margin:0 0 1.1rem; transition:transform .15s ease,
+          border-color .15s ease; }
+  .card:hover { transform:translateY(-2px); border-color:var(--ink-3); }
+  .reveal { opacity:0; transform:translateY(10px);
+            transition:opacity .45s ease, transform .45s ease; }
+  .reveal.in { opacity:1; transform:none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity:1; transform:none; transition:none; }
+    .card { transition:none; }
+    .card:hover { transform:none; }
+  }
   h1 { font-size:2.1rem; font-weight:780; margin:0 0 .1rem; letter-spacing:-.03em; }
   h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.09em;
        color:var(--ink-3); margin:0 0 .8rem; font-weight:640; }
@@ -269,3 +279,19 @@
     Research only — not advice, and not a rating.
     <a href="/limits">What this cannot tell you</a>.</p>
 </div>
+
+<script>
+if ("IntersectionObserver" in window &&
+    !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const cards = document.querySelectorAll(".card");
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((entry, i) => {
+      if (!entry.isIntersecting) return;
+      entry.target.style.transitionDelay = (i % 6) * 50 + "ms";
+      entry.target.classList.add("in");
+      io.unobserve(entry.target);
+    });
+  }, {threshold:.1});
+  cards.forEach(c => { c.classList.add("reveal"); io.observe(c); });
+}
+</script>

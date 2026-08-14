@@ -283,7 +283,11 @@
   }
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
+    .reveal { opacity: 1 !important; transform: none !important; }
   }
+  .reveal { opacity: 0; transform: translateY(10px);
+            transition: opacity .45s ease, transform .45s ease; }
+  .reveal.in { opacity: 1; transform: none; }
 </style>
 </head>
 <body>
@@ -2155,6 +2159,22 @@ document.addEventListener("click", (e) => {
   document.querySelectorAll(".tip-active").forEach(n => n.classList.remove("tip-active"));
   if (el && !already) el.classList.add("tip-active");
 });
+
+// Entrance reveal on the page's static sections — JS-only class, added
+// and observed only here, so a reader with no JS or an old browser just
+// sees every section at full opacity from first paint.
+if ("IntersectionObserver" in window &&
+    !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const sections = document.querySelectorAll("main > section");
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add("in");
+      io.unobserve(entry.target);
+    });
+  }, {threshold: .08});
+  sections.forEach(s => { s.classList.add("reveal"); io.observe(s); });
+}
 
 loadDefaults();
 refresh();

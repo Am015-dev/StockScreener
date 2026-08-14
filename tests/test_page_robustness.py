@@ -227,6 +227,19 @@ _i_table = _full.find("<table")
 assert _i_verdict != -1 and (_i_table == -1 or _i_verdict < _i_table)
 assert "Finds strong, rising stocks" not in _full, \
     "the old sales pitch is back"
+
+
+# ---- entrance-reveal animation must be JS-only, never server-rendered ----
+# .reveal starts every card at opacity:0 — the observer script adds the
+# class after page load and reveals each card as it scrolls into view.
+# If the server ever rendered the class directly, a reader with JS off,
+# or a crawler, or a slow connection during the observer's setup window,
+# would see permanently invisible content instead of the static page it
+# is supposed to degrade to.
+for _label, _body in (("/", _html), ("/full", _full)):
+    assert 'class="reveal' not in _body and ' reveal"' not in _body, \
+        f"{_label} server-renders the .reveal class — it must be JS-only"
+print("the entrance-reveal class never ships in server-rendered HTML on / or /full")
 assert "copyTicket(" not in _full, \
     "a ready-to-send bracket order is back beneath the falsification banner"
 print("/full states the falsification before it shows a row, "

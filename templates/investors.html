@@ -67,6 +67,27 @@
   details.honesty ul { margin:.7rem 0 0; padding-left:1.2rem; font-size:.85rem;
                        color:var(--ink-2); }
   details.honesty li { margin-bottom:.5rem; }
+
+  /* Paged, not scrolled: this table can carry up to 200 rows, and an
+     unbroken scroll of them was the single most "wall of data" thing on
+     the page. Every row still ships in the static HTML — hiding beyond
+     the first page is done by JS after load, so a reader with JS off
+     sees the full table, never a truncated one. */
+  .showMore { display:block; width:100%; margin-top:.7rem; padding:.6rem;
+              border-radius:8px; border:1px solid var(--line); background:none;
+              color:var(--accent); font-size:.85rem; font-weight:640; cursor:pointer; }
+  .showMore:hover { border-color:var(--accent); }
+
+  .reveal { opacity:0; transform:translateY(10px);
+            transition:opacity .45s ease, transform .45s ease; }
+  .reveal.in { opacity:1; transform:none; }
+  .mgr { transition:transform .15s ease, border-color .15s ease; }
+  .mgr:hover { transform:translateY(-2px); border-color:var(--ink-3); }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity:1; transform:none; transition:none; }
+    .mgr { transition:none; }
+    .mgr:hover { transform:none; }
+  }
 </style>
 
 <div class="wrap">
@@ -124,7 +145,7 @@
       and are excluded from this table entirely rather than guessed at.</p>
     {% if rows %}
     <div class="scroll">
-      <table>
+      <table id="multiTable">
         <thead><tr>
           <th>Ticker</th><th>Company</th><th class="r">Held by</th>
           <th class="r">Added</th><th class="r">Increased</th>
@@ -132,7 +153,7 @@
         </tr></thead>
         <tbody>
         {% for r in rows %}
-          <tr>
+          <tr class="pageRow" data-i="{{ loop.index0 }}">
             <td>{% if r.ticker %}<a href="/credit/{{ r.ticker }}">{{ r.ticker }}</a>{% else %}<span class="tiny">{{ r.display }}</span>{% endif %}</td>
             <td class="tiny">{{ r.issuer }}</td>
             <td class="r"><span class="pill" title="{{ r.holder_names|join(', ') }}">{{ r.holders }}</span></td>
@@ -145,6 +166,10 @@
         </tbody>
       </table>
     </div>
+    {% if rows|length > 25 %}
+    <button id="moreRows" class="showMore">
+      Show 25 more ({{ rows|length - 25 }} left)</button>
+    {% endif %}
     {% if n_multi > n_shown %}
     <p class="tiny" style="margin-top:.7rem">{{ n_multi - n_shown }} more, not shown.</p>
     {% endif %}
@@ -185,3 +210,40 @@
     <a href="/limits">Limits &amp; data notes</a>
   </p>
 </div>
+
+<script>
+// Page the multi-holder table 25 rows at a time. Every row is already in
+// the static HTML (see the CSS comment above) — this only ever hides,
+// never removes, and the button always says how many are left unseen.
+(() => {
+  const btn = document.getElementById("moreRows");
+  if (!btn) return;
+  const rows = Array.from(document.querySelectorAll("#multiTable .pageRow"));
+  const total = rows.length;
+  let shown = 25;
+  rows.slice(shown).forEach(r => r.style.display = "none");
+  btn.addEventListener("click", () => {
+    rows.slice(shown, shown + 25).forEach(r => r.style.display = "");
+    shown += 25;
+    if (shown >= total) { btn.remove(); return; }
+    btn.textContent = `Show 25 more (${total - shown} left)`;
+  });
+})();
+
+// Entrance reveal on the manager cards — see /today for the full
+// rationale (JS-only class, so a reader with no JS just sees the cards
+// at full opacity).
+if ("IntersectionObserver" in window &&
+    !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const cards = document.querySelectorAll(".mgr");
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((entry, i) => {
+      if (!entry.isIntersecting) return;
+      entry.target.style.transitionDelay = (i % 6) * 50 + "ms";
+      entry.target.classList.add("in");
+      io.unobserve(entry.target);
+    });
+  }, {threshold:.15});
+  cards.forEach(c => { c.classList.add("reveal"); io.observe(c); });
+}
+</script>
