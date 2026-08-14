@@ -370,3 +370,52 @@ it — Render's shallow git clone genuinely holds nothing but merge
 commits at this point in the branch's history, a known, already-handled
 edge case (see the code's own comment on it), not a regression from this
 round's changes.
+
+### Round 6, follow-up — /today's pick cards rewritten from prose to stat chips
+
+Told directly, after the round above shipped: "the page is still full
+of prose text horrible." Right — the round above fixed BROKEN rendering
+and made explanations reachable on a phone; it never touched the
+underlying layout, and Today's Five's pick cards were still six
+full-sentence `<dd>` paragraphs per name (`"$159.08 — 6.2% below.
+Anything closer and ordinary noise takes you out; this share moves
+about 3.1% on an average day."` for the STOP row alone).
+
+Also caught in the same pass, while checking why the live page showed
+"Priced as of 2026-08-12" two days behind: a real but self-correcting
+stale-data window right after a deploy (the boot-time published-index
+fetch can land before that cycle's freshest scan is what gets adopted;
+the background pollers — `books-refresh` every 5 minutes,
+`results-poll` on its own interval — catch up within one cycle without
+intervention). Confirmed the live instance was already showing
+2026-08-14 by the time this was investigated — not a live defect to fix
+here, but exactly the kind of gap the previous round's freshness line
+was built to make *visible* rather than silent, which is what let it be
+caught and confirmed self-healing in the first place.
+
+The actual fix: every pick card's entry/stop/shares/earnings numbers
+moved out of full-sentence `<dd>` rows into a four-chip stat grid
+(`.stats`/`.stat`) with the number itself as the primary visual weight
+— the sentences that used to carry that information were not deleted,
+they moved into each chip's tap tooltip (the same tap-to-open mechanism
+`/full` got in the round above, now also wired into `/today`), so the
+full reasoning is one tap away instead of forced into the primary
+reading path. "Usual move" and "Wrong if" — the two pieces of prose that
+are genuinely sentences, not just numbers with a unit — stayed as short
+one-line captions rather than becoming chips, but were trimmed from two
+paragraphs to two short sentences each. The "Held by N tracked
+managers... as of their last 13F (up to ~135 days stale, long-only). Not
+a signal — informational only." row became a single pill,
+`Held by N superinvestors`, with that same caveat moved to its own
+tap tooltip.
+
+`scripts/release_gate.py`'s three checks for "every name carries a
+stop/share count/wrong-if" were matching the old `dl.plan dt` markup by
+element and text; updated to match the new `.stat .l` / `.line`
+structure — the checks failed on the first run after this change
+precisely because they were still looking for markup that no longer
+existed, which is exactly what they are for. 41/41 passed once updated;
+full Python suite (33 files) unaffected, since none of it asserts on
+`/today`'s specific HTML structure beyond the one pin already in
+`tests/test_today_gate.py` (a negative assertion — "no pick card
+rendered" — unaffected by what a rendered pick card looks like).

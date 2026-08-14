@@ -94,6 +94,46 @@
     .bar { grid-template-columns:1fr auto; }
     .bar .track { display:none; }
   }
+
+  /* Stat chips: the entry/stop/shares/earnings numbers used to be full
+     sentences in a definition list ("$159.08 — 6.2% below. Anything
+     closer and ordinary noise takes you out; this share moves about..."),
+     which reads as a wall of prose exactly where a reader wants four
+     numbers at a glance. The sentences are not gone — they moved into
+     each chip's tap/hover tooltip (data-tip), so the full reasoning is
+     one tap away instead of forced into the primary reading path. */
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:.6rem;
+           margin:1rem 0 .9rem; }
+  .stat { background:color-mix(in srgb, var(--ink-3) 8%, transparent);
+          border-radius:10px; padding:.6rem .55rem; cursor:help; }
+  .stat .l { font-size:.64rem; text-transform:uppercase; letter-spacing:.06em;
+             color:var(--ink-3); font-weight:640; margin-bottom:.2rem; }
+  .stat .v { font-size:1.1rem; font-weight:700; letter-spacing:-.01em;
+             line-height:1.2; font-variant-numeric:tabular-nums; }
+  .stat .v.small { font-size:.86rem; font-weight:640; }
+  .stat .v.down { color:var(--red); }
+  .stat .sub { font-size:.7rem; color:var(--ink-2); margin-top:.1rem;
+               font-variant-numeric:tabular-nums; }
+  .line { font-size:.88rem; color:var(--ink-2); margin:0 0 .35rem; cursor:help; }
+  .line:last-of-type { margin-bottom:0; }
+  .line b { color:var(--ink); font-weight:640; }
+  @media (max-width:480px) {
+    .stats { grid-template-columns:repeat(2,1fr); }
+  }
+
+  /* Tap-to-open tooltips (see index.html for the full rationale): :hover
+     alone does not exist on a touchscreen, which is how this ever read on
+     a phone — .tip-active is toggled by the delegated click listener near
+     the bottom of this file. */
+  [data-tip] { position:relative; }
+  [data-tip]:hover::after, [data-tip]:focus::after, [data-tip].tip-active::after {
+    content:attr(data-tip); position:absolute; left:0; top:100%; z-index:30;
+    margin-top:.35rem; width:max-content; max-width:280px; white-space:normal;
+    background:var(--card); color:var(--ink); border:1px solid var(--line);
+    border-radius:10px; padding:.55rem .7rem; font-size:.8rem; line-height:1.45;
+    font-weight:400; text-align:left; box-shadow:0 6px 20px rgba(0,0,0,.18);
+    pointer-events:none;
+  }
 </style>
 
 <div class="wrap">
@@ -151,25 +191,40 @@
     </div>
     <p class="thesis">{{ p.thesis }}</p>
 
-    <dl class="plan">
-      <dt>Buy</dt><dd>{{ p.entry_text }}</dd>
-      <dt>Stop</dt><dd>{{ p.stop_text }}</dd>
-      <dt>Size</dt><dd>{{ p.size_text }}</dd>
-      <dt>Usual move</dt><dd>{{ p.typical_move_text }}
-        {%- if p.cost_text %} {{ p.cost_text }}{% endif %}</dd>
-      <dt>Get out</dt><dd>{{ p.time_stop_text }}</dd>
-      <dt>Earnings</dt><dd>{{ p.earnings_text }}</dd>
-      <dt>Wrong if</dt><dd>{{ p.wrong_if }}</dd>
-      {% if p.held_by_investors %}
-      <dt>Superinvestors</dt><dd>Held by {{ p.held_by_investors|length }} of the
-        tracked managers on <a href="/investors">/investors</a>, as of their
-        last 13F (up to ~135 days stale, long-only). Not a signal &mdash;
-        informational only.</dd>
-      {% endif %}
-    </dl>
+    <div class="stats">
+      <div class="stat" data-tip="{{ p.entry_text }}">
+        <div class="l">Entry</div>
+        <div class="v">${{ p.entry|num(2) }}</div>
+      </div>
+      <div class="stat" data-tip="{{ p.stop_text }}">
+        <div class="l">Stop</div>
+        <div class="v down">${{ p.stop|num(2) }}</div>
+        <div class="sub">{{ p.stop_pct|num(1) }}% below</div>
+      </div>
+      <div class="stat" data-tip="{{ p.size_text }}">
+        <div class="l">Shares</div>
+        <div class="v">{{ p.shares }}</div>
+        <div class="sub">${{ p.position_value|num(0) }} committed</div>
+      </div>
+      <div class="stat" data-tip="{{ p.earnings_text }}">
+        <div class="l">Earnings</div>
+        <div class="v small">{% if p.days_to_earnings is not none %}in {{ p.days_to_earnings }}d{% else %}45+ sessions{% endif %}</div>
+      </div>
+    </div>
+
+    <p class="line" data-tip="{{ p.typical_move_text }}{% if p.cost_text %} {{ p.cost_text }}{% endif %}">
+      Usual move &plusmn;{{ p.typical_move_pct|num(1) }}% over {{ p.time_stop }} sessions,
+      then out regardless.</p>
+    <p class="line" data-tip="{{ p.wrong_if }}"><b>Wrong if</b> it closes below ${{ p.stop|num(2) }}.</p>
+
+    {% if p.held_by_investors %}
+    <p style="margin:.6rem 0 0">
+      <span class="flag" data-tip="From SEC 13F filings, up to ~135 days stale and long-only. Not a signal — informational only. See /investors.">Held by {{ p.held_by_investors|length }} superinvestor{{ 's' if p.held_by_investors|length != 1 }}</span>
+    </p>
+    {% endif %}
 
     {% if p.flags %}
-    <p style="margin:.9rem 0 0">
+    <p style="margin:.6rem 0 0">
       {% for f in p.flags %}<span class="flag">{{ f }}</span>{% endfor %}</p>
     {% endif %}
 
@@ -363,6 +418,17 @@
 </div>
 
 <script>
+// Tap-to-open tooltips on the stat chips and the usual-move/wrong-if
+// lines (see index.html's /full for the same pattern) — :hover does not
+// exist on a touchscreen, which is the primary way anyone reads this
+// page, so a tap toggles the same tooltip CSS already renders on hover.
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-tip]");
+  const already = el && el.classList.contains("tip-active");
+  document.querySelectorAll(".tip-active").forEach(n => n.classList.remove("tip-active"));
+  if (el && !already) el.classList.add("tip-active");
+});
+
 // ---- holdings: browser-only, feeds the overlap check below ----
 const HKEY = "dipfinder_holdings_v1";
 const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g,
