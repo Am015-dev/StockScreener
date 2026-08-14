@@ -419,3 +419,55 @@ full Python suite (33 files) unaffected, since none of it asserts on
 `/today`'s specific HTML structure beyond the one pin already in
 `tests/test_today_gate.py` (a negative assertion — "no pick card
 rendered" — unaffected by what a rendered pick card looks like).
+
+### Round 7 — 2026-08-14 — `design:anti-slop` Mode B audit, sitewide
+
+Operator report: "full of shit unreadable and boring... a mess of data
+and text not professional at all." Ran the installed `design-anti-slop`
+skill's post-generation audit against `/`, `/full`, `/investors`,
+`/patterns`, and `/credit/<ticker>`, checking each page against all
+three pattern layers (V1-V9 visual, S1-S9 structural, C1-C7 conceptual)
+rather than defending the prior round's 85/100 self-score.
+
+Result: zero confirmed hits on the classic AI-slop template patterns —
+no gradient hero, no fake testimonials, no logo soup, no bento grid, no
+invented stats. The colour tokens in `index.html` carry a code comment
+recording they were checked against a colourblind contrast validator;
+the sparklines and equity curve are real price/backtest data, not
+decoration; the copy states outright that the entry signal lost to a
+coin flip twice, which is the opposite of a hollow claim (C1/C5 clean).
+
+What *was* real: every page's `h1` sat at 1.5-1.75rem with nothing else
+on the page above 1rem — a V2 hit (no typographic hierarchy) present
+identically on all five pages, checked by grepping the `h1 {` rule in
+every template. That flatness, not any AI-slop template pattern, is the
+literal mechanism behind "boring": nothing on any page was ever allowed
+to be visually bigger than anything else, so a stock pick, a
+3,477-row 13F table, and a credit verdict all read at the same weight.
+`/today` additionally opened with a ~55-word methodology paragraph
+before the first number (a sequencing issue, not a copy-quality one —
+the words were accurate and load-bearing, just first).
+
+Fix shipped: `h1` bumped from 1.5-1.75rem (no explicit weight, i.e.
+browser default ~700, except `index.html` which already set 680) to a
+uniform 2.1-2.2rem at weight 780 across `today.html`, `index.html`
+(incl. its own 720px breakpoint), `investors.html`, `patterns.html`,
+`credit.html`, `changelog.html`. On `/today`, the intro paragraph
+shrank to one sentence with the risk-budget explanation moved into a
+tap-tooltip — the same `data-tip` mechanism the stat chips already use,
+so nothing was deleted, only reordered into the pattern the page
+already teaches the reader to tap.
+
+Not fixed this round, flagged for a `design:design-system`-scale pass:
+uniform card/row weight on `/today`'s five pick cards and `/investors`'s
+multi-thousand-row table (S6-adjacent) — real, specific content
+presented with no visual signal for what to read first. This needs a
+cross-template pass to pick one element per page as an anchor, which is
+more than a same-day patch.
+
+Verified: full Python suite green (one flaky failure in
+`test_server_robustness.py` under a throwaway parallel-run harness with
+a stripped `PATH`, confirmed unrelated — passes standalone, and that
+file asserts nothing about templates); `test_docs_pages.py` and
+`test_investors_page.py` re-run directly, both green; live `h1` rule on
+the deployed build confirmed via curl post-deploy.
