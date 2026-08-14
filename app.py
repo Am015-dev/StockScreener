@@ -16,6 +16,7 @@ import threading
 import time
 from collections import Counter
 
+import mistune
 import pandas as pd
 import yfinance as yf
 from flask import Flask, Response, jsonify, redirect, render_template, request
@@ -72,6 +73,22 @@ def _usd_compact(value, dash: str = "—"):
         if v >= cut:
             return f"{sign}${v / cut:.1f}{suffix}"
     return f"{sign}${v:.0f}"
+
+
+_md_render = mistune.create_markdown(plugins=["table"])
+
+
+def _render_markdown(text: str) -> str:
+    """Markdown source -> real HTML.
+
+    /limits and /changelog used to serve the raw .md text with
+    mimetype="text/markdown" — every browser renders that as unstyled
+    plain text, headings and tables and bold shown as literal '#',
+    '|---|' and '**'. mistune (adopted, see requirements.txt) covers
+    everything KNOWN_ISSUES.md actually uses: headings, lists, code
+    spans, bold, pipe tables.
+    """
+    return _md_render(text)
 
 
 @app.after_request
@@ -2198,6 +2215,13 @@ def limits():
     Serving this from the repository rather than a hand-maintained HTML
     block means it cannot silently drift away from what the code does —
     it is reviewed in the same diff as the behaviour it describes.
+
+    Rendered through mistune into real HTML — this used to serve the raw
+    .md text with mimetype="text/markdown", which every browser shows as
+    unstyled plain text: headings, tables and bold all rendered as literal
+    '#', '|---|' and '**'. The single-source-of-truth property (this page
+    cannot drift from KNOWN_ISSUES.md, because it IS KNOWN_ISSUES.md) is
+    unchanged; only how it is presented to a reader is fixed.
     """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "KNOWN_ISSUES.md")
@@ -2207,7 +2231,8 @@ def limits():
     except OSError:
         return Response("Known-issues file is missing from this build.\n",
                         status=500, mimetype="text/plain")
-    return Response(text, mimetype="text/markdown")
+    return render_template("markdown_page.html", title="Known issues & limits",
+                           body=_render_markdown(text))
 
 
 @app.route("/changelog")
@@ -2217,6 +2242,13 @@ def changelog():
     Not a hand-written list: a hand-written changelog is a claim, and this
     one is the record. If git is unavailable in the running image the
     route says so rather than inventing entries.
+
+    Rendered as a plain HTML list, not through _render_markdown() — a
+    commit subject is real, uncontrolled text (this used to serve raw
+    "- **DATE** — SUBJECT" markdown, and a subject containing its own
+    underscores or asterisks, like a code identifier, would have been
+    silently reformatted by a markdown parser). Jinja's autoescaping on
+    {{ }} output handles both the formatting and the safety in one step.
     """
     import subprocess
     root = os.path.dirname(os.path.abspath(__file__))
@@ -2228,12 +2260,8 @@ def changelog():
         if out.returncode != 0 or not out.stdout.strip():
             raise RuntimeError(out.stderr.strip() or "no history")
     except Exception as e:
-        return Response(f"Change history unavailable in this build ({e}).\n"
-                        f"The repository holds the full record.\n",
-                        status=503, mimetype="text/plain")
-    lines = ["# Changelog", "",
-             "Generated from the deployed commit history — this is the record,",
-             "not a summary of it.", ""]
+        return render_template("changelog.html", rows=None, shallow=False,
+                               error=str(e)), 503
     # Render's shallow clone strips parent links, so --no-merges cannot
     # recognise a merge commit — the page opened with "Merge branch
     # 'claude/…'", an internal label recording nothing a visitor can
@@ -2247,14 +2275,8 @@ def changelog():
     useful = [(d, s2) for d, s2 in rows
               if not s2.startswith(("Merge ", "Published scan ",
                                     "Scheduled scan "))]
-    for date, subject in (useful or rows):
-        lines.append(f"- **{date}** — {subject}")
-    if not useful:
-        lines.append("")
-        lines.append("_This build carries only a shallow slice of history, so "
-                     "the entries above are merge points rather than changes; "
-                     "the repository holds the full record._")
-    return Response("\n".join(lines) + "\n", mimetype="text/markdown")
+    return render_template("changelog.html", rows=(useful or rows),
+                           shallow=not useful, error=None)
 
 
 @app.route("/configs")

@@ -44,7 +44,24 @@
        color:var(--ink-3); font-weight:640; }
   td.r, th.r { text-align:right; }
   .me { font-weight:680; }
-  .scroll { overflow-x:auto; }
+  /* overflow-x:auto alone makes a wide table swipeable with nothing on
+     screen telling a reader that — confirmed against a real render at
+     390px: columns just look cut off, easy to read as missing data
+     rather than "swipe for more". The two inner gradients are a CSS-only
+     scroll shadow (background-attachment: local vs scroll is what makes
+     each fade appear only on the edge that still has content to reveal,
+     with no JS) matching the card background so it never leaves a fake
+     border on a fully-scrolled table. */
+  .scroll { overflow-x:auto;
+    background:
+      linear-gradient(to right, var(--card) 30%, transparent),
+      linear-gradient(to right, transparent, var(--card) 70%) 100% 0,
+      linear-gradient(to right, rgba(0,0,0,.14), transparent),
+      linear-gradient(to left, rgba(0,0,0,.14), transparent) 100% 0;
+    background-repeat: no-repeat;
+    background-size: 24px 100%, 24px 100%, 10px 100%, 10px 100%;
+    background-attachment: local, local, scroll, scroll;
+  }
 </style>
 
 <div class="wrap">

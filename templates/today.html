@@ -73,7 +73,20 @@
   th,td { text-align:left; padding:.4rem .3rem; border-bottom:1px solid var(--line); }
   th { font-size:.68rem; text-transform:uppercase; letter-spacing:.07em;
        color:var(--ink-3); font-weight:640; }
-  .scroll { overflow-x:auto; }
+  /* CSS-only scroll shadow (see credit.html for the full rationale): a
+     wide table with plain overflow-x:auto gives no on-screen sign it is
+     swipeable at 390px, which reads as missing columns rather than
+     "there's more here". */
+  .scroll { overflow-x:auto;
+    background:
+      linear-gradient(to right, var(--card) 30%, transparent),
+      linear-gradient(to right, transparent, var(--card) 70%) 100% 0,
+      linear-gradient(to right, rgba(0,0,0,.14), transparent),
+      linear-gradient(to left, rgba(0,0,0,.14), transparent) 100% 0;
+    background-repeat: no-repeat;
+    background-size: 24px 100%, 24px 100%, 10px 100%, 10px 100%;
+    background-attachment: local, local, scroll, scroll;
+  }
 
   @media (max-width:560px) {
     dl.plan { grid-template-columns:1fr; gap:.15rem; }

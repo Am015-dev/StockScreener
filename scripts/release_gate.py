@@ -227,6 +227,32 @@ def main() -> int:
         lim = pg.inner_text("body")
         check("0.50" in lim and "0.41" in lim,
               "/limits carries both permutation results")
+        # This page used to serve mimetype="text/markdown" — real content,
+        # but every browser renders that as unstyled plain text with the
+        # markdown syntax itself left visible ('##', '**', '|---|'). Both
+        # the raw syntax and the actual rendered tags are checked, so a
+        # regression to either the old mimetype or a broken renderer fails.
+        check(pg.locator("h2").count() > 0, "/limits headings render as real tags")
+        check(pg.locator("table").count() > 0, "/limits comparison tables render as real tags")
+        check("##" not in lim and "|---|" not in lim,
+              "/limits shows no literal markdown syntax", lim[:120])
+
+        # ---- tap-to-open tooltips (RSI, ATR, profit factor, R...) ----
+        # Every jargon term's explanation lived in a data-tip attribute
+        # shown only on CSS :hover, which does not exist on a touchscreen
+        # — the primary way anyone actually reads this site. Confirmed on
+        # a real element in a real (mobile-width) browser context, not
+        # just that the JS/CSS source contains the right words.
+        pg.goto(base + "/full", wait_until="load", timeout=90000)
+        pg.click("#filterBox summary")
+        tip_el = pg.locator("[data-tip]").first
+        if tip_el.count() > 0:
+            before = tip_el.evaluate("el => getComputedStyle(el, '::after').content")
+            tip_el.click()
+            after = tip_el.evaluate("el => getComputedStyle(el, '::after').content")
+            check(before == "none" and after not in ("none", '""'),
+                  "tapping a jargon term (RSI/ATR/profit factor/...) reveals its explanation",
+                  f"before={before!r} after={after!r}")
 
         # ---- /brief and /today still answer, as redirects ----
         # Old links must not 404. Both now serve the same page as "/".

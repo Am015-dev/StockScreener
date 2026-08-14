@@ -12,3 +12,11 @@ gunicorn>=21.2
 # market_clock.py falls back to the old table if this fails to import, so
 # it degrades on Render rather than 500ing.
 exchange_calendars>=4.5
+# Adopted for /limits and /changelog: both used to serve raw .md source
+# with mimetype="text/markdown", which every browser renders as unstyled
+# plain text — headings, tables and bold all shown as literal '#', '|---|'
+# and '**'. Pure-Python, zero transitive dependencies, ~65KB wheel;
+# CommonMark-compliant with a table plugin covering everything
+# KNOWN_ISSUES.md actually uses (headings, lists, code spans, bold, pipe
+# tables — checked against the real file before adopting, not assumed).
+mistune>=3.0
