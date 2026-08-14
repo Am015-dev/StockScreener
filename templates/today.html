@@ -25,7 +25,7 @@
   .wrap { max-width:46rem; margin:0 auto; padding:2rem 1.15rem 4rem; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
           padding:1.4rem 1.35rem; margin:0 0 1.1rem; }
-  h1 { font-size:1.6rem; margin:0 0 .2rem; letter-spacing:-.02em; }
+  h1 { font-size:2.1rem; font-weight:780; margin:0 0 .2rem; letter-spacing:-.03em; }
   h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.09em;
        color:var(--ink-3); margin:0 0 .8rem; font-weight:640; }
   p { margin:0 0 .8rem; } p:last-child { margin-bottom:0; }
@@ -146,12 +146,8 @@
     {% if picks %}
     <p class="lead" style="margin-top:.5rem">{{ picks|length }} name{{ '' if picks|length == 1 else 's' }}
       cleared everything, out of {{ res.universe }} looked at.</p>
-    <p class="muted">Each one below has an entry, a stop, and a share count
-      already worked out for ${{ '%.0f'|format(budget) }} of risk — that is a
-      default, not your account size; add <code>?risk=</code> and a number to
-      the address bar to change it. Nothing here predicts a price. What it
-      does is pick names that are unlikely to blow up on you and size them so
-      that being wrong costs a known amount.</p>
+    <p class="muted" data-tip="Nothing here predicts a price. What it does is pick names that are unlikely to blow up on you and size them so that being wrong costs a known amount. Add ?risk= and a number to the address bar to use your own account size instead of ${{ '%.0f'|format(budget) }}.">Each pick below has an entry, a stop, and a share
+      count already worked out for ${{ '%.0f'|format(budget) }} of risk.</p>
     {% elif blocked %}
     <p class="lead" style="margin-top:.5rem">{{ blocked|capitalize }}.</p>
     <p class="muted">A stop does not protect you across an earnings report; the
