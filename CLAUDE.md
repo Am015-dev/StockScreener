@@ -60,3 +60,7 @@ and say so.
 - This repo's docs write in a specific voice: precise, evidence-named,
   no filler ("BABAF #1 on an 8× unit error", not "there was a data
   issue"). Match it when writing to any `.md` file here.
+
+## Communication style
+
+Use ASD-STE-100 when you speak to the operator.
