@@ -3,7 +3,16 @@
 Requested 2026-08-14: "identify stocks based on where super investors put
 their money — Dataroma, for example." This document is the research and
 the plan, per the CLAUDE.md rules (search first; record the decision).
-Nothing below is implemented yet.
+
+**Status: implemented**, 2026-08-14 — see `docs/review-log.md`'s
+"Round 5" entry for what actually shipped, including two deviations
+from this plan worth noting up front: `/investors` (not `/superinvestors`,
+shorter and matches the nav link) is the route name, and the per-ticker
+note landed on `/today` and `/check` only, not `/full` — the plan never
+actually called for `/full`, this line just confirms it explicitly.
+`index.json` was deliberately left untouched rather than given a new
+key (a cross-workflow race the plan hadn't accounted for; the review-log
+entry explains why).
 
 ## What this adds, in one sentence
 

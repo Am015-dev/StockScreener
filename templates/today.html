@@ -144,6 +144,12 @@
       <dt>Get out</dt><dd>{{ p.time_stop_text }}</dd>
       <dt>Earnings</dt><dd>{{ p.earnings_text }}</dd>
       <dt>Wrong if</dt><dd>{{ p.wrong_if }}</dd>
+      {% if p.held_by_investors %}
+      <dt>Superinvestors</dt><dd>Held by {{ p.held_by_investors|length }} of the
+        tracked managers on <a href="/investors">/investors</a>, as of their
+        last 13F (up to ~135 days stale, long-only). Not a signal &mdash;
+        informational only.</dd>
+      {% endif %}
     </dl>
 
     {% if p.flags %}
@@ -335,6 +341,7 @@
   <p class="tiny" style="text-align:center;margin-top:1.4rem">
     <a href="/patterns">Patterns tested</a> ·
     <a href="/full">Full screener</a> ·
+    <a href="/investors">Superinvestors</a> ·
     <a href="/limits">Limits &amp; data notes</a>
   </p>
 </div>

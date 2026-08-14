@@ -1,0 +1,174 @@
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Superinvestors — who holds what, from SEC filings</title>
+<style>
+  :root {
+    --bg:#faf9f7; --card:#fff; --line:#e3e1dc; --ink:#1a1917; --ink-2:#5c5a55;
+    --ink-3:#87857f; --accent:#2a78d6; --green:#157f5b; --amber:#97650a;
+    --red:#c8442c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+      --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+      --amber:#d9a02c; --red:#e5705a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+    --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0; --green:#35b98a;
+    --amber:#d9a02c; --red:#e5705a;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:17px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:52rem; margin:0 auto; padding:2rem 1.15rem 4rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:1.4rem 1.35rem; margin:0 0 1.1rem; }
+  h1 { font-size:1.5rem; margin:0 0 .1rem; letter-spacing:-.015em; }
+  h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.09em;
+       color:var(--ink-3); margin:0 0 .8rem; font-weight:640; }
+  p { margin:0 0 .8rem; } p:last-child { margin-bottom:0; }
+  .tiny { color:var(--ink-3); font-size:.82rem; line-height:1.55; }
+  .muted { color:var(--ink-2); font-size:.92rem; }
+  a { color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:.9rem;
+          font-variant-numeric:tabular-nums; }
+  th, td { padding:.45rem .3rem; border-bottom:1px solid var(--line); text-align:left; }
+  th { font-size:.68rem; text-transform:uppercase; letter-spacing:.06em;
+       color:var(--ink-3); font-weight:640; }
+  td.r, th.r { text-align:right; }
+  .scroll { overflow-x:auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));
+          gap:.8rem; }
+  .mgr { background:var(--card); border:1px solid var(--line); border-radius:12px;
+         padding:1rem 1.05rem; }
+  .mgr h3 { font-size:.98rem; margin:0 0 .15rem; letter-spacing:-.005em; }
+  .mgr ol { margin:.5rem 0 0; padding-left:1.15rem; font-size:.85rem; }
+  .mgr li { margin-bottom:.15rem; }
+  .pill { display:inline-block; font-size:.72rem; font-weight:640; padding:.05rem .5rem;
+          border-radius:999px; background:var(--line); color:var(--ink-2); }
+  .up { color:var(--green); } .down { color:var(--red); }
+  details.honesty summary { cursor:pointer; font-weight:640; color:var(--ink-2);
+                            font-size:.88rem; }
+  details.honesty ul { margin:.7rem 0 0; padding-left:1.2rem; font-size:.85rem;
+                       color:var(--ink-2); }
+  details.honesty li { margin-bottom:.5rem; }
+</style>
+
+<div class="wrap">
+  <p class="tiny" style="margin:0 0 1rem"><a href="/">&larr; Today's Five</a></p>
+
+  {% if not loaded %}
+  <div class="card">
+    <h1>Superinvestors</h1>
+    <p class="muted">Not published yet. This runs weekly, separately from the
+      daily scan &mdash; check back after the next
+      <a href="https://github.com/Am015-dev/StockScreener/actions/workflows/thirteenf.yml"
+         target="_blank" rel="noopener">13F superinvestor scan</a> completes.</p>
+  </div>
+  {% else %}
+
+  <div class="card">
+    <h1>Superinvestors</h1>
+    <p class="tiny" style="margin:0 0 1rem">Who among {{ d.n_managers_tracked }}
+      tracked managers holds what, read straight from SEC 13F filings &mdash;
+      as of {{ d.as_of }}. {{ d.n_managers_ok }} of {{ d.n_managers_tracked }}
+      answered this run{% if d.skipped %}; {{ d.skipped|length }} could not
+      ({% for s in d.skipped %}{{ s.name }}{{ ", " if not loop.last }}{% endfor %}){% endif %}.</p>
+
+    <details class="honesty">
+      <summary>What a 13F is, and is not &mdash; read before trusting a name on this page</summary>
+      <ul>
+        <li><b>It is old on arrival.</b> A 13F shows positions as of quarter
+          end, filed up to 45 days later. Freshest possible: 45 days stale.
+          The day before the next quarter's filings land: about 135 days.
+          Every card and row above shows both dates &mdash; the reporting
+          period and when it was actually filed.</li>
+        <li><b>Long, US-listed equities only.</b> No shorts, no cash, no
+          bonds, no non-US listings. A manager hedged flat against a name
+          renders identically to a true believer &mdash; the filing cannot
+          tell the two apart.</li>
+        <li><b>Absence proves nothing.</b> Positions below the reporting
+          threshold, non-US listings, and confidential-treatment holdings
+          are all invisible here. A ticker with no line below is not a
+          ticker no tracked manager owns &mdash; it may simply be unseen.</li>
+        <li><b>This scores nothing.</b> Nowhere on this site does a holder
+          count add or subtract a point from anything. Copying what a
+          well-known investor owns, weeks after the fact, with no idea
+          whether they have since sold, is not a strategy this project has
+          measured &mdash; so it makes no claim about one.</li>
+      </ul>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>{{ n_multi }} names held by 2 or more tracked managers</h2>
+    <p class="tiny" style="margin:0 0 1rem">{{ n_total_tickers }} distinct
+      names appear across every filing read this run
+      ({{ n_total_tickers - n_multi }} held by only one tracked manager, not
+      shown below); {{ n_unmapped }} could not be matched to a ticker symbol
+      and are excluded from this table entirely rather than guessed at.</p>
+    {% if rows %}
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Ticker</th><th>Company</th><th class="r">Held by</th>
+          <th class="r">Added</th><th class="r">Increased</th>
+          <th class="r">Trimmed</th><th class="r">Exited</th>
+        </tr></thead>
+        <tbody>
+        {% for r in rows %}
+          <tr>
+            <td>{% if r.ticker %}<a href="/credit/{{ r.ticker }}">{{ r.ticker }}</a>{% else %}<span class="tiny">{{ r.display }}</span>{% endif %}</td>
+            <td class="tiny">{{ r.issuer }}</td>
+            <td class="r"><span class="pill" title="{{ r.holder_names|join(', ') }}">{{ r.holders }}</span></td>
+            <td class="r {{ 'up' if r.added }}">{{ r.added or '' }}</td>
+            <td class="r {{ 'up' if r.increased }}">{{ r.increased or '' }}</td>
+            <td class="r {{ 'down' if r.trimmed }}">{{ r.trimmed or '' }}</td>
+            <td class="r {{ 'down' if r.exited }}">{{ r.exited or '' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if n_multi > n_shown %}
+    <p class="tiny" style="margin-top:.7rem">{{ n_multi - n_shown }} more, not shown.</p>
+    {% endif %}
+    {% else %}
+    <p class="muted">No name is held by more than one tracked manager this run.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>By manager</h2>
+    <div class="grid">
+      {% for m in managers %}
+      <div class="mgr">
+        <h3>{{ m.name }}</h3>
+        <p class="tiny" style="margin:0 0 .5rem">13F as of {{ m.period }},
+          filed {{ m.filed }} &middot; {{ m.n_positions }} positions{% if m.n_options %},
+          {{ m.n_options }} options position{{ 's' if m.n_options != 1 }} excluded above{% endif %}</p>
+        <ol>
+          {% for p in m.top[:5] %}
+          <li>{% if p.ticker %}<a href="/credit/{{ p.ticker }}">{{ p.ticker }}</a>{% else %}{{ p.issuer }}{% endif %}
+            &mdash; <span class="tiny">{{ p.value_usd|usd_compact }}</span></li>
+          {% endfor %}
+        </ol>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if source %}
+  <p class="tiny" style="text-align:center">source: {{ source }}</p>
+  {% endif %}
+  {% endif %}
+
+  <p class="tiny" style="text-align:center;margin-top:1.4rem">
+    <a href="/">Today's Five</a> ·
+    <a href="/full">Full screener</a> ·
+    <a href="/patterns">Patterns tested</a> ·
+    <a href="/limits">Limits &amp; data notes</a>
+  </p>
+</div>
