@@ -86,6 +86,32 @@ assert ">T3<" not in body, \
 print("/investors renders managers, the multi-holder table, a skipped "
       "manager named plainly, and an unmapped CUSIP by issuer name only")
 
+# ---- pagination hides rows in the browser only — the server ships all of them ----
+# The multi-holder table can run to 200 rows; JS pages it 25 at a time so
+# the page does not read as an unbroken scroll of data. That must never
+# cost a reader without JS a single row — the server-rendered HTML has to
+# carry every one, hidden or not.
+big = dict(INV)
+big_tickers = dict(INV["tickers"])
+for i in range(30):
+    big_tickers[f"BIG{i}"] = {"issuer": f"BIG ISSUER {i}", "ticker": f"BIG{i}",
+                              "holders": ["BERKSHIRE HATHAWAY INC", "CITADEL ADVISORS LLC"],
+                              "added": [], "increased": [], "trimmed": [], "exited": []}
+big["tickers"] = big_tickers
+app._inv13f_pub.update(data=big, ts=9e9)
+r = c.get("/investors")
+body_big = r.data.decode()
+assert body_big.count('class="pageRow"') == 32, \
+    "every multi-holder row (30 synthetic + AAPL + the unmapped holdco) " \
+    "must ship in the static HTML"
+assert 'class="reveal' not in body_big and ' reveal"' not in body_big, \
+    "the reveal class must be added by JS only, never server-rendered — " \
+    "otherwise a reader with no JS sees permanently-invisible cards"
+print("/investors ships all 32 multi-holder rows in static HTML (pagination "
+      "is JS-only) and never server-renders the .reveal class")
+
+app._inv13f_pub.update(data=INV, ts=9e9)   # restore the small fixture
+
 # ---- the field flows to /today's candidates and never affects filters ----
 import ranking                                                   # noqa: E402
 
@@ -111,6 +137,17 @@ if "AAPL" in body and "<span class=\"tk\">AAPL</span>" in body:
 else:
     print("AAPL did not make today's board this run (real scoring, not "
           "guaranteed) — field-flow already verified directly above")
+
+# ---- every rendered pick carries a real price-path chart, not just some ----
+n_picks = body.count('class="card pick"')
+n_charts = body.count('class="chart" data-spark=')
+if n_picks:
+    assert n_charts == n_picks, \
+        (f"{n_picks} picks rendered but only {n_charts} carried a chart — "
+         "the 60-point fixture series should give every pick one")
+    print(f"/today draws a real 60-session price chart for all {n_picks} picks")
+else:
+    print("no picks rendered this run to check chart rendering against")
 
 # ---- freshness: the one question a returning visitor actually has ----
 # A live site review found /today gave no answer anywhere to "is this

@@ -157,6 +157,10 @@ def main() -> int:
                   "every name carries a share count")
             check(pg.locator(".line", has_text="Wrong if").count() == cards,
                   "every name says what would make it wrong")
+            # a real 60-session price path, not a decorative squiggle —
+            # every pick with the 60 closes to draw one must have one.
+            check(pg.locator(".chart[data-spark] svg").count() == cards,
+                  "every name draws its price path with the stop marked")
         # A price target implies a forecast that was measured here and not
         # found. It must not creep back in through a template edit.
         #
@@ -266,6 +270,33 @@ def main() -> int:
             check(pg.locator(".card.pick").count() >= 0
                   and "{{" not in pg.inner_text("body"),
                   f"{old_path} lands on a real page, not a template error")
+
+        # ---- /investors: paged, not an unbroken scroll ----
+        pg.goto(base + "/investors", wait_until="load", timeout=90000)
+        inv = pg.inner_text("body")
+        check("{{" not in inv, "no unrendered template on /investors")
+        more_btn = pg.locator("#moreRows")
+        if more_btn.count() > 0:
+            before_rows = pg.locator("#multiTable tr.pageRow:visible").count()
+            more_btn.click()
+            pg.wait_for_timeout(200)
+            after_rows = pg.locator("#multiTable tr.pageRow:visible").count()
+            check(after_rows > before_rows,
+                  "'Show 25 more' actually reveals more rows",
+                  f"{before_rows} -> {after_rows}")
+
+        # ---- motion respects the reader's OS setting ----
+        # Every card page ships an entrance-reveal animation; every one of
+        # them must also ship the opt-out, or a reader who has told their
+        # OS "no motion" gets it anyway.
+        for rm_path in ("/", "/full", "/investors", "/patterns"):
+            pg.goto(base + rm_path, wait_until="load", timeout=90000)
+            has_rm = pg.evaluate(
+                "() => Array.from(document.styleSheets).some(ss => { "
+                "try { return Array.from(ss.cssRules).some(r => "
+                "r.media && r.media.mediaText.includes('prefers-reduced-motion')); "
+                "} catch (e) { return false; } })")
+            check(has_rm, f"{rm_path} defines a prefers-reduced-motion rule")
 
         # ---- the pattern sweep ----
         # The credit report shipped once with no route to it from anywhere

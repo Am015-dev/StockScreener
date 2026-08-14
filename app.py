@@ -2089,12 +2089,19 @@ def today_page():
                                price_date=price_date, market_state=market_state)
 
     picks = []
+    # the same series _today_candidates() ranked from — dict access only,
+    # no network. Each pick card draws its last 60 closes as an inline
+    # SVG so the stop is seen against the path the share actually took,
+    # not just read as a number.
+    spark_series = pretrade._series_of(_price_book()) or {}
     for row in res["ranked"][:5]:
         # row already carries its own cal_covered/earnings_single_source
         # from _today_candidates() — per-candidate, not the global flag
         p = plan.trade_plan(row, risk_budget=budget, horizon=horizon)
         if not p.get("usable"):
             continue
+        p["spark"] = [x for x in (spark_series.get(row["ticker"]) or [])
+                      if x][-60:]
         p["thesis"] = plan.thesis(row, horizon, rank=len(picks))
         p["score"] = row["score"]
         p["components"] = row["components"]
