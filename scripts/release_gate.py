@@ -147,12 +147,15 @@ def main() -> int:
         check(cards <= 5, "at most five names are shown", f"showed {cards}")
         if cards:
             # a name without a stop and a share count is not a plan, it is
-            # a tip — which is the thing this product refuses to be
-            check(pg.locator("dl.plan dt", has_text="Stop").count() == cards,
+            # a tip — which is the thing this product refuses to be.
+            # Stat-chip markup (.stat .l labels), not the old dl.plan dt/dd
+            # list — the numbers moved into scannable chips and the full
+            # sentences moved into each chip's tap tooltip.
+            check(pg.locator(".stat .l", has_text="Stop").count() == cards,
                   "every name carries a stop")
-            check(pg.locator("dl.plan dt", has_text="Size").count() == cards,
+            check(pg.locator(".stat .l", has_text="Shares").count() == cards,
                   "every name carries a share count")
-            check(pg.locator("dl.plan dt", has_text="Wrong if").count() == cards,
+            check(pg.locator(".line", has_text="Wrong if").count() == cards,
                   "every name says what would make it wrong")
         # A price target implies a forecast that was measured here and not
         # found. It must not creep back in through a template edit.
