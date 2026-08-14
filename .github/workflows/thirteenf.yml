@@ -1,0 +1,108 @@
+# Fetch a curated list of managers' SEC 13F-HR filings and publish a
+# roll-up of who holds what, weekly.
+#
+# Why weekly and not on the scheduled scan's hourly cadence: 13F data
+# moves in bursts around the four ~45-day filing deadlines (mid Feb,
+# May, Aug, Nov) and is otherwise static for weeks at a stretch. A
+# weekly cadence loses nothing a reader would notice and never competes
+# with the daily scan's time or SEC-request budget.
+#
+# Why a separate workflow and not folded into scheduled_scan.py: kept
+# out of scheduled_scan.py's own budget, and deliberately writes only
+# investors13f.json — never index.json, which the daily scan already
+# owns. Two independently-scheduled workflows both force-pushing a
+# read-modify-write of the SAME shared index file would race each other
+# on any week the schedules happened to overlap; this avoids that by
+# construction rather than by locking. See thirteenf_scan.py's own
+# module docstring for the same reasoning.
+name: 13F superinvestor scan
+
+on:
+  schedule:
+    # Sunday 06:00 UTC — outside the weekday market-hours window the
+    # daily scan runs in, so the two never compete for the runner queue.
+    - cron: "0 6 * * 0"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: thirteenf-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Fetch 13F filings and publish the roll-up
+        run: python scripts/thirteenf_scan.py --out published
+
+      # Same carry-forward + force-push pattern scheduled-scan.yml uses,
+      # for the same reason: this job's published/ directory holds only
+      # investors13f.json, and a force push must never be able to delete
+      # data another job produced. Force-pushing straight over the
+      # branch, rather than a normal push, keeps the branch history flat
+      # (matching the daily scan) — screener-data is a data drop, not a
+      # commit log anyone reads.
+      - name: Publish to the data branch
+        run: |
+          git fetch origin screener-data --depth=1 2>/dev/null || true
+          for f in $(git ls-tree --name-only origin/screener-data 2>/dev/null \
+                     | grep '\.json$'); do
+            if [ ! -f "published/$f" ]; then
+              git show "origin/screener-data:$f" > "published/$f" \
+                && echo "carried forward $f (this run did not produce it)"
+            fi
+          done
+          # state/ (journal.db, market.db) is scheduled-scan.yml's own —
+          # carry the whole directory forward untouched rather than
+          # letting this job's git add -A silently drop it.
+          if git show origin/screener-data:state > /dev/null 2>&1; then
+            mkdir -p published/state
+            for f in $(git ls-tree --name-only origin/screener-data:state 2>/dev/null); do
+              git show "origin/screener-data:state/$f" > "published/state/$f" 2>/dev/null || true
+            done
+          fi
+
+          cd published
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "13F scan $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push -q --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            HEAD:screener-data
+
+      - name: Summary
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "### 13F superinvestor scan" >> $GITHUB_STEP_SUMMARY
+          if [ ! -f published/investors13f.json ]; then
+            echo "_nothing published_" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          python - <<'PY' >> $GITHUB_STEP_SUMMARY
+          import json, pathlib
+          try:
+              d = json.loads(pathlib.Path("published/investors13f.json").read_text())
+          except Exception as e:
+              print(f"_could not read the output: {e}_")
+              raise SystemExit(0)
+          print(f"- **{d.get('n_managers_ok')}/{d.get('n_managers_tracked')}** "
+                f"managers fetched cleanly, as of {d.get('as_of')}")
+          print(f"- **{len(d.get('tickers', {}))}** tickers held by at least "
+                f"one tracked manager")
+          for s in d.get("skipped", []):
+              print(f"- ⚠ **{s['name']}** (CIK {s['cik']}): {s['reason']}")
+          PY

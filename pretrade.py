@@ -54,7 +54,8 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
           risk_eur: float | None = None, reward_eur: float | None = None,
           friction_pct: float | None = None,
           earn_window_days: int = 45, gate_days: int = 10,
-          warming: bool = False, single_source: bool = False) -> dict:
+          warming: bool = False, single_source: bool = False,
+          held_by_investors: list[str] | None = None) -> dict:
     """Everything the reader cannot work out from a free screener.
 
     price_book: {ticker: [daily closes]} — published by the scheduled scan,
@@ -257,6 +258,22 @@ def check(ticker: str, holdings: list[dict], price_book: dict,
         else:
             add("ok", f"Costs take €{eaten:.2f} of a €{reward_eur:.2f} win",
                 f"{friction_pct:.0f}% of the target profit — not decisive.")
+
+    # ---- 5. who else holds this (informational — never a decision) ----
+    # Always "note" level: this never appears in blocks/warns below, so it
+    # can never move the bottom line or the verdict. A 13F is long-only,
+    # US-equity-only, and up to ~135 days stale by construction — see
+    # KNOWN_ISSUES.md — so it answers "who has owned this", not "should I".
+    if held_by_investors:
+        names = sorted(held_by_investors)
+        shown = ", ".join(names[:5])
+        more = f", and {len(names) - 5} more" if len(names) > 5 else ""
+        add("note",
+            f"Held by {len(names)} tracked superinvestor"
+            f"{'s' if len(names) != 1 else ''}",
+            f"{shown}{more} — from SEC 13F filings, as of their last "
+            f"reported quarter (up to ~135 days stale) and long-only. Not a "
+            f"signal, not scored anywhere on this site. See /investors.")
 
     if risk_eur is not None:
         out["risk_eur"] = risk_eur

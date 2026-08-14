@@ -205,3 +205,81 @@ for each gap before writing code.
   `pretrade.check()` takes a `single_source` flag so the pre-trade
   check's earnings finding carries the same caveat `/today` and `/full`
   already did.
+
+## Round 5 — superinvestor 13F tracking
+
+Requested directly: "identify stocks based on where super investors put
+their money — Dataroma, for example." Plan and research written up
+first in `docs/superinvestors-plan.md`; this entry records what shipped
+against it.
+
+- **Dataroma itself — rejected as a data source.** Its GitHub scrapers
+  ([op7ic/Dataroma-Analyzer](https://github.com/op7ic/Dataroma-Analyzer),
+  [Destruct-Portfolio/Dataroma-Scraper](https://github.com/Destruct-Portfolio/Dataroma-Scraper))
+  read HTML that is itself derived from EDGAR — a curator's copy of a
+  primary source, with no API and no versioning. **Borrowed instead**:
+  the idea of a small, hand-curated manager roster, attributed in
+  `superinvestors.py`'s own module docstring. Every filing this project
+  reads comes from `data.sec.gov` directly.
+- **`edgartools`' 13F parsing — borrowed-with-attribution again, not
+  adopted**, consistent with round 4's decision on the same library (too
+  heavy for this instance's 512MB / short requirements.txt). Only
+  current-quarter infoTable XML is needed, which is ~150 lines of
+  `xml.etree.ElementTree` against a schema confirmed against a real
+  filing before writing the parser (Berkshire Hathaway's 2026-03-31
+  13F-HR) rather than assumed from the SEC's own docs alone. That check
+  caught two real shapes a naive parser would have gotten wrong: a
+  single issuer can appear across MULTIPLE infoTable rows in one filing
+  (a combined 13F across several accounts — Berkshire's Ally Financial
+  position was six separate rows, correctly summed), and a `putCall`
+  row reuses the underlying equity's own CUSIP rather than a distinct
+  identifier, so it is parsed into a separate `options` list rather than
+  silently inflating the equity position it shares a CUSIP with.
+- **CUSIP-to-ticker mapping — built, not borrowed**, from the SEC's own
+  [fails-to-deliver data](https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data)
+  (free, no key, pipe-delimited, already carries both fields). OpenFIGI
+  was the documented fallback in the plan but proved unnecessary: one
+  half-month file mapped 27 of Berkshire's 29 CUSIPs (measured); merging
+  the three most recent half-months reached 29 of 29. `cusip_map()`
+  takes the majority symbol across however many files are merged, so one
+  miscoded row (34 of 13,024 CUSIPs in one real file carried more than
+  one distinct symbol) cannot flip a mapping on its own.
+- **The manager roster — verified, not guessed.** Every CIK candidate
+  found via SEC's company-search endpoint was cross-checked against its
+  own `submissions/CIK….json` record (filer name match, a 13F-HR filed
+  within roughly the last year) before being checked in. Several
+  plausible-looking CIKs were rejected during that check because their
+  most recent 13F was years stale — Appaloosa's old CIK (1006438) last
+  filed in 2016; the fund now files as "Appaloosa LP" under CIK 1656456,
+  which is the one shipped. `fetch_manager()` re-runs the same
+  name-match check on every scheduled run, not just at curation time, so
+  a CIK reassigned or renamed later refuses loudly instead of silently
+  misattributing someone else's holdings.
+- **A separate weekly workflow (`thirteenf.yml`), not folded into
+  `scheduled_scan.py`.** 13F data moves in bursts around the four
+  ~45-day filing deadlines and is otherwise static for weeks — a weekly
+  cadence loses nothing a reader would notice, and keeps this off the
+  daily scan's own time and SEC-request budget entirely. It also
+  publishes only `investors13f.json`, deliberately never touching
+  `index.json`: two independently-scheduled workflows both
+  force-pushing a read-modify-write of the same shared index file would
+  race each other on any week the schedules happened to overlap, so this
+  avoids that by construction — `app.py` reads `investors13f.json`'s own
+  `as_of` field directly, the same way it already reads `liquidity.json`
+  and `vol.json` without an `index.json` detour.
+- **Zero score effect, verified structurally and by test.**
+  `ranking.py`'s `filters()`/`score()` never read `held_by_investors` —
+  the field only flows through `_today_candidates()`'s passthrough dict
+  into the template and into `pretrade.check()`'s note-level findings,
+  which `pretrade.py`'s own `bottom_line` synthesis builds only from
+  `block`/`warn` findings, never `note`. `tests/test_investors_page.py`
+  pins both directions: the field reaches every candidate, and never
+  appears in a `filters()` flag.
+- **A real display bug caught by the first run of its own test**: the
+  ticker roll-up's internal dict key for an unmapped CUSIP
+  (`"(unmapped) <issuer>"`, used only to keep the roll-up dict's keys
+  unique) was rendering verbatim on `/investors` instead of the plain
+  issuer name — `display: ticker or key` should have read
+  `display: ticker or issuer or key`. Fixed before this shipped; not
+  logged in `MISTAKES.md` because it was caught by the test written
+  alongside the code in the same session, not by a later live check.

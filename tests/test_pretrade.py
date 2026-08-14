@@ -370,3 +370,32 @@ assert analysis.price_context([]) is None
 print("with no data it says so, and computes nothing")
 
 print("\nANALYSIS PINNED")
+
+# ---- held_by_investors: informational only, never a decision ----
+# The whole point of this field: it must be able to appear on a check
+# without ever moving the reader towards "do not buy" or "think twice" —
+# those two sentences are built ONLY from block/warn findings, so a note
+# can render, and even become the verdict when nothing more severe fired,
+# without ever reaching bottom_line.
+held = pretrade.check("AAPL", [], {}, earnings={"AAPL": 60}, cal_complete=True,
+                      held_by_investors=["BERKSHIRE HATHAWAY INC",
+                                        "CITADEL ADVISORS LLC",
+                                        "RENAISSANCE TECHNOLOGIES LLC"])
+notes = [f for f in held["findings"]
+        if f["level"] == "note" and "superinvestor" in f["headline"].lower()]
+assert len(notes) == 1, held["findings"]
+assert notes[0]["headline"] == "Held by 3 tracked superinvestors", notes[0]
+assert "135 days stale" in notes[0]["detail"], notes[0]
+assert "superinvestor" not in held["bottom_line"].lower(), \
+    "an informational note must never reach the bottom-line synthesis"
+print("held-by-investors renders as a note, names the managers and the "
+      "staleness caveat, and never reaches the bottom line")
+
+# absence renders nothing at all — never a "held by 0" line
+unheld = pretrade.check("ZZZZ", [], {}, earnings={"ZZZZ": 60},
+                        cal_complete=True, held_by_investors=[])
+assert not any("superinvestor" in f["headline"].lower()
+              for f in unheld["findings"]), unheld["findings"]
+print("no tracked manager holding it renders no line at all, not a zero")
+
+print("\nSUPERINVESTOR NOTE PINNED")

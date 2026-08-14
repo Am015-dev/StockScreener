@@ -102,6 +102,42 @@ rather than taken on trust.
   are in the model — which is why the multi-horizon view stops at 5
   years rather than extending toward Moody's 10-year term structure.
 
+## What /investors (the 13F superinvestor page) cannot tell you
+
+- **It is old on arrival, and gets older for weeks at a stretch.** A 13F
+  shows positions as of quarter end, filed up to 45 days later — freshest
+  possible is 45 days stale, and the day before the next quarter's
+  filings land it is closer to 135. The reporting period AND the filed
+  date are shown everywhere a holding renders, never a bare "current".
+- **Long, US-listed equities only.** No shorts, no cash, no bonds, no
+  non-US listings. A manager hedged flat against a name and a true
+  believer render identically, because the filing itself cannot tell
+  them apart.
+- **Absence proves nothing.** Positions below the $100M/name reporting
+  threshold, non-US listings, and confidential-treatment holdings are
+  all invisible to a 13F. A ticker with no line on `/investors` is not
+  a ticker no tracked manager owns — it may simply not be visible to
+  this filing.
+- **The roster is a curated ~24 managers, not the whole institutional
+  market.** Chosen by hand in the spirit of Dataroma's own list (the
+  idea is borrowed, the data is not — every filing is read directly from
+  SEC EDGAR), and re-verified against SEC's own filer-name record every
+  run rather than trusted once: a wrong or superseded CIK is refused
+  loudly, not served silently. Every run also names, on the page itself,
+  which tracked managers could not be read that week.
+- **CUSIP-to-ticker mapping is not complete.** Built from the SEC's own
+  fails-to-deliver files (three consecutive half-months, merged), which
+  measurably covers the large majority of names a large filer's 13F
+  references but not all of them — roughly 7% of tickers across all
+  tracked managers combined, measured on the first real run. A CUSIP
+  that fails to map renders by the issuer's name as printed in the
+  filing itself, never by a guessed ticker symbol.
+- **This adds zero score points anywhere on the site.** `/today`, `/full`
+  and the pre-trade check all show a holder count as a note, never as
+  part of a rank or a filter. Buying what a well-known manager owned
+  weeks ago, with no way to know whether they have since sold, is not a
+  strategy this project has measured — so nothing here claims it is one.
+
 ## Coverage
 
 - **The bulk earnings calendar is US-only** (Nasdaq's published per-date

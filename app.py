@@ -57,6 +57,23 @@ def _num(value, places: int = 2, dash: str = "—", sign: bool = False):
         return dash
 
 
+@app.template_filter("usd_compact")
+def _usd_compact(value, dash: str = "—"):
+    """$57,843,260,493 -> "$57.8B" — a 13F position's raw dollar value is
+    unreadable at a glance in a table row; this is display only, never
+    used for any comparison or gate."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return dash
+    sign = "-" if v < 0 else ""
+    v = abs(v)
+    for cut, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if v >= cut:
+            return f"{sign}${v / cut:.1f}{suffix}"
+    return f"{sign}${v:.0f}"
+
+
 @app.after_request
 def _no_stale_html(resp):
     """Never let a browser serve yesterday's page.
@@ -1052,6 +1069,34 @@ def _liq_book(fetch: bool = False) -> dict:
     return data
 
 
+_inv13f_pub = {"ts": 0.0, "data": None}
+
+
+def _inv13f_book(fetch: bool = False) -> dict:
+    """Published 13F roll-up (superinvestors.py, via the weekly thirteenf.yml
+    workflow) — who among a curated set of managers holds what, read from
+    SEC filings.
+
+    Unlike the other published books, absence of this file is a normal,
+    expected state right after this feature ships (the first weekly run
+    has not happened yet) and stays fully honest either way: `/investors`
+    and the note-line on /check both render nothing rather than a zero
+    when this book is empty, exactly like liquidity.json's unmapped-name
+    handling never renders an absence as a measurement.
+    """
+    if not fetch:
+        return _inv13f_pub["data"] or {}
+    data = _published_get("investors13f.json")
+    if not data:
+        print(f"[warm] 13F book: refresh returned nothing, keeping "
+              f"{'a book' if _inv13f_pub['data'] else 'nothing'}", flush=True)
+        return _inv13f_pub["data"] or {}
+    _inv13f_pub.update(data=data, ts=time.time())
+    print(f"[warm] 13F book: {data.get('n_managers_ok')} managers, "
+          f"{len(data.get('tickers') or {})} tickers", flush=True)
+    return data
+
+
 _regime_pub = {"ts": 0.0, "data": None}
 
 
@@ -1219,6 +1264,10 @@ def _book_refresher():
             _liq_book(fetch=True)
         except Exception as e:
             print(f"[warm] liquidity book refresh failed: {e}", flush=True)
+        try:
+            _inv13f_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] 13F book refresh failed: {e}", flush=True)
         # The books are local file reads on this deployment, so refreshing
         # them is nearly free — and the scan publishes hourly, so an
         # instance that only looked once an hour could sit half an hour
@@ -1338,10 +1387,14 @@ def check_trade():
     # actually covers listings like it, never for a non-US symbol just
     # because the (US) calendar happened to load complete.
     complete_for_ticker = complete and screener._region(ticker) == "US"
+    held_by_investors = list(
+        ((_inv13f_book() or {}).get("tickers") or {}).get(ticker, {})
+        .get("holders") or [])
     res = pretrade.check(
         ticker, holdings, book, earn, complete_for_ticker,
         warming=warming or not book,
         single_source=ticker in single_source,
+        held_by_investors=held_by_investors,
         risk_eur=(row or {}).get("risk_EUR"),
         reward_eur=((row["risk_EUR"] * row["RR"]) if row and row.get("risk_EUR")
                     and row.get("RR") else None),
@@ -1904,6 +1957,7 @@ def _today_candidates(horizon: int) -> list:
     creds = _credit_view() or {}
     liq = _liq_book() or {}
     earn, cal_complete, earn_single_source = _published_earnings()
+    inv13f_tickers = (_inv13f_book() or {}).get("tickers") or {}
     out = []
     for t, closes in series.items():
         c = [x for x in (closes or []) if x]
@@ -1943,6 +1997,13 @@ def _today_candidates(horizon: int) -> list:
             "cal_covered": bool(cal_complete) and screener._region(t) == "US",
             "earnings_single_source": t in earn_single_source,
             "sector": rep.get("sector"),
+            # Purely informational — never read by ranking.py's filters()
+            # or score(). A ticker only lands here via the `tickers` dict's
+            # own ticker key (never its "(unmapped) issuer" fallback), so a
+            # hit here is always a confirmed CUSIP-to-symbol match, never a
+            # guess. See superinvestors.py / KNOWN_ISSUES.md for what this
+            # is and is not (long-only, up to 135 days stale, no signal).
+            "held_by_investors": list((inv13f_tickers.get(t) or {}).get("holders") or []),
         })
     return out
 
@@ -2010,6 +2071,9 @@ def today_page():
         p["score"] = row["score"]
         p["components"] = row["components"]
         p["component_max"] = row.get("component_max") or {}
+        # informational only — never read by ranking.py, see the field's
+        # own comment in _today_candidates()
+        p["held_by_investors"] = row.get("held_by_investors") or []
         picks.append(p)
     return render_template("today.html", picks=picks, res=res,
                            budget=budget, horizon=horizon,
@@ -2078,6 +2142,52 @@ def patterns_page():
                            cost=patterns.ROUND_TRIP_COST_PCT,
                            min_days=patterns.MIN_DAYS,
                            source=_published_reads.get("patterns.json"))
+
+
+@app.route("/investors")
+def investors_page():
+    """Who among a curated set of managers holds what, read straight from
+    SEC 13F filings — a fact with a date on it, never a signal.
+
+    The idea of tracking a small roster of well-known managers is
+    borrowed, with attribution, from Dataroma; every filing and every
+    number on this page comes from SEC EDGAR directly, published weekly
+    by superinvestors.py/thirteenf_scan.py (see docs/superinvestors-plan.md).
+
+    This adds zero score points anywhere on the site. A 13F is long-only,
+    US-equity-only, and up to 135 days stale by the time the next
+    quarter's filings replace it — none of which a ranking should ever
+    treat as current, directional information. See KNOWN_ISSUES.md.
+    """
+    d = _inv13f_book() or {}
+    if not d.get("managers"):
+        return render_template("investors.html", loaded=False, d=d)
+    managers = sorted(d.get("managers") or [], key=lambda m: m["name"])
+    rows = []
+    for key, row in (d.get("tickers") or {}).items():
+        ticker = row.get("ticker")
+        rows.append({
+            "ticker": ticker, "display": ticker or row.get("issuer") or key,
+            "issuer": row.get("issuer"),
+            "holders": len(row.get("holders") or []),
+            "holder_names": sorted(row.get("holders") or []),
+            "added": len(row.get("added") or []),
+            "increased": len(row.get("increased") or []),
+            "trimmed": len(row.get("trimmed") or []),
+            "exited": len(row.get("exited") or []),
+            "mapped": bool(ticker)})
+    rows.sort(key=lambda r: (-r["holders"], r["issuer"] or ""))
+    # A ticker one manager holds is not consensus among anything — the
+    # roll-up table only earns its place showing names at least two
+    # tracked managers independently hold; the total count above it says
+    # plainly how many names that leaves out.
+    multi = [r for r in rows if r["holders"] >= 2]
+    return render_template(
+        "investors.html", loaded=True, d=d, managers=managers,
+        rows=multi[:200], n_shown=min(len(multi), 200),
+        n_multi=len(multi), n_total_tickers=len(rows),
+        n_unmapped=sum(1 for r in rows if not r["mapped"]),
+        source=_published_reads.get("investors13f.json"))
 
 
 @app.route("/limits")
@@ -2304,7 +2414,8 @@ def _warm_books():
                       ("earnings calendar (published)", _earnings_book),
                       ("pattern sweep", _patterns_book),
                       ("market regime", _regime_book),
-                      ("liquidity book", _liq_book)):
+                      ("liquidity book", _liq_book),
+                      ("13F book", _inv13f_book)):
         try:
             fn(fetch=True)
         except Exception as e:
@@ -2619,7 +2730,8 @@ def published_route():
                     "loaded": {"prices": len(pretrade._series_of(_price_book())),
                                "vol": len(_vol_book()),
                                "credit": len(_credit_book()),
-                               "liquidity": len(_liq_book())}})
+                               "liquidity": len(_liq_book()),
+                               "investors13f": len((_inv13f_book() or {}).get("tickers") or {})}})
 
 
 @app.route("/published/refresh", methods=["POST"])
