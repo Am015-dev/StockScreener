@@ -226,6 +226,32 @@
       hard, and that is why leverage alone is not the answer.</p>
   </div>
 
+  {% if r.altman %}
+  <div class="card">
+    <h2>A second read: Altman Z&Prime;</h2>
+    <p class="muted">The distance above needs a share price. This does not — it is
+      built entirely from the filed balance sheet and income statement, so it can
+      disagree with the market-based read, and when it does, that disagreement is
+      itself informative.</p>
+    <p class="big {{ 'ok' if r.altman.zone == 'safe zone' else 'warn' if r.altman.zone == 'grey zone' else 'bad' }}"
+       style="margin-top:.6rem">{{ '%.2f'|format(r.altman.z) }}</p>
+    <p class="lead" style="margin:.3rem 0 .8rem">{{ r.altman.zone }}</p>
+    <div class="scroll"><table>
+      <tr><td>Working capital, against total assets</td><td class="r">{{ (r.altman.x1 * 100)|round(1) }}%</td></tr>
+      <tr><td>Retained earnings, against total assets</td><td class="r">{{ (r.altman.x2 * 100)|round(1) }}%</td></tr>
+      <tr><td>Operating income, against total assets</td><td class="r">{{ (r.altman.x3 * 100)|round(1) }}%</td></tr>
+      <tr><td>Book equity, against total liabilities</td><td class="r">{{ (r.altman.x4 * 100)|round(1) }}%</td></tr>
+    </table></div>
+    <p class="tiny" style="margin-top:.7rem">Altman's Z&Prime;-Score (Altman, 1995) —
+      a public, decades-old formula, not this site's own model. &gt;{{ '%.2f'|format(2.60) }}
+      is the safe zone, {{ '%.2f'|format(1.10) }}&ndash;{{ '%.2f'|format(2.60) }} the grey
+      zone, below {{ '%.2f'|format(1.10) }} the distress zone — cutoffs from the same
+      published source, not chosen here. EBIT is approximated as operating income,
+      which can diverge from a strict EBIT figure when a company carries material
+      non-operating income or expense.</p>
+  </div>
+  {% endif %}
+
   {% if near %}
   <div class="card">
     <h2>Nearest companies measured</h2>

@@ -180,6 +180,38 @@ finally:
 print("\nMARKET REGIME REACHABILITY PINNED")
 
 
+# ---- the VIX reading reaches the same card, silent on the ordinary case ----
+# Same card, same silence-on-normal rule as the SPY/Stoxx flag above —
+# added while reviewing Fincept Terminal for ideas (see vix.py). Pinned
+# separately from that block so a regression in either one is reported
+# against the right feature.
+_saved_regime2 = A._regime_pub.copy()
+try:
+    A._regime_pub.update(data={"as_of": "2026-08-13",
+                               "vix": {"level": 32.4, "as_of": "2026-08-13",
+                                      "percentile_5y": 93, "n_obs": 1259}},
+                         ts=time.time())
+    A._today_memo["key"] = None
+    _html = c.get("/").get_data(as_text=True)
+    assert "Market backdrop" in _html, "an elevated VIX must surface its own card"
+    assert "elevated" in _html and "32.4" in _html
+    print("an elevated VIX (93rd percentile) surfaces on the front page")
+
+    A._regime_pub.update(data={"as_of": "2026-08-13",
+                               "vix": {"level": 17.0, "as_of": "2026-08-13",
+                                      "percentile_5y": 50, "n_obs": 1259}},
+                         ts=time.time())
+    A._today_memo["key"] = None
+    _html = c.get("/").get_data(as_text=True)
+    assert "Market backdrop" not in _html, "an ordinary VIX reading must stay silent"
+    print("an ordinary VIX reading (50th percentile): no flag, same as SPY/Stoxx uptrend")
+finally:
+    A._regime_pub.update(_saved_regime2)
+    A._today_memo["key"] = None
+
+print("\nVIX REGIME REACHABILITY PINNED")
+
+
 # ---- the page must not hide its content behind a question ----
 # "I do not see any Moodys like report anywhere" was a display:none gate
 # that only an answer or a skip revealed — and the skip lived in

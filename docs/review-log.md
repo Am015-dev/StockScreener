@@ -557,3 +557,109 @@ and removes itself). After push, confirmed live on the deployed build
 via curl: `pickChartSVG` present, and all five of that day's real picks
 carrying real `data-spark`/`data-stop` values pulled from the actual
 published price book.
+
+### Round 9 — 2026-08-14 — Fincept Terminal review: what to adopt, borrow, or reject
+
+Operator asked to check the Fincept Terminal GitHub project
+(Fincept-Corporation/FinceptTerminal) for anything worth including here.
+Ran a multi-angle research pass — architecture/licensing, its "100+
+data connectors," its "18 QuantLib modules"/"CFA-level analytics," and
+its "37 AI agents"/"16 broker integrations" — before writing any code,
+per CLAUDE.md's search-first rule.
+
+**What it is:** a native C++20/Qt6 desktop terminal, AGPL-3.0-or-later,
+30.2k stars. Not a Python package — its Python scripts run only as
+C++-launched subprocesses, never imported. A `fincept-terminal` package
+does exist on PyPI, but it is a separately-licensed (MIT), ~11-month-
+stale, pre-rewrite legacy GUI app unrelated to the current codebase —
+confirmed and rejected as irrelevant, not adopted.
+
+**Rejected outright, with reasons:** the codebase itself (different
+language and runtime; AGPL would require anything importing it to also
+go AGPL, for no code this project actually needs); World Bank/IMF APIs
+(no consumer — nothing here screens on sovereign macro data); DBnomics
+(claimed in Fincept's README, but no working connector script could
+actually be found — treated as a marketing count, not a verified
+source); Treasury FiscalData (does not expose the daily par yield curve,
+the one series that would have been useful); QuantLib-Python bindings
+(a heavy dependency for derivatives pricing this project does not do,
+sitting alongside — not replacing — the bespoke Merton/KMV solver
+already built); Fincept's own "Portfolio," "Risk," and IFRS-9-ECL
+modules (mean-variance optimisation, VaR-exception testing, and loan-
+loss provisioning — none overlap with this project's Ledoit-Wolf
+shrinkage, purged-CV backtester, or equity-only structural credit
+model, which are simply a different, more specific stack); the 37 AI
+agents (LLM investor/economist personas generating prose — a direct
+violation of the house rule against invented or LLM-generated analysis
+anywhere on this product, regardless of license); the 16 broker
+integrations and paper-trading engine (order execution is out of this
+product's stated scope by design — research-only, no positions ever
+placed by this site).
+
+**Adopted:** nothing as a dependency — no candidate cleared the bar.
+
+**Borrowed with attribution (two, both shipped this round):**
+
+1. **CBOE VIX regime signal** (`vix.py`, new module). Fincept's
+   `cboe_vix_data.py` hits `cdn.cboe.com/api/global/us_indices/
+   daily_prices/VIX_History.csv` directly — a public CSV, no key, no
+   auth, verified working by curl before any code was written. The URL
+   is borrowed with attribution; nothing else is. Deliberately no fixed
+   "VIX > 30" band — this project already has a rule against invented
+   thresholds (`credit.band()`'s own docstring) and a working answer to
+   the same problem (`credit.percentile()`, reused here rather than
+   reimplemented) — so today's close is placed against its own trailing
+   ~5 years of history instead, and only the tails (>=90th, <=10th
+   percentile) get a note, silent otherwise, matching the front page's
+   existing SPY/Stoxx regime note's own rule. Published into the same
+   `regime.json` the SPY/Stoxx flag already uses (one file, not a new
+   one), computed in the scheduled scan and rendered through
+   `_regime_notes()` — zero template changes needed, since /today's
+   "Market backdrop" card already renders whatever that function
+   returns.
+2. **Altman Z''-Score** (`credit.py`: `altman_z()`,
+   `fetch_altman_inputs()`, `with_altman()`). Fincept lists Altman
+   Z-score among its analytics but ships no reusable code for a Flask
+   project — a different language under a copyleft license. The formula
+   itself is public, decades-old academic work (Altman, 1995), verified
+   independently against Altman's own 2018 retrospective paper before
+   writing any code — a first draft, based on a secondhand description,
+   was missing the model's `+3.25` constant, which would have scored
+   every company 3.25 points too low and silently misclassified almost
+   everything as distressed. Independent verification caught this
+   before it shipped, not after. Wired in as a genuinely SECOND,
+   independent read: it needs no share price at all (working capital,
+   retained earnings, operating income and book equity, all from the
+   filed balance sheet and income statement), so it can disagree with
+   the market-based Distance to Default, and when it does, that
+   disagreement is itself informative. Scoped deliberately narrow this
+   round: only computed alongside an ALREADY-successful Merton read
+   (not as a fallback for a failed one), `us-gaap` only (no `ifrs-full`
+   equivalent yet), and via its own isolated fetch function that never
+   touches `fetch_balance_sheet()`'s existing, carefully-tested control
+   flow — a fetch failure here costs the primary report nothing.
+
+**Tests:** `tests/test_vix.py` (new) pins CSV parsing degrading on bad
+rows rather than raising, the percentile direction, the lookback window
+actually bounding history, and `note()`'s silence on the ordinary case
+and inclusive tail boundaries. `tests/test_credit.py` gained the
+hand-computed Z'' pin (the exact number the missing-constant bug would
+have gotten wrong), zone-boundary pins at both cutoffs, and
+`fetch_altman_inputs`/`with_altman` pins for same-period-end discipline,
+partial-fetch refusal, and — critically — that a failed Merton report
+costs zero SEC calls trying to add a second opinion to it.
+`tests/test_scheduled_scan.py` gained VIX-merge, VIX-failure-isolation,
+and VIX-only-publishes pins, each driven through the real subprocess
+harness with `vix.regime` stubbed (a first draft of this test
+accidentally hit the real CBOE endpoint from every subprocess in this
+file, caught by re-reading the file's own "no network round trip"
+docstring promise before trusting the first green run).
+`tests/test_page_robustness.py` gained the same silent-on-normal /
+speaks-on-the-tails pin the existing SPY/Stoxx regime block already
+has. Full suite (34 files) green.
+
+**Documented:** two new KNOWN_ISSUES.md sections naming what each
+addition cannot tell a reader — Z'' only alongside a working Merton
+read, `us-gaap` only, EBIT-as-operating-income, no retroactive backfill
+for the VIX note; a fixed lookback window is a choice, and a CBOE outage
+reads identically to an ordinary day, by design.
