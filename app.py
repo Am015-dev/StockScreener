@@ -35,6 +35,7 @@ import plan
 import pretrade
 import ranking
 import screener
+import vix
 
 app = Flask(__name__)
 # /tmp is RAM-backed on the free instance, so an unbounded POST body is
@@ -1118,13 +1119,15 @@ _regime_pub = {"ts": 0.0, "data": None}
 
 
 def _regime_book(fetch: bool = False) -> dict:
-    """Market regime (SPY / Euro Stoxx 50 vs 200-day SMA), computed by the scan.
+    """Market regime — SPY / Euro Stoxx 50 vs 200-day SMA, and the VIX
+    against its own trailing history — computed by the scan.
 
-    screener.run() already computes and gates on this internally
-    (require_market_uptrend) but never published the verdict — so a name
-    could clear every filter during a confirmed downtrend with nothing
-    anywhere saying the backdrop itself had turned. This is one JSON file
-    with two booleans, not a fourth outbound call from this instance.
+    screener.run() already computes and gates on the SPY/Stoxx half
+    internally (require_market_uptrend) but never published the verdict —
+    so a name could clear every filter during a confirmed downtrend with
+    nothing anywhere saying the backdrop itself had turned. The VIX
+    reading (see vix.py) lives in this same file rather than a new one —
+    one JSON file, not a second outbound call from this instance.
     """
     if not fetch:
         return _regime_pub["data"] or {}
@@ -1142,16 +1145,22 @@ def _regime_book(fetch: bool = False) -> dict:
 
 def _regime_notes(regime: dict) -> list:
     """Plain-language notice for each region confirmed BELOW its 200-day
-    average — silent on uptrend and silent when unmeasured, matching the
-    rest of this page's rule of never flagging the normal case. A reader
-    is told when the backdrop is working against every name on the list,
-    not shown a gauge for it.
+    average, plus a VIX line when today sits in either tail of its own
+    trailing history (see vix.note()) — silent on uptrend, silent on
+    ordinary volatility, and silent when unmeasured, matching the rest of
+    this page's rule of never flagging the normal case. A reader is told
+    when the backdrop is working against every name on the list, not
+    shown a gauge for it.
     """
     labels = {"US": "The S&P 500 (SPY)", "EU": "The Euro Stoxx 50"}
-    return [f"{labels.get(region, region)} is below its 200-day average — a "
+    notes = [f"{labels.get(region, region)} is below its 200-day average — a "
             f"defensive stretch. The usual playbook is smaller size and "
             f"faster exits; nothing below enforces that for you."
             for region in ("US", "EU") if regime.get(region) is False]
+    v = vix.note(regime.get("vix"))
+    if v:
+        notes.append(v)
+    return notes
 
 
 def _published_earnings() -> tuple[dict, bool, set]:
@@ -1799,6 +1808,11 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
                         bs["total_liabilities"], as_of=bs.get("as_of"),
                         vol=v.get("vol"), vol_obs=v.get("obs"),
                         currency_refused=bs.get("currency_only"))
+    # A second, accounting-only read alongside the market-based one — see
+    # credit.with_altman(). Best-effort: a fetch failure here leaves the
+    # Merton/KMV report above completely unaffected.
+    rep = credit.with_altman(rep, cik, sec, bs.get("as_of"),
+                             bs["current_liabilities"], bs["total_liabilities"])
     rep["ok"] = True
     rep["source"] = bs.get("source")
     rep["endpoint"] = bs.get("source_endpoint")

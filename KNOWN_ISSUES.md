@@ -56,6 +56,48 @@ The test lives in `scripts/null_test.py`, takes the preset name as an
 input, and runs from the Actions tab — so both claims can be re-checked
 rather than taken on trust.
 
+## What the second credit read (Altman Z'') cannot tell you
+
+- **It only appears alongside a working market-based read, not instead
+  of one.** Distance to Default needs a share price; the Z'' needs only
+  a balance sheet and an income statement, and could in principle be
+  shown for a company the market-based model cannot reach at all — that
+  is not wired up yet. Right now, if the Merton read did not succeed,
+  no Z'' is computed either.
+- **IFRS filers (20-F) do not get one this round.** The four extra tags
+  it needs (total assets, current assets, retained earnings, operating
+  income) are only tried against the `us-gaap` taxonomy — the IFRS
+  filers `credit.py`'s main balance-sheet read already supports do not
+  yet get the equivalent `ifrs-full` tags tried for this second read.
+- **EBIT is approximated as operating income.** The two agree unless a
+  company carries material non-operating income or expense above the
+  interest line (an asset sale, an FX gain, equity-method earnings) —
+  usually small, but a real source of divergence from a textbook-strict
+  EBIT figure.
+- **Already-measured companies do not get it retroactively.** The extra
+  tags are only fetched when a company's filings are (re-)read, so a
+  ticker already sitting in the published book from before this shipped
+  shows no Z'' until it is next measured — coverage grows the same way
+  the rest of the credit book already does, not all at once.
+
+## What the VIX regime reading cannot tell you
+
+- **It is one index, not a forecast.** A high or low reading describes
+  where implied volatility has actually been, placed against its own
+  trailing ~5 years (see `vix.py`) — it does not predict where it is
+  going next, and nothing on this site sizes a position or gates a pick
+  by it.
+- **The 5-year lookback is a choice, not a law.** A longer window would
+  include 2008- and 2020-scale spikes that would permanently raise the
+  bar for what counts as "elevated"; a shorter one would be more
+  reactive to whatever regime the market happens to be in right now.
+  Five years was picked as a middle ground, not fitted to produce a
+  particular answer.
+- **A CBOE outage, not a calm market, is the most common reason this
+  is silent.** No VIX line on the front page can mean either "today is
+  ordinary" or "the reading could not be fetched this run" — both read
+  the same way, by design, rather than guessing which one happened.
+
 ## What the credit model cannot tell you
 
 - **Banks, insurers and other financials are refused, not measured.**

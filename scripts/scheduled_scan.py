@@ -482,6 +482,15 @@ def credit_book(tickers, prices: dict, vols: dict, prev: dict | None = None,
                                 as_of=bs.get("as_of"),
                                 vol=v.get("vol"), vol_obs=v.get("obs"),
                                 currency_refused=bs.get("currency_only"))
+            # A second, accounting-only read alongside the market-based
+            # one — see credit.with_altman(). Best-effort: a fetch
+            # failure here leaves the Merton/KMV report untouched, and
+            # costs this run nothing beyond the (small) extra SEC calls
+            # already spent on a company that was going to be measured
+            # regardless.
+            rep = credit.with_altman(rep, cik, _sec_get, bs.get("as_of"),
+                                     bs["current_liabilities"],
+                                     bs["total_liabilities"])
             rep["source"] = bs.get("source")
             rep["shares"] = sh.get("shares")
             rep["shares_as_of"] = sh.get("as_of")
@@ -901,14 +910,43 @@ def main() -> int:
         bench = screener._get_benchmarks()
         regime = {region: screener.market_uptrend(close)
                  for region, close in bench.items()}
-        if any(v is not None for v in regime.values()):
-            (out / "regime.json").write_text(json.dumps(
-                {"as_of": time.strftime("%Y-%m-%d", time.gmtime()), **regime}))
-            print("published market regime: "
-                  + ", ".join(f"{r}={v}" for r, v in regime.items()))
     except Exception as e:
         print(f"market regime not published: {type(e).__name__}: {e}",
               file=sys.stderr)
+
+    # VIX, against its own trailing history rather than a fixed band — see
+    # vix.py's module docstring for why, and for the CBOE source (adopted
+    # into the same regime.json this block already writes, not a new
+    # published file). A failure here must not lose the SPY/Stoxx regime
+    # already computed above, so it is its own try/except and merged in
+    # only on success.
+    try:
+        import requests
+        import vix
+        v = vix.regime(lambda u: requests.get(u, timeout=20).text)
+        if v:
+            regime["vix"] = v
+    except Exception as e:
+        print(f"VIX regime not published: {type(e).__name__}: {e}",
+              file=sys.stderr)
+
+    if any(v is not None for k, v in regime.items() if k != "vix"):
+        (out / "regime.json").write_text(json.dumps(
+            {"as_of": time.strftime("%Y-%m-%d", time.gmtime()), **regime}))
+        print("published market regime: "
+              + ", ".join(f"{r}={v}" for r, v in regime.items() if r != "vix")
+              + (f"; VIX {regime['vix']['level']} "
+                 f"({regime['vix']['percentile_5y']}th percentile, "
+                 f"{regime['vix']['n_obs']}d)" if regime.get("vix") else ""))
+    elif regime.get("vix"):
+        # SPY/Stoxx unmeasured this run but VIX came through — still worth
+        # publishing rather than discarding a real reading because a
+        # different measurement failed.
+        (out / "regime.json").write_text(json.dumps(
+            {"as_of": time.strftime("%Y-%m-%d", time.gmtime()), **regime}))
+        print(f"published market regime: VIX {regime['vix']['level']} "
+              f"({regime['vix']['percentile_5y']}th percentile, "
+              f"{regime['vix']['n_obs']}d) only — SPY/Stoxx unmeasured this run")
 
     # The earnings calendar, as the gates used it. The instance rebuilds
     # this exact map from ~32 sequential Nasdaq calls after every deploy,

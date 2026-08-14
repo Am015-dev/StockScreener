@@ -1175,6 +1175,163 @@ def fetch_balance_sheet(cik: int, get_json) -> dict:
     return full
 
 
+# --------------------- a second, independent read: Altman Z'' ---------------------
+# Distance to Default is market-implied — it needs a share price. This is
+# the accounting-only alternative: Altman's Z''-Score, which needs
+# nothing but a balance sheet and an income statement, so it can be shown
+# alongside the Merton read as a second opinion built from entirely
+# different inputs, or (in principle, not wired up this round) computed
+# for a company the market-based model cannot reach at all.
+#
+# Investigated while reviewing Fincept Terminal
+# (github.com/Fincept-Corporation/FinceptTerminal, AGPL-3.0) for ideas at
+# the operator's request: Fincept lists Altman Z-score among its
+# analytics, but ships no reusable code for a Python/Flask project — a
+# different language (C++20/Qt6) under a copyleft license that would
+# require anything importing it to also go AGPL. Nothing from that repo
+# is used here. The formula itself is public, decades-old academic work,
+# implemented fresh against Altman's own numbers, sourced directly:
+#
+#   Z'' = 3.25 + 6.56*X1 + 3.26*X2 + 6.72*X3 + 1.05*X4
+#   X1 = (Current Assets - Current Liabilities) / Total Assets
+#   X2 = Retained Earnings / Total Assets
+#   X3 = EBIT / Total Assets
+#   X4 = BOOK value of Equity / Total Liabilities
+#
+# — Altman, E.I. (2018), "A fifty-year retrospective on credit risk
+# models, the Altman Z-score family of models," Journal of Credit Risk
+# 14(4), Boxes 4-5. This is the "Z''" / emerging-markets variant (Altman,
+# Hartzell & Peck 1995), not the original 1968 Z-Score: that one needs
+# the MARKET value of equity and a manufacturing-specific sales/assets
+# term, which is exactly the two things this project's own Merton model
+# already avoided leaning on for non-manufacturers — the +3.25 constant
+# is not decorative, it is what calibrates a raw score of 0 to a
+# D-rated-bond equivalent, and every score is 3.25 points too low
+# without it. Zone cutoffs (2.60 / 1.10) are the emerging-market sample's
+# cutoffs; Altman's own materials give a different pair (2.90 / 1.23)
+# for the general non-manufacturer sample — the EM cutoffs are used here
+# because they are the ones published alongside this exact formula.
+ALTMAN_ZONE_SAFE = 2.60
+ALTMAN_ZONE_DISTRESS = 1.10
+
+# EBIT is approximated as Operating Income (us-gaap:OperatingIncomeLoss).
+# The two agree unless there is material non-operating income or expense
+# above the interest line (asset sales, FX, equity-method earnings) — a
+# real but usually small source of divergence, named here rather than
+# silently assumed away.
+ALTMAN_TAGS = {"Assets": "total_assets", "AssetsCurrent": "current_assets",
+               "RetainedEarningsAccumulatedDeficit": "retained_earnings",
+               "OperatingIncomeLoss": "ebit"}
+
+
+def altman_z(current_assets, current_liabilities, total_assets,
+            retained_earnings, ebit, total_liabilities,
+            book_equity) -> dict | None:
+    """Z'' and its zone, or None if any input is missing or the two
+    denominators are not usable. Refuses rather than guessing — the same
+    rule default_point() applies to its own inputs — because a Z''
+    computed from five terms and a silently-zeroed sixth is arithmetic
+    about a different, worse company than the one being asked about."""
+    vals = (current_assets, current_liabilities, total_assets,
+           retained_earnings, ebit, total_liabilities, book_equity)
+    if any(v is None for v in vals):
+        return None
+    if not total_assets or total_assets <= 0:
+        return None
+    if not total_liabilities or total_liabilities <= 0:
+        return None
+    x1 = (current_assets - current_liabilities) / total_assets
+    x2 = retained_earnings / total_assets
+    x3 = ebit / total_assets
+    x4 = book_equity / total_liabilities
+    z = 3.25 + 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4
+    if z > ALTMAN_ZONE_SAFE:
+        zone = "safe zone"
+    elif z >= ALTMAN_ZONE_DISTRESS:
+        zone = "grey zone"
+    else:
+        zone = "distress zone"
+    return {"z": round(z, 2), "zone": zone,
+           "x1": round(x1, 3), "x2": round(x2, 3),
+           "x3": round(x3, 3), "x4": round(x4, 3)}
+
+
+def fetch_altman_inputs(cik: int, get_json, as_of: str | None,
+                        today: str | None = None) -> dict:
+    """Total assets, current assets, retained earnings and EBIT for
+    altman_z() — {"total_assets", "current_assets", "retained_earnings",
+    "ebit"}, each None where absent.
+
+    Fetched the same cheap companyconcept way fetch_balance_sheet() uses
+    for its own tags, but kept as its OWN function rather than folded
+    into that one: this is a second, optional reading, and a fetch
+    failure here must never touch the balance sheet that function already
+    assembled for the primary Merton/KMV report.
+
+    `as_of` is the balance-sheet date fetch_balance_sheet() already
+    settled on. A tag whose most recent value does not fall on that same
+    date is treated as missing, not substituted — the same same-period-
+    end discipline balance_sheet() enforces for current/total
+    liabilities, for the reason its own docstring gives: mixing period
+    ends put T-Mobile's leverage figure off by a factor of three.
+
+    us-gaap only this round — an IFRS filer's balance sheet still comes
+    from balance_sheet()'s ifrs-full route where that applies, but this
+    function does not yet try the ifrs-full equivalents of these four
+    tags, so an IFRS filer simply will not get a Z'' shown. Named here
+    rather than silently narrowing what "measured" means.
+    """
+    out = {"total_assets": None, "current_assets": None,
+          "retained_earnings": None, "ebit": None}
+    if not as_of:
+        return out
+    facts: dict = {"facts": {"us-gaap": {}}}
+    for tag in ALTMAN_TAGS:
+        try:
+            d = get_json(f"https://data.sec.gov/api/xbrl/companyconcept/"
+                        f"CIK{int(cik):010d}/us-gaap/{tag}.json")
+        except Exception:
+            continue
+        units = (d or {}).get("units") or {}
+        if any(rows for rows in units.values()):
+            facts["facts"]["us-gaap"][tag] = {"units": units}
+    for tag, key in ALTMAN_TAGS.items():
+        row = _latest(facts, tag, today)
+        if row and row.get("end") == as_of:
+            out[key] = float(row["val"])
+    return out
+
+
+def with_altman(rep: dict, cik: int, get_json, as_of: str | None,
+                current_liabilities: float | None,
+                total_liabilities: float | None) -> dict:
+    """`rep`, with an "altman" key added when the inputs allow it — a
+    purely additive, best-effort second read. Never raises, and never
+    touches `rep` at all when the primary Merton/KMV read itself did not
+    succeed (dd is None) — this is scoped as a second opinion alongside a
+    working one, not a fallback for a failed one, this round.
+
+    Any fetch failure, or any missing input, just leaves "altman" absent
+    from the returned dict — exactly like a missing Merton input leaves
+    "dd" absent instead of a guessed number.
+    """
+    if rep.get("dd") is None or total_liabilities is None:
+        return rep
+    try:
+        ai = fetch_altman_inputs(cik, get_json, as_of)
+    except Exception:
+        return rep
+    ta = ai.get("total_assets")
+    if ta is None:
+        return rep
+    z = altman_z(ai.get("current_assets"), current_liabilities, ta,
+                ai.get("retained_earnings"), ai.get("ebit"),
+                total_liabilities, ta - total_liabilities)
+    if z:
+        rep["altman"] = z
+    return rep
+
+
 def _newest(rows) -> dict | None:
     best = None
     for r in rows or []:

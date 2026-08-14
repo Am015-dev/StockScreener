@@ -58,6 +58,11 @@ screener.run_screener = fake_run
 # empty here, the same as run_screener above. The regime-specific test
 # further down replaces this one line with real synthetic closes.
 screener._get_benchmarks = lambda progress=print: {{}}
+# Same reasoning for the VIX reading (vix.regime): left unmocked it is a
+# real CBOE call from every subprocess this file spawns. None here, same
+# as "unmeasured" — the VIX-specific tests further down override this.
+import vix
+vix.regime = lambda get_text: None
 import runpy
 import backtest as _bt
 
@@ -174,6 +179,81 @@ idx6 = json.loads((OUT6 / "index.json").read_text())
 assert idx6["regime"] == {"US": True, "EU": False}, idx6["regime"]
 print("market regime (US uptrend, EU downtrend) published to regime.json, "
       "and carried into index.json")
+
+# ---- the VIX reading merges into the same regime.json ----
+# vix.regime() is stubbed rather than left to hit the real CBOE endpoint —
+# this file's whole point is no network round trip. Patching vix.regime
+# (not the requests call inside it) works because scheduled_scan.py's own
+# `import vix` picks up the same already-imported, already-patched module
+# object from sys.modules once this stub script has imported and patched
+# it first.
+#
+# REGIME still carries the base STUB's own default override
+# ("vix.regime = lambda get_text: None") verbatim, unchanged by the
+# benchmarks substitution above — so THIS has to replace THAT exact
+# line, not append a second assignment after the benchmarks line: Python
+# runs the file top to bottom, and the leftover default further down
+# would silently overwrite an appended override before scheduled_scan.py
+# ever ran.
+VIX_OK = REGIME.replace(
+    "vix.regime = lambda get_text: None",
+    "vix.regime = lambda get_text: {'level': 31.2, 'as_of': '2026-08-13', "
+    "'percentile_5y': 91, 'n_obs': 1259}")
+assert VIX_OK != REGIME, "vix stub line not found to override"
+OUT7 = Path(TMP) / "published7"
+s7 = Path(TMP) / "drive_vix.py"
+# REGIME (and VIX_OK, derived from it) still carries the ORIGINAL OUT
+# path baked in — the str(OUT) -> str(OUT6) substitution the block above
+# does is applied only at the point of writing that block's own script
+# file, never mutating REGIME itself. So this has to retarget from OUT,
+# not OUT6, or the script silently writes into the first run's directory.
+s7.write_text(VIX_OK.replace(str(OUT), str(OUT7)))
+p7 = subprocess.run([sys.executable, str(s7)], env=env, capture_output=True,
+                    text=True, timeout=300)
+assert p7.returncode == 0, p7.stderr
+reg7 = json.loads((OUT7 / "regime.json").read_text())
+assert reg7["US"] is True and reg7["EU"] is False, reg7
+assert reg7["vix"] == {"level": 31.2, "as_of": "2026-08-13",
+                       "percentile_5y": 91, "n_obs": 1259}, reg7
+print("a VIX reading merges into the same regime.json alongside SPY/Stoxx, "
+      "not a separate published file")
+
+# ---- VIX failing must not cost the SPY/Stoxx regime its own publish ----
+VIX_DOWN = REGIME.replace(
+    "vix.regime = lambda get_text: None",
+    "def _vix_down(get_text): raise RuntimeError('CBOE unreachable')\n"
+    "vix.regime = _vix_down")
+assert VIX_DOWN != REGIME, "vix stub line not found to override"
+OUT8 = Path(TMP) / "published8"
+s8 = Path(TMP) / "drive_vix_down.py"
+s8.write_text(VIX_DOWN.replace(str(OUT), str(OUT8)))
+p8 = subprocess.run([sys.executable, str(s8)], env=env, capture_output=True,
+                    text=True, timeout=300)
+assert p8.returncode == 0, p8.stderr
+reg8 = json.loads((OUT8 / "regime.json").read_text())
+assert reg8["US"] is True and reg8["EU"] is False, reg8
+assert "vix" not in reg8, reg8
+print("a VIX fetch that raises leaves SPY/Stoxx published exactly as "
+      "before — a second measurement failing costs the first one nothing")
+
+# ---- when only VIX comes through, it is still worth publishing ----
+VIX_ONLY = STUB.replace(
+    "vix.regime = lambda get_text: None",
+    "vix.regime = lambda get_text: {'level': 12.3, 'as_of': '2026-08-13', "
+    "'percentile_5y': 8, 'n_obs': 1259}")
+assert VIX_ONLY != STUB, "vix stub line not found to override"
+OUT9 = Path(TMP) / "published9"
+s9 = Path(TMP) / "drive_vix_only.py"
+s9.write_text(VIX_ONLY.replace(str(OUT), str(OUT9)))
+p9 = subprocess.run([sys.executable, str(s9)], env=env, capture_output=True,
+                    text=True, timeout=300)
+assert p9.returncode == 0, p9.stderr
+reg9 = json.loads((OUT9 / "regime.json").read_text())
+assert reg9.get("vix", {}).get("percentile_5y") == 8, reg9
+print("SPY/Stoxx unmeasured this run but a real VIX reading came through: "
+      "published anyway, rather than discarded for the other measurement's sake")
+
+print("\nVIX REGIME PUBLISHING PINNED")
 
 # ---- when every preset fails, publish nothing and exit non-zero ----
 ALL_FAIL = STUB.replace('if p["min_rr"] == 2.0:', "if True:")

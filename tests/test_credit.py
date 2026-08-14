@@ -1130,3 +1130,162 @@ print(f"a bare Form 25 filed {form25['filed']} (a Monday) is effective "
       f"days that would land two weekends early")
 
 print("\nDELISTING EVIDENCE PINNED")
+
+
+# ---- Altman Z'' — a second, accounting-only read ----
+# Formula and coefficients verified against Altman, E.I. (2018), "A
+# fifty-year retrospective on credit risk models, the Altman Z-score
+# family of models," Journal of Credit Risk 14(4), before this shipped —
+# an earlier draft omitted the +3.25 constant, which would have scored
+# every company 3.25 points too low and silently misclassified almost
+# everything as distressed. These pins exist so that mistake, or one like
+# it, cannot come back unnoticed.
+
+# hand-computed: TA=100, CA=40, CL=20 (X1=.2), RE=30 (X2=.3), EBIT=10
+# (X3=.1), TL=50, BE=TA-TL=50 (X4=1.0)
+# Z'' = 3.25 + 6.56*.2 + 3.26*.3 + 6.72*.1 + 1.05*1.0 = 7.262
+z = credit.altman_z(current_assets=40, current_liabilities=20, total_assets=100,
+                    retained_earnings=30, ebit=10, total_liabilities=50,
+                    book_equity=50)
+assert z is not None
+assert abs(z["z"] - 7.26) < 1e-9, z
+assert z["zone"] == "safe zone", z
+assert abs(z["x1"] - 0.2) < 1e-9 and abs(z["x4"] - 1.0) < 1e-9, z
+print(f"hand-computed Z''=7.262 (rounds to {z['z']}) reproduced exactly — "
+      f"the +3.25 constant is present and correct")
+
+# a distressed shape: thin current ratio, negative retained earnings and
+# EBIT, heavily levered
+weak = credit.altman_z(current_assets=8, current_liabilities=12, total_assets=30,
+                       retained_earnings=-15, ebit=-1, total_liabilities=28,
+                       book_equity=2)
+assert weak is not None and weak["zone"] == "distress zone", weak
+print(f"a thin, unprofitable, heavily-levered shape scores {weak['z']} — "
+      f"distress zone, as it should")
+
+# zone boundaries: the condition is "z > 2.60" for safe and "z >= 1.10"
+# for grey, so a score landing EXACTLY on either cutoff must read grey on
+# both — never silently rounding into the friendlier zone on either side.
+# X1=X2=X3=0 (CA=CL, RE=0, EBIT=0, TA=TL=1), solved for the book_equity
+# that puts Z'' exactly on each boundary.
+edge_safe = credit.altman_z(current_assets=10, current_liabilities=10, total_assets=1,
+                            retained_earnings=0, ebit=0, total_liabilities=1,
+                            book_equity=(2.60 - 3.25) / 1.05)
+assert edge_safe["z"] == 2.6 and edge_safe["zone"] == "grey zone", edge_safe
+edge_distress = credit.altman_z(current_assets=10, current_liabilities=10, total_assets=1,
+                                retained_earnings=0, ebit=0, total_liabilities=1,
+                                book_equity=(1.10 - 3.25) / 1.05)
+assert edge_distress["z"] == 1.1 and edge_distress["zone"] == "grey zone", edge_distress
+print("a score sitting exactly on either cutoff (2.60, 1.10) reads grey zone "
+      "on both sides — the boundary belongs to no other zone")
+
+# any missing input refuses rather than guesses — the same rule
+# default_point() applies to its own inputs
+assert credit.altman_z(1, 1, 1, 1, None, 1, 1) is None
+assert credit.altman_z(None, 1, 1, 1, 1, 1, 1) is None
+assert credit.altman_z(1, 1, 0, 1, 1, 1, 1) is None, "total_assets <= 0 must refuse"
+assert credit.altman_z(1, 1, 1, 1, 1, 0, 1) is None, "total_liabilities <= 0 must refuse"
+assert credit.altman_z(1, 1, 1, 1, 1, -5, 1) is None, "negative total_liabilities must refuse"
+print("any missing input, or a non-positive denominator, refuses rather than "
+      "computing a number from a partial or nonsensical balance sheet")
+
+print("\nALTMAN Z'' FORMULA PINNED")
+
+
+# ---- fetching the four Altman inputs, same-period-end discipline ----
+AS_OF = "2026-06-27"
+ALTMAN_ROWS_OK = {
+    "Assets": {"USD": [{"form": "10-Q", "end": AS_OF, "val": 100e9}]},
+    "AssetsCurrent": {"USD": [{"form": "10-Q", "end": AS_OF, "val": 40e9}]},
+    "RetainedEarningsAccumulatedDeficit": {"USD": [{"form": "10-Q", "end": AS_OF, "val": 30e9}]},
+    "OperatingIncomeLoss": {"USD": [{"form": "10-Q", "end": AS_OF, "val": 10e9}]},
+}
+ai = credit.fetch_altman_inputs(320193, fake_sec(ALTMAN_ROWS_OK), as_of=AS_OF)
+assert ai == {"total_assets": 100e9, "current_assets": 40e9,
+             "retained_earnings": 30e9, "ebit": 10e9}, ai
+print("all four Altman tags, present and matching as_of, are read cleanly")
+
+# one tag's most recent value falls on a DIFFERENT period end than the
+# balance sheet's as_of — same-period-end discipline (balance_sheet()'s
+# own rule) applies here too, so a mismatched tag is treated as missing,
+# never mixed in from a different quarter
+mismatched = dict(ALTMAN_ROWS_OK)
+mismatched["OperatingIncomeLoss"] = {"USD": [
+    {"form": "10-Q", "end": "2026-03-31", "val": 9e9}]}   # an EARLIER quarter
+ai2 = credit.fetch_altman_inputs(320193, fake_sec(mismatched), as_of=AS_OF)
+assert ai2["ebit"] is None, ai2
+assert ai2["total_assets"] == 100e9, "the other three tags must be unaffected"
+print("a tag whose latest value is from a different period end reads as "
+      "missing, not substituted from the wrong quarter")
+
+# a tag the SEC refuses outright is missing, not zero
+ai3 = credit.fetch_altman_inputs(320193, fake_sec(
+    ALTMAN_ROWS_OK, fail={"RetainedEarningsAccumulatedDeficit"}), as_of=AS_OF)
+assert ai3["retained_earnings"] is None
+assert ai3["total_assets"] == 100e9, "one tag failing must not affect the others"
+print("one tag failing leaves only that field missing — the other three "
+      "still answer")
+
+# no as_of at all (the balance sheet itself was not usable) -> no calls
+# are even attempted, all fields None
+calls = []
+ai4 = credit.fetch_altman_inputs(320193, fake_sec(ALTMAN_ROWS_OK, calls=calls),
+                                 as_of=None)
+assert ai4 == {"total_assets": None, "current_assets": None,
+              "retained_earnings": None, "ebit": None}, ai4
+assert calls == [], "no as_of to match against means no SEC call is worth making"
+print("with no balance-sheet date to match against, nothing is fetched at all")
+
+print("\nALTMAN INPUT FETCH PINNED")
+
+
+# ---- with_altman(): additive, best-effort, never touches a failed report ----
+FULL_REP = {"dd": 5.0, "band": "comfortable"}   # stands in for a successful report
+
+# the primary Merton read failed (dd is None) -> altman is not even
+# attempted, and no SEC call is made for it — this is scoped as a SECOND
+# opinion alongside a working read, not a fallback for a failed one
+calls = []
+failed_rep = {"dd": None, "verdict": "Cannot assess."}
+out = credit.with_altman(dict(failed_rep), 320193, fake_sec(ALTMAN_ROWS_OK, calls=calls),
+                         AS_OF, 20e9, 50e9)
+assert "altman" not in out, out
+assert out == failed_rep, "a failed report must come back byte-for-byte unchanged"
+assert calls == [], "a failed Merton read must not spend a single SEC call on Altman"
+print("a report whose Merton read already failed is returned unchanged, with "
+      "zero SEC calls spent trying to add a second opinion to it")
+
+# the happy path: dd succeeded, all four Altman tags answer and match as_of
+out2 = credit.with_altman(dict(FULL_REP), 320193, fake_sec(ALTMAN_ROWS_OK),
+                          AS_OF, current_liabilities=20e9, total_liabilities=50e9)
+assert out2.get("altman") is not None, out2
+# book_equity = total_assets - total_liabilities = 100e9 - 50e9 = 50e9
+assert abs(out2["altman"]["x4"] - 1.0) < 1e-9, out2["altman"]
+assert out2["dd"] == 5.0, "the primary report's own fields must be untouched"
+print("a successful report gains an 'altman' key computed from the fetched "
+      "balance sheet, book equity derived as total assets minus total "
+      "liabilities — the primary fields are untouched")
+
+# a partial Altman fetch (one tag missing) -> no 'altman' key at all, not
+# a Z'' computed from five real numbers and one silently zeroed one
+partial = dict(ALTMAN_ROWS_OK)
+del partial["Assets"]
+out3 = credit.with_altman(dict(FULL_REP), 320193, fake_sec(partial), AS_OF,
+                          20e9, 50e9)
+assert "altman" not in out3, out3
+print("a report missing even one of the four Altman inputs gets no 'altman' "
+      "key at all — never a number computed from a partial balance sheet")
+
+# the SEC is down entirely -> with_altman must not raise, and the
+# original report is returned exactly as it was passed in
+out4 = credit.with_altman(dict(FULL_REP), 320193,
+                          fake_sec({}, fail={"Assets", "AssetsCurrent",
+                                             "RetainedEarningsAccumulatedDeficit",
+                                             "OperatingIncomeLoss"}),
+                          AS_OF, 20e9, 50e9)
+assert "altman" not in out4 and out4["dd"] == 5.0, out4
+print("every Altman tag refusing leaves the primary report exactly as it "
+      "was handed in — a second opinion that could not be formed is simply "
+      "absent, never a crash")
+
+print("\nWITH_ALTMAN PINNED")
