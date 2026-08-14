@@ -1,0 +1,61 @@
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Changelog</title>
+<style>
+  :root {
+    --bg:#faf9f7; --card:#fff; --line:#e3e1dc; --ink:#1a1917; --ink-2:#5c5a55;
+    --ink-3:#87857f; --accent:#2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+      --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#16151a; --card:#1e1d23; --line:#33313a; --ink:#f0eee9;
+    --ink-2:#b3b0a8; --ink-3:#87857f; --accent:#5b9cf0;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:17px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:42rem; margin:0 auto; padding:2rem 1.15rem 4rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:1.4rem 1.5rem; }
+  h1 { font-size:1.5rem; margin:0 0 .2rem; letter-spacing:-.015em; }
+  .lead { color:var(--ink-3); font-size:.88rem; margin:0 0 1.3rem; }
+  a { color:var(--accent); }
+  ul { list-style:none; margin:0; padding:0; }
+  li { padding:.6rem 0; border-bottom:1px solid var(--line); font-size:.94rem;
+       display:flex; gap:.8rem; }
+  li:last-child { border-bottom:none; }
+  .date { color:var(--ink-3); font-variant-numeric:tabular-nums; flex:0 0 auto;
+          font-size:.85rem; padding-top:.1rem; white-space:nowrap; }
+  .subject { flex:1 1 auto; }
+  .note { color:var(--ink-3); font-size:.85rem; margin-top:1rem; }
+  .top-nav { margin:0 0 1rem; font-size:.82rem; color:var(--ink-3); }
+</style>
+
+<div class="wrap">
+  <p class="top-nav"><a href="/">&larr; Today's Five</a></p>
+  <div class="card">
+    <h1>Changelog</h1>
+    {% if error %}
+    <p class="lead">Change history unavailable in this build ({{ error }}).
+      The repository holds the full record.</p>
+    {% else %}
+    <p class="lead">Generated from the deployed commit history — this is the
+      record, not a summary of it.</p>
+    <ul>
+      {% for date, subject in rows %}
+      <li><span class="date">{{ date }}</span><span class="subject">{{ subject }}</span></li>
+      {% endfor %}
+    </ul>
+    {% if shallow %}
+    <p class="note">This build carries only a shallow slice of history, so
+      the entries above are merge points rather than changes; the
+      repository holds the full record.</p>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>

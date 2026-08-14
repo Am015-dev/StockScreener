@@ -122,7 +122,11 @@
 
   [data-tip] { cursor: help; text-decoration: underline dotted var(--ink-3);
                text-underline-offset: 3px; position: relative; }
-  [data-tip]:hover::after, [data-tip]:focus::after {
+  /* .tip-active is a tap-toggled class (see the script near the end of
+     this file) — :hover does not exist on a touchscreen, which is how
+     every one of these jargon explanations (RSI, ATR, profit factor, R,
+     stop room...) was invisible on a phone despite being fully written. */
+  [data-tip]:hover::after, [data-tip]:focus::after, [data-tip].tip-active::after {
     content: attr(data-tip); position: absolute; left: 0; top: 100%; z-index: 30;
     margin-top: var(--sp-1); width: max-content; max-width: 300px; white-space: normal;
     background: var(--surface-1); color: var(--ink); border: 1px solid var(--line);
@@ -130,7 +134,8 @@
     font-weight: 400; text-transform: none; letter-spacing: 0; text-align: left;
     box-shadow: var(--shadow); pointer-events: none;
   }
-  th[data-tip]:hover::after, td.notes[data-tip]:hover::after { left: auto; right: 0; }
+  th[data-tip]:hover::after, td.notes[data-tip]:hover::after,
+  th[data-tip].tip-active::after, td.notes[data-tip].tip-active::after { left: auto; right: 0; }
 
   .helpcols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
               gap: var(--sp-5); margin-top: var(--sp-4); }
@@ -2136,6 +2141,19 @@ document.addEventListener("mouseout", (e) => {
   if (cur) cur.style.display = "none";
   const out = svg.parentElement.querySelector(".spk-read");
   if (out) out.textContent = "";
+});
+
+// Every jargon term on this page (RSI, ATR, profit factor, R, stop room,
+// Sortino...) already carries a plain-language explanation in data-tip —
+// but :hover does not exist on a touchscreen, which is how it read on a
+// phone. Tap toggles the same tooltip via .tip-active; tapping elsewhere
+// closes it. One delegated listener, so it covers every data-tip element
+// on the page including ones re-rendered after this script runs.
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-tip]");
+  const already = el && el.classList.contains("tip-active");
+  document.querySelectorAll(".tip-active").forEach(n => n.classList.remove("tip-active"));
+  if (el && !already) el.classList.add("tip-active");
 });
 
 loadDefaults();
