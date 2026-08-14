@@ -471,3 +471,89 @@ a stripped `PATH`, confirmed unrelated — passes standalone, and that
 file asserts nothing about templates); `test_docs_pages.py` and
 `test_investors_page.py` re-run directly, both green; live `h1` rule on
 the deployed build confirmed via curl post-deploy.
+
+### Round 8 — 2026-08-14 — real charts, restrained motion, paged tables
+
+Operator, immediately after Round 7 shipped: use animation and images to
+feel professional, and stop the unlimited scroll. Researched GitHub
+first per CLAUDE.md's never-reinvent rule before writing anything.
+
+**Adopt/borrow/reject ledger for this round:**
+
+- Per-pick price chart. Candidates:
+  [tradingview/lightweight-charts](https://github.com/tradingview/lightweight-charts)
+  (~45KB, canvas, interactive) and [leeoniya/uPlot](https://github.com/leeoniya/uplot)
+  (~50KB, canvas). **Rejected both as dependencies** — 45-50KB of vendored
+  JS to draw five static 60-point lines is disproportionate, and this
+  repo already has a working answer to the same problem. **Borrowed the
+  repo's own pattern instead**: `sparkSVG()` in `templates/index.html`
+  (the `/full` sparklines) is inline SVG built from the same published
+  price series with no library at all — `pickChartSVG()` in
+  `templates/today.html` is that same approach, sized for the pick cards,
+  deliberately without the target/resistance line `/full`'s version
+  draws, since `plan.py`'s entire premise is that this project does not
+  predict a price.
+- Entrance/hover motion. Considered a library (AOS.js and similar) vs.
+  hand-rolling. **Rejected the library** — the standard
+  IntersectionObserver reveal pattern documented on MDN/CSS-Tricks is
+  ~15 lines of vanilla JS with zero dependencies; a library would add a
+  script tag and a CDN dependency for something this small.
+- Favicon. Checked `app.py` before building anything: `/favicon.ico`
+  already serves a real inline SVG (a checkmark in the site's accent
+  blue) — this item from the plan was already shipped in an earlier
+  round and needed no work this time.
+
+**What shipped:**
+
+*Images* — every `/today` pick now draws its real last-60-session
+price path as an inline SVG, the stop marked as a dashed line against
+the path it actually took. `app.py::today_page()` attaches
+`p["spark"]` from the same series `_today_candidates()` already scored
+from — a dict lookup, no new network call, no new published book.
+
+*Motion* — entrance-reveal (opacity + 10px rise, ~450ms, staggered per
+card) and a 2px hover-lift, added to `today.html`, `investors.html`,
+`patterns.html`, `credit.html`, and a reveal-only pass on `index.html`
+(which already had button/card hover transitions from an earlier
+round). The score-contribution bars on `/today` now grow into place
+the first time their `<details>` opens, via a pure-CSS trick — forced
+to 0 width while closed, real width transitions in on open — rather
+than JS. Every animation is added by JavaScript only: the `.reveal`
+class is never written by Jinja, so a reader with JS disabled, or a
+crawler, sees the static page at full opacity from first paint, and
+`prefers-reduced-motion` zeroes every transition — most pages reuse
+`index.html`'s existing sitewide `* { transition: none !important }`
+rule for that.
+
+*Less scroll* — `/investors`' multi-holder table (up to 200 rows)
+pages 25 at a time behind a "Show 25 more" button; every row still
+ships in the static HTML, JS only ever hides what is beyond the
+current page, so a no-JS reader loses nothing. `/today`'s "How to
+trade this list" and "What decided this" cards — peer reference
+material, not sequential reading — sit side by side at a >=720px
+viewport instead of adding to the scroll; they still stack normally on
+a phone.
+
+**Tests added:** `test_investors_page.py` pins one chart per rendered
+pick on `/today` (5-for-5 against the file's real-scoring fixture);
+builds a 30-synthetic-row `/investors` fixture and pins that all 32
+multi-holder rows (30 synthetic + AAPL + the unmapped holdco) ship in
+the static HTML even though only 25 are visible at first, and that
+`class="reveal"` never appears server-rendered. `test_page_robustness.py`
+pins the same JS-only-`.reveal` guarantee on `/` and `/full`.
+`scripts/release_gate.py` gained: a per-pick chart-SVG-count check on
+`/today`; an `/investors` visit that clicks "Show more" and confirms
+more rows actually became visible; a `prefers-reduced-motion` CSS rule
+present on `/`, `/full`, `/investors`, `/patterns`.
+
+**Verification:** full Python suite (32 files) green. Live-rendered via
+a local Flask instance (`PUBLISHED_DIR` pointed at synthetic fixtures)
+screenshotted with local Playwright at 390px and 900px — confirmed the
+chart renders with a real green/red price line and dashed stop line,
+and that the two-card pair stacks under 720px and sits side by side
+above it. `/investors` pagination screenshotted and click-tested
+locally (40 synthetic rows: 25 shown, "Show 25 more" reveals the rest
+and removes itself). After push, confirmed live on the deployed build
+via curl: `pickChartSVG` present, and all five of that day's real picks
+carrying real `data-spark`/`data-stop` values pulled from the actual
+published price book.
