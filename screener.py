@@ -436,14 +436,6 @@ _cache: dict = {
 }
 
 
-def clear_cache():
-    _cache.update(universe_key=None, universe=None, universe_ts=0.0,
-                  ohlc_key=None, ohlc=None, ohlc_ts=0.0,
-                  bench=None, bench_ts=0.0, info={}, earnings={}, finnhub={}, fhf={},
-                  qv7={})
-    cache_store.clear()
-
-
 def _fresh(ts: float, ttl: float = CACHE_TTL) -> bool:
     return time.time() - ts < ttl
 

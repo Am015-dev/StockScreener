@@ -239,8 +239,7 @@ def build_candidates(series: dict, vols: dict, creds: dict, liq: dict,
             "adv_usd": adv if (adv and adv > 0) else None,
             "annual_vol": av,
             "dd": rep.get("dd"),
-            "is_financial": bool(rep.get("missing") == "financial"
-                                 or rep.get("not_modelled") == "financial"),
+            "is_financial": bool(rep.get("not_modelled")),
             "days_to_earnings": (earn or {}).get(t),
             # absence-from-calendar is only the all-clear for a name the
             # (complete) US bulk calendar actually covers — an EU name's

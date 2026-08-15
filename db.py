@@ -17,8 +17,11 @@ Config identity is the hash of the technical parameters only — fundamentals
 gates (profitability, earnings, analyst) can't be simulated historically on
 free data, so they don't participate in the hash.
 
-On Render's free tier this DB lives on ephemeral disk and rebuilds from a
-simulation re-run after a deploy; on a persistent disk it accumulates.
+On Render's free tier this DB lives on ephemeral disk. `app.py`'s
+`_restore_market_db()` pulls a ready-made copy of this file from the
+scheduled scan's own published `state/market.db` at boot and roughly
+hourly after — nothing here re-runs a simulation to rebuild it. On a
+persistent disk it also just accumulates from the scan's own writes.
 """
 
 import hashlib

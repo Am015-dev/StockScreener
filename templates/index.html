@@ -684,8 +684,9 @@
   </section>
   <footer class="hint" style="margin:1.4rem 0 2.5rem;text-align:center;line-height:1.9">
     <a href="/limits" target="_blank" rel="noopener"><b>Known issues &amp; limits</b></a>
-    — what this tool cannot do, and the fact that its own strategy does not
-    currently clear its bar. Read it before acting on anything here.<br>
+    — what this tool cannot do, and the fact that its own entry signal was
+    tested against random entry and lost, twice. Read it before acting on
+    anything here.<br>
     <a href="/results.csv">Download this scan (CSV)</a> ·
     <span>Picks are a hypothesis, not advice. Verify earnings dates yourself.</span>
   </footer>
@@ -907,22 +908,37 @@ function sortRows(rows, key, desc) {
 function wireSortable(container, getState, setState, onChange) {
   if (container.dataset.sortWired) return;
   container.dataset.sortWired = "1";
-  container.addEventListener("click", ev => {
-    const th = ev.target.closest("th[data-sort]");
-    if (!th) return;
+  const cycle = th => {
     const k = th.dataset.sort;
     const {key, desc} = getState();
     if (key === k && desc) setState(k, false);
     else if (key === k) setState(null, true);
     else setState(k, true);
     onChange();
+  };
+  container.addEventListener("click", ev => {
+    const th = ev.target.closest("th[data-sort]");
+    if (th) cycle(th);
+  });
+  // A <th> isn't natively focusable or keyboard-operable — tabindex="0" on
+  // the markup (sortHeader() below) makes it reachable; this makes Enter/
+  // Space act on it the same way a click already does.
+  container.addEventListener("keydown", ev => {
+    const th = ev.target.closest("th[data-sort]");
+    if (!th) return;
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      cycle(th);
+    }
   });
 }
 
 function sortHeader(key, label, tip, curKey, curDesc) {
+  const sorted = curKey === key;
+  const ariaSort = sorted ? (curDesc ? "descending" : "ascending") : "none";
   return `<th data-tip="${esc(tip)}" data-sort="${esc(key)}" class="sortable` +
-    `${curKey === key ? " sorted" : ""}">${esc(label)}` +
-    `${curKey === key ? (curDesc ? " ▼" : " ▲") : ""}</th>`;
+    `${sorted ? " sorted" : ""}" tabindex="0" aria-sort="${ariaSort}">${esc(label)}` +
+    `${sorted ? (curDesc ? " ▼" : " ▲") : ""}</th>`;
 }
 
 function esc(s) {
@@ -1443,6 +1459,14 @@ function drawCurve(pts) {
   const path = pts.map((p, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(p.cum_r).toFixed(1)).join(" ");
   const zero = Y(0);
   const up = pts[pts.length - 1].cum_r >= 0;
+  const cum = pts[pts.length - 1].cum_r;
+  // Unlike sparkSVG (which already sets this), this chart's only other text
+  // is #btCurveNote explaining what the axis MEANS, never what it shows —
+  // a screen reader gets nothing without this.
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label",
+    `Cumulative result over ${pts.length} trade${pts.length === 1 ? "" : "s"}, from ` +
+    `${pts[0].date} to ${pts[pts.length - 1].date}, ending at ${cum > 0 ? "+" : ""}${cum}R`);
   svg.innerHTML =
     `<line x1="${PL}" y1="${zero}" x2="${W - PR}" y2="${zero}" stroke="var(--border)" stroke-width="1" stroke-dasharray="4 4"/>` +
     `<text x="${PL - 6}" y="${zero + 4}" text-anchor="end" font-size="11" fill="var(--muted)">0R</text>` +
@@ -1961,9 +1985,7 @@ async function refresh() {
   // poll, so per-header listeners would leak on a live scan
   if (!res.dataset.sortWired) {
     res.dataset.sortWired = "1";
-    res.addEventListener("click", ev => {
-      const th = ev.target.closest("th[data-sort]");
-      if (!th) return;
+    const cycleSort = th => {
       const k = th.dataset.sort;
       if (sortKey === k && sortDesc) sortDesc = false;
       else if (sortKey === k) { sortKey = null; sortDesc = true; }  // 3rd click restores
@@ -1972,6 +1994,21 @@ async function refresh() {
       // table builder: /status is a small in-memory read and this keeps
       // one code path for the table, sorted or not
       refresh();
+    };
+    res.addEventListener("click", ev => {
+      const th = ev.target.closest("th[data-sort]");
+      if (th) cycleSort(th);
+    });
+    // Same reasoning as wireSortable()'s keydown twin: a <th> needs
+    // tabindex to be reachable at all (set on the markup above), and
+    // Enter/Space to be operable once reached.
+    res.addEventListener("keydown", ev => {
+      const th = ev.target.closest("th[data-sort]");
+      if (!th) return;
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        cycleSort(th);
+      }
     });
   }
   // A second delegated listener, separate from sorting: clicking a row
@@ -2080,7 +2117,8 @@ async function refresh() {
     res.innerHTML = "<table class=\"rsp\"><thead><tr>" +
       cols.map(([k, label, tip]) =>
         `<th data-tip="${esc(tip)}" data-sort="${esc(k)}" class="sortable` +
-        `${sortKey === k ? " sorted" : ""}">${esc(label)}` +
+        `${sortKey === k ? " sorted" : ""}" tabindex="0" aria-sort="` +
+        `${sortKey === k ? (sortDesc ? "descending" : "ascending") : "none"}">${esc(label)}` +
         `${sortKey === k ? (sortDesc ? " ▼" : " ▲") : ""}</th>`).join("") +
       "</tr></thead><tbody>" +
       allRows.map((row, idx) => `<tr class="expandable${row.__blocked ? " blockedrow" : ""}" data-idx="${idx}" title="Click for the score breakdown, and the rest of this row's columns on a phone">` +
@@ -2135,7 +2173,8 @@ async function refresh() {
     res.className = "empty";
     res.textContent = "No stocks matched all your filters today — normal in some markets. " +
       "Check 'Best of the rest' below for the closest candidates and why each fell short, " +
-      "or click a blue suggestion above to relax one filter and rescan.";
+      "or click a blue suggestion above to relax one filter — a scan already stored for that " +
+      "combination will show, or the next scheduled run will cover it.";
   } else if (s.status === "error") {
     count.textContent = "";
     res.className = "empty";

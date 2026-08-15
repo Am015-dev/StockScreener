@@ -1480,6 +1480,19 @@ def check_trade():
         holdings = parsed
 
     book = _price_book()
+    series = pretrade._series_of(book)
+    view = _credit_view() or {}
+    # Brokers print BRK.B; this app's price/earnings/credit books all use
+    # the dash form (BRK-B). _credit_for() already resolves this internally,
+    # but every OTHER lookup below (series, earn, screener._region — which
+    # is literally '"." in ticker' -> EU) used to run on the un-aliased dot
+    # form, so a real, well-covered US ticker like BRK.B got a wrong region
+    # classification and an empty price/credit read here even though
+    # /credit/BRK.B alone looked fine. Canonicalize once, up front.
+    if "." in ticker and ticker not in series and ticker not in view:
+        alias = ticker.replace(".", "-")
+        if alias in series or alias in view:
+            ticker = alias
     # Earnings come from the same published scan, so the answer here is the
     # one the board used — not a second opinion that could disagree with it.
     # Never build inside the request — see _earnings_calendar(build=...).
@@ -1522,10 +1535,7 @@ def check_trade():
     # ticks. "ZZZZ: no earnings due for at least 45 days" was a true
     # sentence about the calendar and a false impression about a company
     # that does not exist.
-    series = pretrade._series_of(book)
-    view = _credit_view() or {}
-    known = (ticker in series or ticker in (earn or {})
-             or ticker in view or ticker.replace(".", "-") in view)
+    known = ticker in series or ticker in (earn or {}) or ticker in view
     # "unknown" is only a fact when the books are loaded. On a freshly
     # restarted instance they are empty for a minute, and this gate told
     # a visitor "Nothing is known about AAPL — check the spelling". An
@@ -2016,6 +2026,19 @@ def credit_page(ticker: str):
     page costs no outbound call.
     """
     t = (ticker or "").strip().upper()
+    # _credit_for() resolves BRK.B -> BRK-B internally, but only for ITS
+    # OWN lookups — the alias never propagates back here, so every other
+    # use of `t` below (the price chart, the dip-check trades) stayed on
+    # the un-aliased dot form and came back empty even when the credit
+    # standing above it was correct. Canonicalize once, up front, the same
+    # way /check now does.
+    if t and "." in t:
+        series_t = pretrade._series_of(_price_book())
+        view_t = _credit_view() or {}
+        if t not in series_t and t not in view_t:
+            alias = t.replace(".", "-")
+            if alias in series_t or alias in view_t:
+                t = alias
     rep = _credit_for(t) if t else {}
     # Dates and closes are paired BEFORE any filtering. The published
     # calendar is the union of US and EU sessions, so a US ticker carries
@@ -3063,8 +3086,21 @@ def alert():
                      + (f" ({len(pend)} awaiting data verification)" if pend else ""))
     lines.append("https://pullback-screener.onrender.com")
     text = "\n".join(lines)
+    # "no channels configured" and "configured but delivery failed" used to
+    # look identical to the caller — both a 200 with an empty `sent` list —
+    # so the scheduled workflow's green checkmark could not tell "nothing
+    # is set up" from "Telegram/Discord rejected this and nobody noticed".
+    # The first is a deliberate, expected state; the second is a real
+    # failure the cron's own curl should be able to fail loudly on.
+    configured = bool(os.environ.get("ALERT_TELEGRAM_TOKEN")
+                       and os.environ.get("ALERT_TELEGRAM_CHAT")) \
+        or bool(os.environ.get("ALERT_DISCORD_WEBHOOK"))
     sent = _send_alert(text)
     if not sent:
+        if configured:
+            return jsonify({"ok": False, "sent": [], "verified": len(res),
+                            "note": "a channel is configured but delivery "
+                                    "failed"}), 502
         return jsonify({"ok": True, "sent": [], "verified": len(res),
                         "note": "no channels configured — set ALERT_TELEGRAM_TOKEN"
                                 "+ALERT_TELEGRAM_CHAT and/or ALERT_DISCORD_WEBHOOK"})

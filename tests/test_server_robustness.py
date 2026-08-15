@@ -831,6 +831,37 @@ try:
     assert rep.get("not_modelled"), rep
     print("the dot form gets the same honest refusal as the dash form")
 
+    # _credit_for()'s own alias resolution is local to itself — it never
+    # propagated back to the caller, so /check's OTHER lookups (series,
+    # region) and /credit/<ticker>'s price-history read stayed on the
+    # un-aliased dot form even though the credit standing above looked
+    # fine. A ticker with real series data under the dash form only,
+    # asked for under the dot form, must resolve everywhere, not just in
+    # the one call that happened to alias internally.
+    _saved_pb3 = A._price_book
+    A._price_book = lambda fetch=False: {
+        "series": {"BRK-B": [300.0 + i for i in range(25)]},
+        "dates": [f"2026-07-{d:02d}" for d in range(1, 26)]}
+    A._credit_view = lambda: {"BRK-B": {"dd": 12.5, "name": "Berkshire",
+                                        "sector": "Financials", "band": "very calm",
+                                        "driven_by": "both", "equity_vol": 0.2,
+                                        "equity": 5e11, "default_point": 1e10,
+                                        "market_leverage": 0.05, "asset_vol": 0.15}}
+    try:
+        _c5 = A.app.test_client()
+        r5 = _c5.post("/check", json={"ticker": "BRK.B", "holdings": ""}).get_json()
+        assert r5["verdict"] != "warn" or "check the spelling" not in r5["bottom_line"], \
+            "BRK.B must resolve to BRK-B's real series/credit data, not read as unknown"
+        assert r5["book_size"] > 0
+        page = _c5.get("/credit/BRK.B")
+        assert page.status_code == 200
+        assert "300.0" in page.get_data(as_text=True) or "12.5" in page.get_data(as_text=True), \
+            "the dot-form page must carry the dash-form ticker's real price/credit data through"
+        print("BRK.B resolves to BRK-B's real data in /check and /credit/<ticker>, "
+              "not just inside _credit_for()")
+    finally:
+        A._price_book = _saved_pb3
+
     _c4 = A.app.test_client()
     r = _c4.post("/check", json={"ticker": "ZZZZ", "holdings": ""}).get_json()
     assert r["verdict"] == "warn"

@@ -18,4 +18,4 @@ jobs:
       - name: Wake the app, run the alert scan, push picks
         run: |
           curl -sS --max-time 90 https://pullback-screener.onrender.com/ > /dev/null || true
-          curl -sS --max-time 540 -X POST https://pullback-screener.onrender.com/alert
+          curl -sS -f --max-time 540 -X POST https://pullback-screener.onrender.com/alert
