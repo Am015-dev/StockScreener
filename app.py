@@ -1183,6 +1183,29 @@ def _recent_picks_book(fetch: bool = False) -> dict:
     return data
 
 
+_null_test_pub = {"ts": 0.0, "data": None}
+
+
+def _null_test_book(fetch: bool = False) -> dict:
+    """The governing whole-market result: does buying the dip beat a coin
+    flip at all? Published weekly by `.github/workflows/null-test.yml`
+    (`scripts/null_test.py`, unchanged) — a real permutation test across
+    hundreds of stocks, not a per-ticker claim. Read by `/credit/<ticker>`
+    to give any single name's own handful of trades the correct
+    statistical context: a subgroup of a few trades cannot overturn a
+    result measured this broadly, and the page must never imply it can.
+    Missing is a safe default — no claim is shown rather than a stale
+    or guessed one — until the workflow's first run publishes it.
+    """
+    if not fetch:
+        return _null_test_pub["data"] or {}
+    data = _published_get("null_test.json")
+    if not data:
+        return _null_test_pub["data"] or {}
+    _null_test_pub.update(data=data, ts=time.time())
+    return data
+
+
 def _published_earnings() -> tuple[dict, bool, set]:
     """(ticker -> trading days to report, complete, single_source) —
     re-based to today, exactly as screener does for its own stored copy,
@@ -1342,6 +1365,10 @@ def _book_refresher():
             _recent_picks_book(fetch=True)
         except Exception as e:
             print(f"[warm] recent picks (cooldown) refresh failed: {e}", flush=True)
+        try:
+            _null_test_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] null test refresh failed: {e}", flush=True)
         # The books are local file reads on this deployment, so refreshing
         # them is nearly free — and the scan publishes hourly, so an
         # instance that only looked once an hour could sit half an hour
@@ -1898,6 +1925,23 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
     return _with_peers(rep)
 
 
+_wide_net_params_cache = None
+
+
+def _wide_net_params() -> dict:
+    """The rule set behind the published board, cleaned the same way the
+    scheduled scan cleans it — so a `db.py` query built from this dict
+    hashes to the exact config the scan's own backtest recorded trades
+    under. Memoised: the presets are a fixed constant, not something
+    that changes between requests.
+    """
+    global _wide_net_params_cache
+    if _wide_net_params_cache is None:
+        import scripts.scheduled_scan as _sched
+        _wide_net_params_cache = screener.clean_params(dict(_sched.PRESETS["wide-net"]))
+    return _wide_net_params_cache
+
+
 @app.route("/credit/<ticker>")
 def credit_page(ticker: str):
     """The full report for one company.
@@ -1984,6 +2028,17 @@ def credit_page(ticker: str):
                           and t in (latest_entry.get("picks") or {}))
     recent_streak = (None if in_todays_five else
                      ranking.session_streak(t, recent, today_for_streak))
+    # "Buying the dip in T, checked": this ticker's own trades under the
+    # site's live entry rules — already computed and stored by the
+    # scheduled scan's regular backtest, zero new fetches — read
+    # alongside the whole-market permutation test that governs how any
+    # of it should be read. See db.trades_for()/_null_test_book()'s own
+    # docstrings for why a handful of one name's trades is never shown
+    # as its own independent verdict.
+    dip_params = _wide_net_params()
+    dip_edge = market_db.edge_for(dip_params).get(t)
+    dip_trades = market_db.trades_for(dip_params, t)
+    null_test = _null_test_book()
     return render_template("credit.html", r=rep, t=t, hist=hist, near=near,
                            dates=hdates, horizons=horizons,
                            # the filing date and the price date are different
@@ -1998,7 +2053,10 @@ def credit_page(ticker: str):
                            n_measured=n_book,
                            held_by_investors=held_by,
                            in_todays_five=in_todays_five,
-                           recent_streak=recent_streak)
+                           recent_streak=recent_streak,
+                           dip_edge=dip_edge, dip_trades=dip_trades,
+                           dip_min_sample=market_db.MIN_SAMPLE,
+                           null_test=null_test)
 
 
 @app.route("/credit", methods=["POST"])
@@ -2525,7 +2583,8 @@ def _warm_books():
                       ("market regime", _regime_book),
                       ("liquidity book", _liq_book),
                       ("13F book", _inv13f_book),
-                      ("recent picks (cooldown)", _recent_picks_book)):
+                      ("recent picks (cooldown)", _recent_picks_book),
+                      ("null test", _null_test_book)):
         try:
             fn(fetch=True)
         except Exception as e:

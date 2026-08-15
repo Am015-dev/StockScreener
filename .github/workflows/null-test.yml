@@ -16,6 +16,15 @@
 name: Null test
 
 on:
+  schedule:
+    # Weekly, not daily. The methodology and the answer do not move day
+    # to day — only the trailing price window inches forward — and
+    # re-running a significance test on a schedule shorter than that is
+    # its own multiple-comparisons problem: pattern-sweep.yml already
+    # states this exact reasoning for the same reason. wide-net is the
+    # rule set behind the published board, so the scheduled run tests
+    # what the site actually shows, not the untested default.
+    - cron: "0 4 * * 0"
   workflow_dispatch:
     inputs:
       universe_max:
@@ -26,11 +35,14 @@ on:
         default: "25"
       preset:
         description: "Which shipped rule set (balanced / relaxed / wide-net)"
-        default: "balanced"
+        default: "wide-net"
 
 permissions:
-  contents: write        # the result branch; without this the push 403s and
-                         # the job reports failure after a successful test
+  contents: write
+
+concurrency:
+  group: null-test
+  cancel-in-progress: false
 
 jobs:
   null-test:
@@ -47,17 +59,31 @@ jobs:
         env:
           SEC_CONTACT: ${{ secrets.SEC_CONTACT || 'stockscreener@example.com' }}
         run: |
+          mkdir -p published
           python scripts/null_test.py \
             --universe-max "${{ github.event.inputs.universe_max || '400' }}" \
             --seeds "${{ github.event.inputs.seeds || '25' }}" \
-            --preset "${{ github.event.inputs.preset || 'balanced' }}" \
-            --out null_test.json
-      - name: Publish the result
+            --preset "${{ github.event.inputs.preset || 'wide-net' }}" \
+            --out published/null_test.json
+      - name: Publish the result — including a null result
         if: always()
         run: |
-          test -f null_test.json || { echo "no result produced"; exit 0; }
-          cat null_test.json
-          mkdir -p pub && cp null_test.json pub/
+          test -f published/null_test.json || { echo "no result produced"; exit 0; }
+          cat published/null_test.json
+          mkdir -p pub
+          cp published/null_test.json pub/
+          # This branch has three other writers (scheduled-scan.yml,
+          # pattern-sweep.yml, thirteenf.yml), each following the same
+          # rule: carry forward every file this run did not produce, so
+          # a publish can never delete data a sibling workflow owns.
+          git fetch origin screener-data --depth=1 2>/dev/null || true
+          for f in $(git ls-tree --name-only origin/screener-data 2>/dev/null | grep '\.json$'); do
+            [ -f "pub/$f" ] || git show "origin/screener-data:$f" > "pub/$f" || true
+          done
+          for f in $(git ls-tree --name-only origin/screener-data:state 2>/dev/null); do
+            mkdir -p pub/state
+            [ -f "pub/state/$f" ] || git show "origin/screener-data:state/$f" > "pub/state/$f" || true
+          done
           cd pub
           git init -q
           git config user.name "github-actions[bot]"
@@ -66,14 +92,14 @@ jobs:
           git commit -q -m "Null test $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push -q --force \
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-            HEAD:null-test-result
+            HEAD:screener-data
       - name: Summary
         if: always()
         run: |
-          if [ -f null_test.json ]; then
+          if [ -f published/null_test.json ]; then
             python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           import json
-          d = json.load(open("null_test.json"))
+          d = json.load(open("published/null_test.json"))
           r, n = d["real"], d["null"]
           print("## Null test\n")
           print(f"**{d['verdict']}**\n")
