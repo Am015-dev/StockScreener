@@ -1444,3 +1444,141 @@ this session from stacked requests (see `MISTAKES.md`,
 2026-08-15), a keystroke-triggered network call is worth tightening to
 a pure in-memory filter in a future round. Logged here rather than
 silently deferred.
+
+## Round 17 — 2026-08-15, build 2efc9e6 — a broad correctness/hygiene pass
+
+Operator: "Create a looping agent workflow and do 100 improvements to
+the website." Committed up front to NOT padding to hit 100 — real
+research via the Workflow tool, then implement whatever genuinely
+surfaced.
+
+Two discovery rounds ran, each ten (then eight) parallel research-only
+agents scanning a distinct dimension of the codebase (correctness,
+security, dead code, docs/reality drift, test coverage, accessibility,
+performance, config hygiene, and more), explicitly told not to touch
+files and not to resurrect the pullback signal (proven statistically
+dead — see `STRATEGY.md`) or invent probabilities. A synthesis/
+constraint-check agent deduped and filtered each round's raw findings
+against this repo's actual rules. Round 1: 28 raw → 27 kept. Round 2
+(told not to re-report round 1): 22 raw → 19 kept. **46 real,
+evidence-backed findings total** — short of 100, on purpose.
+
+**Shipped this round (18 batches, tested between each, one deploy at
+the end rather than one per change — see MISTAKES.md on why stacked
+Render deploys/requests are dangerous on this instance):**
+
+- **The highest-value fix**: `screener.py`'s `scan_block()` computed
+  every stop from the pivot level only, ignoring `stop_mode="atr"` —
+  the live default. `backtest.py` already had the correct branch
+  (`min(pivot_stop, atr_stop)`, the wider/safer of the two); the live
+  scanner never did. Mirrored the backtest's logic exactly, verified
+  against a hand-built synthetic fixture before trusting it, then
+  against the full suite (zero regressions — no existing test pinned
+  an exact stop value under the default mode, which is why this
+  survived undetected).
+- Two `pd.Timestamp.now()` call sites in `screener.py` were naive
+  (server-local time, not US-market time) where a sibling function
+  already got this right — fixed to match.
+- `app.py`'s `_book_refresher()` only ever refreshed five of nine
+  published caches; `_earn_pub`/`_patterns_pub`/`_regime_pub` sat
+  frozen from process boot for the life of a deploy. Added to the same
+  refresh loop.
+- `app.py::snapshot_restore()` was missing the running-scan lock guard
+  and shape validation its sibling `snapshot_load()` already had.
+- `/results.csv` 404'd away a scan's entire BLOCKED-row list whenever
+  zero picks qualified, instead of exporting what was actually there.
+- `db.py`'s `_conn()` re-ran `executescript(_SCHEMA)` on every call
+  instead of once per process — a real, if small, per-request cost.
+- `portfolio_import.py::parse_portfolio_csv()` unconditionally treated
+  row 0 as a header and refused the file when no header matched — which
+  broke the app's own header-less "ticker, shares, cost" export (the
+  exact shape the in-page textarea teaches and the CSV-import
+  write-back produces). A user re-uploading their own saved holdings
+  got a hard refusal on their own data. Now detects a header-less data
+  row and parses it instead of raising.
+- `/check` took an unbounded `holdings` list/string from an
+  unauthenticated POST before `pretrade.check()` iterates it and builds
+  a correlation matrix — added `HOLDINGS_MAX` (500) with a 400 above
+  it, mirroring the existing `WEB_SCAN_MAX` pattern for `/run`.
+- Dead code removed: `screener.clear_cache()` (confirmed dead by
+  repo-wide grep), `ALERT_PROFILE`/its write in `/run` (written every
+  scan, read nowhere — confirmed by `/alert`'s own comment, which
+  already said scans moved to CI and it reads the published board
+  instead), `BOOK_TTL` (defined, never referenced again).
+- Stale docs/text fixed: `/alert`'s docstring still said "rerun the
+  saved filter profile"; `db.py`'s module docstring still described
+  live re-simulation instead of the market.db restore that actually
+  runs; `KNOWN_ISSUES.md`'s "storage is ephemeral" bullet narrowed to
+  the journal specifically, since snapshot history now survives the
+  restore; a stale hedge phrase and a misleading "relax one filter and
+  rescan" line in `templates/index.html` corrected to match reality.
+- `SCORE_PART_MAX` extracted from `screener.py` into a served constant
+  (mirroring `ranking.py`'s existing `component_max` pattern) so
+  `templates/index.html`'s JS `PART_MAX` reads the real weights from
+  `/defaults` instead of a hand-duplicated copy that could drift.
+- Accessibility: keyboard support (`tabindex`, `aria-sort`,
+  Enter/Space handlers) added to both sortable-table implementations in
+  `index.html`; `role="img"`/`aria-label` added to the backtest equity
+  SVG, matching the existing sparkline pattern.
+- `templates/index.html`'s `saveLocal()` was only wired to the
+  CSV-import success handler — manually-typed portfolio fields were
+  silently lost on reload. Now fires from the same delegated listeners
+  `filtersChanged()` already uses.
+- Three raw-jargon rejection reasons (`"insufficient data for a
+  volatility-based stop"`, `"degenerate risk math"`, `"implausible
+  reward:risk"`) added to the `REASONS` array so they render as
+  readable funnel entries instead of leaking jargon or fragmenting
+  into one row per numeric value.
+- `scripts/thirteenf_scan.py::_get_bytes()` gained retry-with-backoff
+  (matching `polygon_data.py`'s existing pattern) — one failed FTD zip
+  fetch used to discard the whole week's CUSIP mapping.
+- `patterns.py`'s `benjamini_hochberg()`/`benjamini_yekutieli()` had
+  duplicated cutoff-scan logic; factored into shared `_sorted_p_items()`
+  /`_fdr_cutoff()` helpers, verified byte-identical output via the full
+  `test_patterns.py` run (~500s, run to completion rather than skipped
+  as "too slow").
+- `requirements.txt` ceilings tightened (`yfinance<2.0`, `pandas<4.0`,
+  `numpy<3.0`) — set at the NEXT untested major after directly
+  verifying installed versions (pandas 3.0.5, numpy 2.4.6, yfinance
+  1.5.2) and the full suite pass under them, not a blind downgrade to
+  whatever a raw finding suggested.
+- `tests/test_cooldown.py`: fixed a real bug the new coverage caught —
+  `ranking.build_candidates()`'s `is_financial` derivation compared
+  `rep.get("not_modelled")` against the string `"financial"`, which was
+  always `False`.
+- New/extended test coverage: `/run`+`/backtest` route coverage,
+  `/configs`' `clears_bar` logic across all three thresholds, the
+  extended BRK.B alias round-trip, `db.export_edge()`/`restore_edge()`
+  round-trip, `/snapshot/restore` malformed-shape rejection, the
+  header-less CSV round-trip, and the new `HOLDINGS_MAX` cap.
+
+**Deliberately deferred, not silently dropped:**
+
+- `parseHoldings()`'s European decimal-comma collision (round 2,
+  flagged MEDIUM value but riskier than most of this batch — touches
+  live parsing of money the reader actually owns; wants its own
+  careful pass, not a rushed one at the tail of a large round).
+- The `app.py` `_X_book()` ten-function refactor (round 1) — real
+  duplication, but a bigger/riskier change that deserves its own round
+  with dedicated verification, not one line item among forty.
+- `templates/credit.html`'s percentile-stats visual restructure and
+  `templates/investors.html`'s mobile-responsive table — both need
+  visual verification tooling (a live headless browser against the
+  deployed host) this sandbox doesn't have; logged for a round with
+  that available, per this file's own recurring note on the same
+  network limitation.
+- 9 of 11 `patterns.py` predicates still lack direct unit tests
+  (covered indirectly through `test_patterns.py`'s end-to-end cases,
+  but not each in isolation).
+- Minor tone-consistency gap between `index.html`'s and `today.html`'s
+  CSV-import copy — cosmetic, correctly the lowest priority item found.
+
+**Verification:** `SKIP_WARM=1 python3 tests/test_*.py` — all 35 test
+files green, including the full (unskipped) `test_patterns.py`, run
+twice: once on the dev branch before merging, once again on the merged
+deploy branch before pushing. No conflicts on merge.
+
+**Honest count: 41 items shipped across 18 commits, out of 46
+discovered — not 100.** The gap between "100 requested" and "46 found"
+is the two discovery rounds finding real, specific, evidence-backed
+problems and then running dry rather than being padded to a target.
