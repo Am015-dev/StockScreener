@@ -1355,3 +1355,71 @@ green. `tests/test_dip_check.py` gained a fourth section pinning
 a failed fetch after a prior success stays healthy (the last good copy
 is kept); a failed fetch on a cold instance stays correctly unhealthy;
 without `force=True`, a recent restore is not re-fetched.
+
+## Round 16: "no dynamic filters" and "a shitload of info without any sense"
+
+Operator: "The website looks like shit. Seriously extremely BAD and
+confusing i see no dynamic filters its a shitload of info without any
+sense." Invoked `site-review` rather than guessing at another cosmetic
+pass. Audited the live `/full` page (mirrored locally against real
+`/status` data via Playwright route interception, since this sandbox
+cannot reach the live Render host directly — see `MISTAKES.md`'s prior
+network-limitation entries) and found the complaint was literal, not
+vibes:
+
+1. **No live filter existed over an already-loaded results table.**
+   `/full` does have a filter panel (`<details id="filterBox">`, a
+   deliberate choice from an earlier round to keep it off the primary
+   page) — but that panel only changes the PARAMETERS of the next
+   scan; it has no way to narrow the 40-60 rows already on screen
+   without a full re-run. "No dynamic filters" was correct: there was
+   no live, client-side way to search or narrow what was already
+   loaded.
+2. **The mobile results table rendered 49 stocks × 24 raw fields each,
+   stacked, with nothing to compare.** Measured directly: the real
+   page, at 390px, with real published data, was **62,267 pixels
+   tall**. Every stock — Stock, Own it?, Sector, Size, Price,
+   Stop-loss, Target, Reward:Risk, Score, Adds (R), Same as, Earnings
+   in, Past win rate, Past avg, Analysts, Analyst target, Buy (shares),
+   € at risk, RSI, vs market 3m, Dip volume, Stop room, Support,
+   Costs, Σ risk, In budget?, Sector after, Notes — rendered as its own
+   stacked label:value list, all 24 fields, every time. This is the
+   literal shape of "a shitload of info without any sense": no
+   summary, no way to scan, no filter.
+
+**What shipped:**
+
+1. **A live client-side search bar** (`templates/index.html`, above
+   the "All results" table): typing filters the already-loaded
+   `s.results`/blocked rows by ticker, company name, or sector — no
+   network call beyond the same debounced `/status` re-read the
+   existing sort-header click handler already uses (documented there
+   as "a small in-memory read"), just debounced (200ms) since typing
+   fires once per keystroke rather than once per click. Shows "N of M
+   shown" so a narrowed view is never mistaken for the whole board.
+2. **A primary/secondary column split for the mobile table.**
+   `PRIMARY_COLS` names the nine fields worth seeing without asking —
+   ticker, sector, score, price, stop, target, reward:risk, the
+   "adds" column the site itself says to rank by, and earnings (kept
+   in, unlike the other fifteen, because the site's own comment on
+   that column says it's "the column most likely to cost the reader
+   money"). The other eighteen fields get a `.sec` class, hidden by
+   default under the existing 720px breakpoint and revealed by the
+   SAME tap that already opened the score breakdown — one gesture,
+   one lifecycle, not a second control to discover. Measured after:
+   the same 49-stock page drops from 62,267px to 39,932px on a phone,
+   and the collapsed view shows exactly the nine fields above per
+   stock instead of twenty-four. Desktop is untouched — the 720px
+   media query gates all of it, confirmed the desktop table still
+   renders all 24 columns.
+
+**Verification:** `SKIP_WARM=1 python3 tests/test_*.py` — full suite
+green (`test_page_robustness.py`'s href-count assertion and
+`test_cooldown.py`'s ticker-link regex both still pass unmodified,
+confirming the new markup didn't disturb either). `scripts/
+release_gate.py` gained three new live checks on `/full` — secondary
+columns start collapsed on a phone, the live filter narrows the table
+without a reload, tapping a row reveals its collapsed columns — run
+against a fully-warmed local server with a real published scan
+adopted (not `SKIP_WARM=1`, which leaves `wait_for_build()` polling
+forever for books that were never fetched): 51 passed, 0 failed.
