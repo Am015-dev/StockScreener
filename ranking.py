@@ -191,6 +191,69 @@ def filters(c: dict, horizon: int = DEFAULT_HORIZON) -> tuple:
     return True, "", flags
 
 
+def build_candidates(series: dict, vols: dict, creds: dict, liq: dict,
+                     earn: dict, cal_complete: bool,
+                     earn_single_source: set | None = None,
+                     inv13f_tickers: dict | None = None,
+                     region_of=None) -> list[dict]:
+    """Every liquid name with enough history to be ranked, from the books
+    already measured — no network call.
+
+    Pure and callable from two places on purpose: the live app builds
+    this from its own in-memory caches on every request, and the
+    scheduled scan builds it from the exact same books it just measured
+    (no re-fetch, no re-publish) so it can work out what today's five
+    would actually be and record that for tomorrow's cooldown check —
+    see `select_daily_five()`. Moved out of app.py's `_today_candidates`
+    for that second caller; app.py now wraps this with its own caches.
+    """
+    earn_single_source = earn_single_source or set()
+    inv13f_tickers = inv13f_tickers or {}
+    region_of = region_of or (lambda t: "US")
+    out = []
+    for t, closes in series.items():
+        c = [x for x in (closes or []) if x]
+        if len(c) < 20:
+            continue
+        rep = creds.get(t) or {}
+        px = c[-1]
+        # `equity` in a credit report is shares x price — the company's
+        # market value. Kept as the fallback liquidity proxy for names
+        # liquidity.json has no figure for (FX could not be established,
+        # or the name never traded in the window) — filters() flags that
+        # fallback, never treats it as a measurement of the same thing.
+        mv = rep.get("equity")
+        # vol.json holds {vol, obs, as_of} per name, not a bare float —
+        # and a thin estimate is worse than none, because it sets both
+        # the stop and the share count
+        v = vols.get(t) or {}
+        av = v.get("vol") if isinstance(v, dict) else v
+        if isinstance(v, dict) and (v.get("obs") or 0) < 60:
+            av = None
+        adv = (liq.get(t) or {}).get("adv_usd")
+        out.append({
+            "ticker": t,
+            "name": rep.get("name") or t,
+            "price": px,
+            "market_value": mv if (mv and mv > 0) else None,
+            "adv_usd": adv if (adv and adv > 0) else None,
+            "annual_vol": av,
+            "dd": rep.get("dd"),
+            "is_financial": bool(rep.get("missing") == "financial"
+                                 or rep.get("not_modelled") == "financial"),
+            "days_to_earnings": (earn or {}).get(t),
+            # absence-from-calendar is only the all-clear for a name the
+            # (complete) US bulk calendar actually covers — an EU name's
+            # absence proves nothing, however complete that calendar is
+            "cal_covered": bool(cal_complete) and region_of(t) == "US",
+            "earnings_single_source": t in earn_single_source,
+            "sector": rep.get("sector"),
+            # Purely informational — never read by filters() or score().
+            "held_by_investors": list((inv13f_tickers.get(t) or {}).get("holders") or []),
+        })
+    return out
+
+
 def score(candidates: list, holdings: list | None = None,
           patterns_report: dict | None = None,
           risk_budget: float = 100.0,
@@ -291,6 +354,116 @@ def score(candidates: list, holdings: list | None = None,
         "max_points_available": 60.0 + (20.0 if active else 0.0)
                                        + (20.0 if fit_active else 0.0),
     }
+
+
+# A name shown this recently is "cooling" — deprioritized behind fresh
+# names unless its score has genuinely moved. Two of the four score
+# components are structurally zero for an anonymous visitor (no
+# holdings supplied, so "adds to what you own" never activates; nothing
+# has yet survived this project's own pattern holdout, so "confirmed
+# pattern" never has either — see /patterns) so ranking on the other
+# two alone, both slow-moving fundamentals, mechanically floats the same
+# handful of ultra-stable names to the top for weeks at a time. Five
+# trading sessions is one trading week — long enough that a name is
+# genuinely gone for a while, short enough that a real change in its
+# credit or its volatility surfaces within the same week it happens.
+COOLDOWN_SESSIONS = 5
+# A move of at least this fraction of the day's active point scale
+# waives the cooldown. 15% of a typical 60-point active scale is 9
+# points — reachable only by a real shift in measured credit standing or
+# volatility, not by the ordinary day-to-day wobble in either number.
+COOLDOWN_MATERIAL_FRACTION = 0.15
+# 5 trading sessions is at most ~9 calendar days (a week plus a holiday
+# weekend on each side); 14 is a deliberately generous ceiling on top of
+# that. Without it, a single stale entry left over from a gap in the
+# published history (a scan outage, or history that has only just
+# started being recorded) reads as "the most recent session" purely
+# because nothing more recent exists to outrank it — caught by testing
+# an isolated month-old entry, not by reasoning about it in advance.
+COOLDOWN_MAX_CALENDAR_GAP_DAYS = 14
+
+
+def select_daily_five(ranked: list[dict], history: dict | None, today: str,
+                      max_points_available: float, n: int = 5,
+                      cooldown_sessions: int = COOLDOWN_SESSIONS,
+                      material_fraction: float = COOLDOWN_MATERIAL_FRACTION
+                      ) -> list[dict]:
+    """The top N, with a real cooldown against showing the same names
+    every session.
+
+    `history` is `{"history": [{"date": "YYYY-MM-DD",
+    "picks": {ticker: {"score": ...}}}, ...]}` — the actual picks shown
+    on each of the last several sessions, published by the scheduled
+    scan (see `scripts/scheduled_scan.py`). A ticker that appears in the
+    most recent `cooldown_sessions` distinct sessions before `today` is
+    pushed behind every fresh name UNLESS its score has moved by at
+    least `material_fraction` of `max_points_available` since the
+    session it was last shown — a real, measured change, never a
+    guess. If fewer than `n` names are fresh, the list is filled from
+    the cooling names with the least stale first, and never comes up
+    short: a real name shown with a note beats an incomplete list.
+
+    With no history (a fresh deployment, or the file not yet
+    published), every name is fresh and this returns exactly what
+    `ranked[:n]` would — the cooldown can only ever change WHICH names
+    fill the list, never fail to fill it.
+    """
+    if not today:
+        return ranked[:n]
+    try:
+        import datetime as _dt
+        today_d = _dt.date.fromisoformat(today)
+    except (TypeError, ValueError):
+        return ranked[:n]
+    entries = sorted((history or {}).get("history") or [],
+                     key=lambda e: e.get("date") or "")
+    candidate_dates = sorted({e["date"] for e in entries
+                              if e.get("date") and e["date"] < today},
+                             reverse=True)
+    recent_dates = []
+    for d in candidate_dates:
+        try:
+            gap = (today_d - _dt.date.fromisoformat(d)).days
+        except (TypeError, ValueError):
+            continue
+        if gap <= COOLDOWN_MAX_CALENDAR_GAP_DAYS:
+            recent_dates.append(d)
+        if len(recent_dates) == cooldown_sessions:
+            break
+    recent_set = set(recent_dates)
+    if not recent_set:
+        return ranked[:n]
+
+    # oldest-first iteration means a later occurrence overwrites an
+    # earlier one, so this ends up holding each ticker's score at its
+    # MOST RECENT appearance in the cooldown window — the one that
+    # matters for "has it changed since it was last shown"
+    last_score: dict = {}
+    for e in entries:
+        if e.get("date") not in recent_set:
+            continue
+        for t, info in (e.get("picks") or {}).items():
+            last_score[t] = (info or {}).get("score")
+
+    threshold = material_fraction * (max_points_available or 0)
+    eligible, cooling = [], []
+    for row in ranked:
+        t = row.get("ticker")
+        if t in last_score:
+            prev, cur = last_score[t], row.get("score")
+            if prev is not None and cur is not None and abs(cur - prev) >= threshold:
+                eligible.append(dict(row, cooldown_waived=True))
+            else:
+                cooling.append(row)
+        else:
+            eligible.append(row)
+
+    picks = eligible[:n]
+    if len(picks) < n:
+        need = n - len(picks)
+        picks += [dict(row, cooldown_backfill=True) for row in cooling[:need]]
+    picks.sort(key=lambda r: -(r.get("score") or 0))
+    return picks
 
 
 def _confirmed_shapes(report: dict | None) -> list:

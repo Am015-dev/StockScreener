@@ -264,6 +264,16 @@ rather than taken on trust.
 - **The all-signals simulation numbers are an artifact** of taking every
   signal at once, which no real account can do. The portfolio figures
   beside them are the honest ones; both are shown.
+- **Today's Five's cooldown (`ranking.select_daily_five()`) starts cold.**
+  It only knows what `scripts/scheduled_scan.py` has actually recorded
+  and published to `recent_picks.json`; a fresh deployment, or one where
+  that file has not yet accumulated a session's worth of history, ranks
+  exactly as it did before this shipped — `ranked[:5]`, no cooldown
+  applied, because there is nothing yet to cool down against. It also
+  only ever applies to the anonymous default `/today` view — `/check`
+  and `/full` are unaffected, since a cooldown against "what was shown
+  publicly" has no meaning for a pre-trade check on a name the reader
+  chose themselves.
 
 - **The pattern sweep still leans towards survivors.** The universe is
   ranked by dollar volume over the FIRST twenty sessions of the window,

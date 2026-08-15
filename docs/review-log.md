@@ -960,3 +960,113 @@ bug from coming back. Screenshotted a synthetic 5-pick day at 390px and
 same day's five cards, and standout lines appear only on the picks that
 actually hold an extreme (2 of 5 in the synthetic fixture), none on the
 other 3.
+
+### Round 13 — 2026-08-15 — the same companies were appearing every day, and now they can't
+
+Operator: "The same companies appear everyday." Investigated before
+touching anything, because Round 12 had just shipped a radar chart and
+adaptive sentences and it would have been easy to mistake a genuine
+structural finding for "the operator hasn't seen the new visuals yet."
+It wasn't that.
+
+**Root cause, confirmed with live evidence, not assumed:** of
+`ranking.py`'s 4 score components, 2 are structurally zero for every
+anonymous visitor on Today's Five, always, not intermittently:
+- `adds to what you own` — `app.py`'s `today_page()` calls
+  `ranking.score(..., corr_by_ticker=None)`, hardcoded, because there's
+  no way to know a random visitor's holdings without input. By
+  `ranking.py`'s own design a `None` here is a real zero for everyone,
+  never a placeholder.
+- `confirmed pattern` — the live `/patterns` page states outright:
+  "None of the 33 patterns tested is worth trading." Nothing has ever
+  passed this project's own holdout, so this has never once been
+  non-zero.
+
+That leaves 60 of 100 possible points live: `credit headroom`
+(distance-to-default) and `calm enough to size up` (trailing
+volatility) — both slow-moving fundamentals for a large company.
+Pulled the live page at the moment of investigation: ATO, KO, JNJ,
+MPLX, MCD — Atmos Energy, Coca-Cola, J&J, MPLX, McDonald's — component
+breakdown credit ≈28-30/30, calm ≈28-30/30, fit and pattern 0/20 across
+every one of them. Ranking on two numbers that barely move week to week
+will mechanically float the same handful of ultra-stable megacaps to
+the top indefinitely. Asked the operator which direction to take (a
+recency cooldown vs. widening the credit/vol scoring vs. just stating
+the mechanism on the page) rather than guessing at a fix for a genuine
+product-design question; the answer was the cooldown.
+
+**What shipped — a real, data-grounded cooldown, no randomization, no
+manufactured variety:**
+
+`ranking.py` gained two new pieces:
+- `build_candidates()` — the candidate-building logic that used to live
+  only inside `app.py`'s `_today_candidates()`, moved out as a pure
+  function so a second caller (the scheduled scan) can build the exact
+  same candidate list from the exact same books with zero duplicated
+  logic. `app.py::_today_candidates()` is now a thin wrapper.
+- `select_daily_five(ranked, history, today, max_points_available)` —
+  a name shown in the last `COOLDOWN_SESSIONS` (5, one trading week)
+  sessions is pushed behind every fresh name UNLESS its score has moved
+  by at least `COOLDOWN_MATERIAL_FRACTION` (15%) of that day's active
+  point scale since it was last shown — a real, measured change, never
+  a guess. If fewer than 5 names are fresh, the list is filled from the
+  least-stale cooling names rather than coming up short — a real name
+  with a note beats an incomplete list. With no published history
+  (day one of this shipping), the function returns exactly
+  `ranked[:5]` — today's behaviour, unchanged, until the first day of
+  real data exists.
+
+`scripts/scheduled_scan.py` gained `_record_todays_five()`, called once
+per run after `earnings.json` is written. It re-reads the files this
+run just published (not the in-memory variables from earlier in
+`main()`) — so it always reflects exactly what the site itself will
+read, including a run where one of the books failed to publish — builds
+candidates, scores them, and calls `select_daily_five()` against the
+prior state (`git show origin/screener-data:recent_picks.json`,
+restored to `/tmp/prev_recent_picks.json` by a new line in
+`scheduled-scan.yml`'s existing restore step, same pattern as
+`credit.json`'s `prev` accumulation). The result — the actual 5 tickers
+and scores that would be shown — is upserted into a rolling
+`recent_picks.json` window (10 sessions kept) and published through the
+same `screener-data` branch mechanism every other book already uses;
+no workflow step needed to change beyond the one restore line, since
+the branch's carry-forward loop already generalizes over every `.json`
+file.
+
+`app.py` reads `recent_picks.json` through a new `_recent_picks_book()`
+(same pattern as `_regime_book()`), and `today_page()` calls
+`ranking.select_daily_five()` in place of `res["ranked"][:5]`. A pick
+kept only because too few fresh names cleared, or one that earned its
+spot back on a real score move, carries a new flag pill on the card
+(`shown recently, too — not enough fresh names today` /
+`back — its numbers moved enough to matter`) — transparency about the
+mechanism, not a silent reorder.
+
+**A real edge case caught while testing, not by reasoning about it in
+advance:** the first version of `select_daily_five()` found "the most
+recent N distinct dates present in history" with no bound on how far
+back those dates could actually be. A history containing a single
+isolated entry from over a month ago — exactly the shape it will have
+on day one after a scan outage, or immediately after this feature
+ships with a sparse backfill — read as "the most recent session"
+purely because nothing newer existed to outrank it, which would have
+wrongly cooled a name that was never actually shown recently. Caught by
+a test asserting a 45-day-old isolated entry has zero effect; fixed by
+adding `COOLDOWN_MAX_CALENDAR_GAP_DAYS` (14, generously covering 5
+trading sessions plus a holiday weekend) as a second, independent bound
+alongside "one of the most recent 5 distinct dates."
+
+**Verification:** `SKIP_WARM=1 python3 tests/test_*.py` — full suite
+green. New file `tests/test_cooldown.py` pins all three layers:
+`select_daily_five()`'s behaviour in isolation (no history, cooling
+names backfilled behind fresh ones, a material score move waiving the
+cooldown, the stale-isolated-entry edge case, no price date);
+`build_candidates()` against the pre-refactor `_today_candidates()`
+behaviour (a regression pin so the two callers cannot silently drift
+apart); `scheduled_scan._record_todays_five()` end to end across two
+simulated sessions with unchanged scores, asserting the second
+session's five differ from the first's; and `app.py`'s `today_page()`
+wired end to end — seeded with cooldown history claiming yesterday's
+unfiltered top 5 were already shown with unchanged scores, `/today`
+is asserted to show a genuinely different five today, not the
+identical set repeated.

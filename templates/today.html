@@ -300,9 +300,12 @@
     </p>
     {% endif %}
 
-    {% if p.flags %}
+    {% if p.flags or p.cooldown_backfill or p.cooldown_waived %}
     <p style="margin:.6rem 0 0">
-      {% for f in p.flags %}<span class="flag">{{ f }}</span>{% endfor %}</p>
+      {% for f in p.flags %}<span class="flag">{{ f }}</span>{% endfor %}
+      {% if p.cooldown_backfill %}<span class="flag" data-tip="This name was also in the last several sessions' five and its numbers haven't moved much since — it's here only because too few fresh names cleared today to fill the list without it.">shown recently, too — not enough fresh names today</span>{% endif %}
+      {% if p.cooldown_waived %}<span class="flag" data-tip="This name was in the last several sessions' five, but its score has moved enough since then that it earned its spot back rather than just sitting through a cooldown.">back — its numbers moved enough to matter</span>{% endif %}
+    </p>
     {% endif %}
 
     <details style="margin-top:.9rem">

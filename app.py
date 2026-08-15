@@ -1163,6 +1163,26 @@ def _regime_notes(regime: dict) -> list:
     return notes
 
 
+_recent_pub = {"ts": 0.0, "data": None}
+
+
+def _recent_picks_book(fetch: bool = False) -> dict:
+    """The last several sessions' actual Today's Five, published by the
+    scheduled scan — feeds `ranking.select_daily_five()`'s cooldown so
+    the same handful of ultra-stable names cannot dominate the list for
+    weeks at a time. Missing or empty is a safe default: no history
+    means no cooldown, which is exactly today's behaviour with none of
+    this shipped yet.
+    """
+    if not fetch:
+        return _recent_pub["data"] or {}
+    data = _published_get("recent_picks.json")
+    if not data:
+        return _recent_pub["data"] or {}
+    _recent_pub.update(data=data, ts=time.time())
+    return data
+
+
 def _published_earnings() -> tuple[dict, bool, set]:
     """(ticker -> trading days to report, complete, single_source) —
     re-based to today, exactly as screener does for its own stored copy,
@@ -1982,6 +2002,13 @@ def _today_candidates(horizon: int) -> list:
     NOT built from the pattern screen's output: that screen's entry rule
     is the one this project falsified, and ranking its survivors would
     smuggle a dead signal back in through the candidate list.
+
+    A thin wrapper over `ranking.build_candidates()` — the actual
+    candidate-building logic moved there so the scheduled scan can call
+    the exact same function from its own in-memory books, with no
+    re-fetch and no duplicated logic, to work out what today's five
+    would be and publish it for the next session's cooldown check
+    (see `ranking.select_daily_five()`).
     """
     series = pretrade._series_of(_price_book()) or {}
     vols = _vol_book() or {}
@@ -1989,54 +2016,10 @@ def _today_candidates(horizon: int) -> list:
     liq = _liq_book() or {}
     earn, cal_complete, earn_single_source = _published_earnings()
     inv13f_tickers = (_inv13f_book() or {}).get("tickers") or {}
-    out = []
-    for t, closes in series.items():
-        c = [x for x in (closes or []) if x]
-        if len(c) < 20:
-            continue
-        rep = creds.get(t) or {}
-        px = c[-1]
-        # `equity` in a credit report is shares x price — the company's
-        # market value, restated against the latest close. Kept as the
-        # fallback liquidity proxy for names liquidity.json has no figure
-        # for (FX could not be established, or the name never traded in
-        # the window) — ranking.filters() flags that fallback, never
-        # treats it as a measurement of the same thing.
-        mv = rep.get("equity")
-        # vol.json holds {vol, obs, as_of} per name, not a bare float —
-        # and a thin estimate is worse than none, because it sets both the
-        # stop and the share count
-        v = vols.get(t) or {}
-        av = v.get("vol") if isinstance(v, dict) else v
-        if isinstance(v, dict) and (v.get("obs") or 0) < 60:
-            av = None
-        adv = (liq.get(t) or {}).get("adv_usd")
-        out.append({
-            "ticker": t,
-            "name": rep.get("name") or t,
-            "price": px,
-            "market_value": mv if (mv and mv > 0) else None,
-            "adv_usd": adv if (adv and adv > 0) else None,
-            "annual_vol": av,
-            "dd": rep.get("dd"),
-            "is_financial": bool(rep.get("missing") == "financial"
-                                 or rep.get("not_modelled") == "financial"),
-            "days_to_earnings": (earn or {}).get(t),
-            # absence-from-calendar is only the all-clear for a name the
-            # (complete) US bulk calendar actually covers — an EU name's
-            # absence proves nothing, however complete that calendar is
-            "cal_covered": bool(cal_complete) and screener._region(t) == "US",
-            "earnings_single_source": t in earn_single_source,
-            "sector": rep.get("sector"),
-            # Purely informational — never read by ranking.py's filters()
-            # or score(). A ticker only lands here via the `tickers` dict's
-            # own ticker key (never its "(unmapped) issuer" fallback), so a
-            # hit here is always a confirmed CUSIP-to-symbol match, never a
-            # guess. See superinvestors.py / KNOWN_ISSUES.md for what this
-            # is and is not (long-only, up to 135 days stale, no signal).
-            "held_by_investors": list((inv13f_tickers.get(t) or {}).get("holders") or []),
-        })
-    return out
+    return ranking.build_candidates(
+        series, vols, creds, liq, earn, cal_complete,
+        earn_single_source=earn_single_source,
+        inv13f_tickers=inv13f_tickers, region_of=screener._region)
 
 
 @app.route("/")
@@ -2108,7 +2091,18 @@ def today_page():
     # SVG so the stop is seen against the path the share actually took,
     # not just read as a number.
     spark_series = pretrade._series_of(_price_book()) or {}
-    for row in res["ranked"][:5]:
+    # Ranking on the two components that are ALWAYS active for an
+    # anonymous visitor (credit headroom, calm) — the other two need
+    # holdings or a confirmed pattern, neither of which this page ever
+    # has — mechanically floats the same slow-moving blue chips to the
+    # top for weeks at a time. select_daily_five() pushes a name shown
+    # in the last few sessions behind fresh names unless its score has
+    # genuinely moved; with no published history yet this is exactly
+    # res["ranked"][:5], unchanged.
+    top5 = ranking.select_daily_five(res["ranked"], _recent_picks_book(),
+                                     price_date or "",
+                                     res["max_points_available"])
+    for row in top5:
         # row already carries its own cal_covered/earnings_single_source
         # from _today_candidates() — per-candidate, not the global flag
         p = plan.trade_plan(row, risk_budget=budget, horizon=horizon)
@@ -2120,6 +2114,8 @@ def today_page():
         p["score"] = row["score"]
         p["components"] = row["components"]
         p["component_max"] = row.get("component_max") or {}
+        p["cooldown_backfill"] = row.get("cooldown_backfill", False)
+        p["cooldown_waived"] = row.get("cooldown_waived", False)
         # informational only — never read by ranking.py, see the field's
         # own comment in _today_candidates()
         p["held_by_investors"] = row.get("held_by_investors") or []
@@ -2475,7 +2471,8 @@ def _warm_books():
                       ("pattern sweep", _patterns_book),
                       ("market regime", _regime_book),
                       ("liquidity book", _liq_book),
-                      ("13F book", _inv13f_book)):
+                      ("13F book", _inv13f_book),
+                      ("recent picks (cooldown)", _recent_picks_book)):
         try:
             fn(fetch=True)
         except Exception as e:
@@ -2632,7 +2629,8 @@ def _boot_books() -> None:
         return
     for name, store in (("prices.json", _book), ("vol.json", _vols),
                         ("credit.json", _creds),
-                        ("patterns.json", _patterns_pub)):
+                        ("patterns.json", _patterns_pub),
+                        ("recent_picks.json", _recent_pub)):
         try:
             path = os.path.join(PUBLISHED_DIR, name)
             if not os.path.exists(path):
