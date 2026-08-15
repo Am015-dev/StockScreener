@@ -319,3 +319,44 @@ code can get wrong. When fixing an overly narrow regex, anchor on the
 specific tag name too (`<a class="tk"...`), not just a widened
 attribute wildcard — the fix for "too narrow" is easy to overcorrect
 into "too broad" against a page that reuses the same class elsewhere.
+
+## 2026-08-15 — Round 15's dip-check feature read a database Render never populates
+
+**Assumed:** `db.trades_for()`/`db.edge_for()` — new in Round 15 —
+would work on the live Render instance the same way they worked in
+every local test: the scheduled scan already calls
+`db.record_backtest()` every run, so reading those tables back was
+designed as "a read, not a new simulation," reusing data already
+computed.
+**Actually:** `db.py`'s `DB_PATH` defaults to an ephemeral
+`/tmp/screener_market.db`, and `app.py` never restores it from
+anything. The scheduled scan's `db.record_backtest()` calls happen
+inside the GitHub Actions runner's OWN process, writing to THAT
+runner's own local `/tmp` — which the workflow then commits to the
+`screener-data` branch as `state/market.db` and throws away. Nothing
+on Render ever ran the scan itself, so nothing on Render ever called
+`db.record_backtest()` directly, and nothing pulled the published copy
+back in. Every ticker's dip-check section showed "has not triggered
+the pullback signal... nothing to show" — plausible-looking, honest in
+form, and wrong in substance: the live `state/market.db` actually had
+23,117 signals across 583 tickers, including 10 for JNJ specifically,
+sitting on the `screener-data` branch completely unread.
+**Caught by:** the operator asking to "test the website directly."
+Curling `/credit/JNJ` on live showed the honest-looking empty state
+for all five of Today's Five at once — suspicious given they're a
+mixed set of tickers, not something you'd expect to all be genuinely
+untriggered. Downloading `state/market.db` directly and querying it
+confirmed real trades existed for names the live site was reporting as
+empty, which is what made this a bug and not a true "nothing recorded
+yet."
+**Rule:** when a new feature's design says "this reuses data already
+computed by [some other process]," the claim to verify isn't just
+"does that other process compute the data" — it's "does anything
+actually transport it to where this code runs." A GitHub Actions
+runner and the Render web instance are different machines with
+different `/tmp`s; nothing carries state between them except what an
+explicit publish/restore step moves, and every other piece of
+published state on this site already had that step — this one didn't,
+because it read from a local SQLite file instead of a fetched JSON
+book, which made the missing step easy to not notice by pattern-
+matching against the wrong precedent.

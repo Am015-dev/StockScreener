@@ -171,4 +171,108 @@ print("the signal_alive=True branch renders its own distinct sentence, "
 
 print("\nWHOLE-MARKET VERDICT RENDERING PINNED")
 
+
+# ---- 4. _restore_market_db(): the fix for a real bug found by testing
+# the live site directly ----
+# db.trades_for()/edge_for() are useless without this: nothing on Render
+# ever runs the scan itself, so nothing on Render ever calls
+# db.record_backtest() directly — the local MARKET_DB starts and stays
+# empty forever unless something pulls in the scan's own published copy.
+# Caught live: every one of Today's Five showed "has not triggered the
+# pullback signal... nothing to show" even for tickers independently
+# confirmed (by querying the published state/market.db directly) to have
+# real recorded trades.
+import requests                                                   # noqa: E402
+
+
+class _FakeDbResp:
+    def __init__(self, content: bytes, status: int = 200):
+        self.content, self.status_code = content, status
+
+
+restore_market_db_path = os.path.join(TMP, "restored_market.db")
+os.environ["MARKET_DB"] = restore_market_db_path
+import importlib                                                  # noqa: E402
+importlib.reload(db)
+
+# build a small real sqlite payload the same way the scan would
+real_db_path = os.path.join(TMP, "source_market.db")
+os.environ["MARKET_DB"] = real_db_path
+importlib.reload(db)
+db.record_backtest(P, [{"ticker": "RESTORED", "date": "2025-01-01",
+                        "exit_date": "2025-01-10", "outcome_r": 1.5,
+                        "status": "target", "rr_planned": 3.0,
+                        "entry": 10.0, "stop_px": 9.0, "target_px": 13.0,
+                        "bars_held": 6, "mfe_r": 1.5, "mae_r": -0.2}],
+                  n_stocks=10)
+# WAL mode buffers writes in a -wal sidecar until something checkpoints
+# it into the main file — reading the file's own bytes right after a
+# write (as this fixture does, and as scheduled_scan.py's own commit
+# step effectively does once its process exits) needs that checkpoint
+# forced explicitly rather than assumed
+db._conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+real_db_bytes = Path(real_db_path).read_bytes()
+
+# now point MARKET_DB at a target the app has never written to, and
+# confirm _restore_market_db() is what populates it
+os.environ["MARKET_DB"] = restore_market_db_path
+importlib.reload(db)
+A.market_db = db
+assert db.trades_for(P, "RESTORED") == [], \
+    "the target file must start empty, or this test proves nothing"
+
+_saved_get = requests.get
+requests.get = lambda url, timeout=None: _FakeDbResp(real_db_bytes)
+try:
+    ok = A._restore_market_db(force=True)
+finally:
+    requests.get = _saved_get
+assert ok is True
+assert len(db.trades_for(P, "RESTORED")) == 1
+print("_restore_market_db(): a fetched market.db is swapped into place, "
+      "and db.trades_for() reads the restored data immediately")
+
+requests.get = lambda url, timeout=None: _FakeDbResp(b"", status=404)
+try:
+    ok2 = A._restore_market_db(force=True)
+finally:
+    requests.get = _saved_get
+# the return value means "is there currently usable data", not "did
+# this specific fetch succeed" — a 404 leaves the previous good copy in
+# place, so it correctly stays True, not False
+assert ok2 is True, \
+    "a failed fetch must not make an already-restored instance report unhealthy"
+assert len(db.trades_for(P, "RESTORED")) == 1, \
+    "a failed fetch must leave the previously-restored data in place"
+print("a failed fetch (404) is a safe no-op — the last good copy is kept in "
+      "place and still reported healthy, nothing crashes, nothing empties")
+
+# the OTHER half of that same semantic: a cold instance that has never
+# restored anything, hitting a failure, must correctly report unhealthy —
+# not accidentally inherit a stale True from a different code path
+A._market_db_restored.update(ts=0.0, ok=False)
+requests.get = lambda url, timeout=None: _FakeDbResp(b"", status=500)
+try:
+    ok3 = A._restore_market_db(force=True)
+finally:
+    requests.get = _saved_get
+assert ok3 is False, \
+    "a cold instance that has never successfully restored must report unhealthy on failure"
+print("a cold instance (never yet restored) that fails stays correctly "
+      "unhealthy, rather than inheriting an unrelated True")
+
+A._market_db_restored.update(ts=__import__("time").time(), ok=True)
+calls = []
+requests.get = lambda url, timeout=None: (calls.append(1),
+                                          _FakeDbResp(real_db_bytes))[1]
+try:
+    A._restore_market_db(force=False)
+finally:
+    requests.get = _saved_get
+assert not calls, "a fresh restore must not be re-fetched before MARKET_DB_POLL_S"
+print("without force=True, a recent restore is not re-fetched — same rate "
+      "limiting pattern as every other published book on this site")
+
+print("\nMARKET.DB RESTORE PINNED")
+
 print("\nALL DIP-CHECK TESTS PASSED")
