@@ -6,6 +6,10 @@ services:
     buildCommand: pip install -r requirements.txt
     # One worker only: scan state lives in memory. Threads keep /status
     # responsive while the scan runs; long timeout so gunicorn never kills it.
+    # (--threads > 1 auto-selects the gthread worker class even without an
+    # explicit -k — confirmed against gunicorn.config.WorkerThreads' own
+    # docstring and gunicorn.workers.sync.SyncWorker.run(); this is not the
+    # sync-worker misconfiguration it might look like.)
     startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 600
     envVars:
       - key: PYTHON_VERSION
