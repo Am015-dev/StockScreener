@@ -1994,7 +1994,7 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
     elapsed = time.time() - t0
     rl_hits = _rl["hits"] - rl_hits_start
     if rl_hits:
-        progress(f"⚠ Yahoo rate-limited {rl_hits} call(s) this scan — served "
+        progress(f"Yahoo rate-limited {rl_hits} call(s) this scan — served "
                  f"cached/stale data where possible; affected results carry "
                  f"'fundamentals_unavailable' or 'earnings_unverified' flags. "
                  f"Rerun in a few minutes for fresh data.")

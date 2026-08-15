@@ -33,11 +33,10 @@
           font-size:.85rem; padding-top:.1rem; white-space:nowrap; }
   .subject { flex:1 1 auto; }
   .note { color:var(--ink-3); font-size:.85rem; margin-top:1rem; }
-  .top-nav { margin:0 0 1rem; font-size:.82rem; color:var(--ink-3); }
 </style>
 
 <div class="wrap">
-  <p class="top-nav"><a href="/">&larr; Today's Five</a></p>
+{% include "_nav.html" %}
   <div class="card">
     <h1>Changelog</h1>
     {% if error %}
@@ -58,4 +57,6 @@
     {% endif %}
     {% endif %}
   </div>
+  {% set nav_variant = "bottom" %}
+  {% include "_nav.html" %}
 </div>

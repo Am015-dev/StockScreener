@@ -2848,10 +2848,10 @@ def alert():
         pass
     res = _state["results"] or []
     pend = _state["pending"] or []
-    lines = [f"📈 Dip Finder — {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}"]
+    lines = [f"Dip Finder — {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}"]
     br = _state.get("breadth") or {}
     if br.get("risk_factor", 1) < 1:
-        lines.append(f"⚠ defensive market (breadth {br.get('pct')}%) — "
+        lines.append(f"defensive market (breadth {br.get('pct')}%) — "
                      f"sizes throttled to {br['risk_factor']:g}x")
     # A pushed message that says "buy ≈X, stop Y" is a recommendation,
     # whatever the website says — and the entry signal behind it was

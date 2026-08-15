@@ -181,6 +181,7 @@
 </style>
 
 <div class="wrap">
+{% include "_nav.html" %}
 
   <div class="card">
     <h1>{{ "Today's Five" if picks else ("No list today" if blocked else "Nothing cleared today") }}</h1>
@@ -456,12 +457,8 @@
   </details>
   {% endif %}
 
-  <p class="tiny" style="text-align:center;margin-top:1.4rem">
-    <a href="/patterns">Patterns tested</a> ·
-    <a href="/full">Full screener</a> ·
-    <a href="/investors">Superinvestors</a> ·
-    <a href="/limits">Limits &amp; data notes</a>
-  </p>
+  {% set nav_variant = "bottom" %}
+  {% include "_nav.html" %}
 </div>
 
 <script>
@@ -607,7 +604,6 @@ document.getElementById("ownCsv").addEventListener("change", async ev => {
 paintHoldings();
 
 // ---- the check ----
-const ICON = {ok: "✓", note: "·", warn: "⚠", block: "⛔"};
 const COLOR = {ok: "var(--green)", note: "var(--ink-2)", warn: "var(--amber)",
                block: "var(--red)"};
 // Distance to Default, from the company's own filings. The commercial
@@ -670,7 +666,7 @@ function paintCredit(d, run) {
       `its balance sheet filed to ${esc(d.as_of || "an unknown date")}.`;
 
   el.innerHTML = `<p style="margin:0 0 .6rem"><b style="color:${COLOR[lvl]}">` +
-    `${ICON[lvl]} Credit standing: ${esc(d.band)}</b> ` +
+    `Credit standing: ${esc(d.band)}</b> ` +
     `<a class="tiny" href="/credit/${encodeURIComponent(d.ticker || "")}">full report →</a><br>` +
     `<span class="tiny">${esc(lead)} ${esc(extra.join(" "))} ${esc(precise)}</span></p>`;
 }
@@ -742,7 +738,7 @@ async function runCheck() {
     }
     html += (d.findings || []).map(f =>
       `<p style="margin:0 0 .6rem"><b style="color:${COLOR[f.level]}">` +
-      `${ICON[f.level]} ${esc(f.headline)}</b><br>` +
+      `${esc(f.headline)}</b><br>` +
       `<span class="tiny">${esc(f.detail)}</span></p>`).join("");
     if (!d.book_size) html += '<p class="tiny">No price book published yet, so overlap ' +
       'could not be measured. It arrives with the next scheduled scan.</p>';

@@ -98,6 +98,7 @@ print("the front page is unaffected by garbage in the live scan state")
 # what is behind it, and the tools it reveals are actually there in the
 # HTML, not synthesised by JS after the fact.
 import re as _re
+import html as _html_mod
 
 _BOOK = {f"CR{i}": {"dd": 1.0 + i, "band": "comfortable"} for i in range(6)}
 _saved_cb = A._credit_book
@@ -302,3 +303,55 @@ assert _status_json["results"][0].get("score_parts") is None, \
 print("/status serves rows with no score_parts (old data) as plain 200 JSON")
 
 print("\nNO-RECOMMENDATION AND REACHABILITY PINNED")
+
+
+# ---- one shared nav, on every page, and no emoji anywhere ----
+# A full navigation audit found the opposite of both: 7 templates each
+# hand-rolling their own nav (two different CSS classes for the same
+# back-link, a DIFFERENT "other pages" set on every footer, /changelog
+# unreachable from anywhere), and real pictographic emoji concentrated
+# in /full's inline JS (a literal medal() function returning medal
+# emoji, plus a dozen more scattered through status messages). Both are
+# now one shared partial (templates/_nav.html) and a plain-word-plus-
+# color convention this codebase already used in credit.py/plan.py —
+# pinned here so neither regresses silently.
+_EMOJI_RE = _re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000026FF"
+    "\U00002700-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "]+"
+)
+_NAV_LABELS = ["Today's Five", "Full screener", "Superinvestors",
+              "Patterns tested", "Limits", "Changelog"]
+
+for _path in ("/", "/full", "/investors", "/patterns", "/limits", "/changelog"):
+    _r = c.get(_path)
+    assert _r.status_code == 200, (_path, _r.status_code)
+    _body = _r.get_data(as_text=True)
+    # Jinja autoescapes the apostrophe in "Today's Five" to &#39; —
+    # unescape before matching plain labels rather than special-casing it
+    _body_unescaped = _html_mod.unescape(_body)
+
+    # every page carries the same primary nav — not a page-specific subset
+    assert 'class="sitenav' in _body, f"{_path} has no shared nav"
+    for _label in _NAV_LABELS:
+        assert _label in _body_unescaped, f"{_path} is missing the '{_label}' nav link"
+
+    # the nav sits near the top, not after everything else — the exact
+    # defect that made / (the page every visitor lands on first)
+    # unreachable until the reader scrolled past 700+ words of content
+    _nav_at = _body.find('class="sitenav')
+    _h1_at = _body.find("<h1")
+    assert _nav_at != -1 and (_h1_at == -1 or _nav_at < _h1_at), \
+        f"{_path}: nav ({_nav_at}) does not precede the first <h1> ({_h1_at})"
+
+    # no real emoji anywhere in the rendered page — the specific
+    # complaint this round exists to close
+    _hits = _EMOJI_RE.findall(_body)
+    assert not _hits, f"{_path} still renders emoji: {_hits}"
+print("all 6 core pages share one nav (same link set, positioned before the "
+      "first <h1>) and render no emoji")
+
+print("\nSHARED NAV AND NO-EMOJI PINNED")

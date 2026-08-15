@@ -45,14 +45,16 @@
                      text-align:left; }
   .doc th { font-size:.68rem; text-transform:uppercase; letter-spacing:.06em;
             color:var(--ink-3); font-weight:640; background:var(--code-bg); }
-  .top-nav { margin:0 0 1rem; font-size:.82rem; color:var(--ink-3); }
+
 </style>
 
 <div class="wrap">
-  <p class="top-nav"><a href="/">&larr; Today's Five</a></p>
+{% include "_nav.html" %}
   <div class="card">
     <div class="doc">{{ body|safe }}</div>
   </div>
+  {% set nav_variant = "bottom" %}
+  {% include "_nav.html" %}
 </div>
 <script>
 // mistune emits plain <table> — wrap each one for horizontal scroll on

@@ -1,0 +1,72 @@
+{#
+  Shared site navigation — included at both the top and bottom of every
+  page (see any template's <div class="wrap"> for the two include
+  points). One partial, one link set: a full audit found two different
+  CSS classes for the visually-identical back-link, and a DIFFERENT set
+  of "other pages" links on every page's footer, because all 7 templates
+  had grown their own nav independently. That drift cannot happen again
+  once there is exactly one file defining it.
+
+  nav_path (below) decides which item renders as the current page
+  (bold, not a link to itself) — derived from Flask's `request.path`
+  (present in every template context automatically), with "/today"
+  folded into "/" since both routes render today.html identically.
+  Without that fold, /today's current-page link would go
+  un-highlighted, and its rendered bytes would differ from /'s for the
+  only reason left after everything else in this partial is
+  path-independent — defeating test_today_gate.py's own "/ and /today
+  serve the same page" pin.
+
+  CSS lives here too, not per-page: --bg / --line / --ink / --ink-2 /
+  --ink-3 / --accent are the one set of custom-property names spelled
+  identically across all 7 templates (index.html aliases its own
+  --surface-*/--series-* tokens to these same names already). This nav
+  deliberately never uses --card/--panel — the one token pair that is
+  NOT spelled the same everywhere — so it needs no per-page token edits
+  to look right.
+#}
+{% set nav_path = "/" if request.path == "/today" else request.path %}
+<style>
+  .sitenav { display:flex; flex-wrap:wrap; align-items:center;
+             gap:.25rem .35rem; margin:0 0 1.3rem; padding-bottom:.9rem;
+             border-bottom:1px solid var(--line); }
+  .sitenav.bottom { margin:1.4rem 0 0; padding:.9rem 0 0;
+                    border-bottom:none; border-top:1px solid var(--line);
+                    justify-content:center; }
+  .sitenav a, .sitenav span.here {
+    display:inline-block; padding:.55rem .8rem; border-radius:8px;
+    font-size:.85rem; font-weight:640; line-height:1.2;
+    text-decoration:none; color:var(--ink-2);
+  }
+  .sitenav a:hover, .sitenav a:focus-visible {
+    background:color-mix(in srgb, var(--ink-3) 14%, transparent);
+    color:var(--ink);
+  }
+  .sitenav span.here {
+    color:var(--accent);
+    background:color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .sitenav a.sec, .sitenav span.here.sec {
+    font-size:.78rem; font-weight:500; color:var(--ink-3);
+  }
+  .sitenav:not(.bottom) a.sec, .sitenav:not(.bottom) span.here.sec {
+    margin-left:auto;
+  }
+</style>
+{% set nav_items = [
+  ("/", "Today's Five", false),
+  ("/full", "Full screener", false),
+  ("/investors", "Superinvestors", false),
+  ("/patterns", "Patterns tested", false),
+  ("/limits", "Limits & data notes", false),
+  ("/changelog", "Changelog", true),
+] %}
+<nav class="sitenav{{ ' bottom' if nav_variant == 'bottom' else '' }}" aria-label="Site">
+  {%- for href, label, secondary in nav_items %}
+  {%- if nav_path == href %}
+  <span class="here{{ ' sec' if secondary else '' }}">{{ label }}</span>
+  {%- else %}
+  <a href="{{ href }}" class="{{ 'sec' if secondary else '' }}">{{ label }}</a>
+  {%- endif %}
+  {%- endfor %}
+</nav>

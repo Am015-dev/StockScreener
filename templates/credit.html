@@ -75,7 +75,7 @@
 </style>
 
 <div class="wrap">
-  <p class="tiny" style="margin:0 0 1rem"><a href="/">← Today's Five</a></p>
+{% include "_nav.html" %}
 
   {% if r.dd is none %}
   <div class="card">
@@ -304,6 +304,8 @@
   <p class="tiny" style="text-align:center;margin-top:1.5rem">
     Research only — not advice, and not a rating.
     <a href="/limits">What this cannot tell you</a>.</p>
+  {% set nav_variant = "bottom" %}
+  {% include "_nav.html" %}
 </div>
 
 <script>
