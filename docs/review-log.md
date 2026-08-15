@@ -1180,3 +1180,104 @@ and renders no card at all for a ticker with nothing to say; and
 every fetch failing, reaching `time.sleep()` rather than dying on the
 first exception (exercised by stubbing `_published_get` to always
 raise and `time.sleep` to break the loop after one pass).
+
+### Round 15 — 2026-08-15 — "is buying the dip better than a coin flip" — answered honestly, per ticker
+
+Operator: "identify the tickers where to buy the dip... validate with
+past if it made good decisions... for example JNJ buy the dip today...
+allow to run simulation... is it better of a coin flip or not?"
+
+This one needed a straight answer before any code: this project
+already ran exactly that test, at whole-market scale, and the pullback
+signal lost to a coin flip — twice, on both shipped rule sets
+(`STRATEGY.md`, `KNOWN_ISSUES.md`, 12 August 2026). **balanced**: 376
+stocks, 25 seeds, z = −0.07, p = 0.50. **wide-net** (the rule set
+behind the published board): 657 stocks, 40 seeds, z = +0.31, p =
+0.41. Neither clears significance; random entry beat the signal
+outright on the balanced run. Building a feature that presented "buy
+the dip on JNJ" as a validated strategy would have directly
+contradicted this project's own hardest-won result — refused, and said
+so plainly, rather than building it anyway. Asked the operator how the
+validator should work given that; the answer was the honest version:
+real per-ticker data, correctly contextualized against the whole-market
+finding, never a fresh verdict manufactured from a handful of trades.
+
+**Why a fresh per-ticker statistical test isn't the right shape either
+— checked, not assumed.** Investigated whether a rigorous per-ticker
+version of the same permutation test was even feasible. It isn't, for
+a structural reason: the whole-market test itself needed 30+ real
+trades pooled across hundreds of stocks just to have any power
+(`scripts/null_test.py`'s own `if n_real < 30: return 1` guard). A
+single ticker's pullback signal fires only occasionally — the
+wide-net run's own trade count (3,658 trades / 657 stocks ≈ 5.6
+trades/ticker/5y) implies most single names would land at or below
+double digits, far under that floor. A per-ticker p-value built on that
+few events would be noise dressed as a verdict — the exact failure
+mode this project's own `db.py` already names in its `edge_for()`
+docstring: "a win rate off 2 trades is noise dressed as insight."
+
+**What shipped instead — real, honest, and free to compute:**
+
+1. **`db.trades_for(params, ticker)`** — a new read-only query against
+   `db.py`'s existing `signals`/`signal_outcomes` tables, which the
+   scheduled scan's regular backtest step already populates every run
+   via `backtest.run_backtest()` → `db.record_backtest()`. Zero new
+   simulation, zero new Yahoo calls — this data was already being
+   computed and discarded (only ever read back as a whole-universe or
+   already-aggregated `edge_for()` view; the individual trade rows for
+   one ticker had no reader before this).
+2. **`.github/workflows/null-test.yml`** now runs the whole-market
+   permutation test — `scripts/null_test.py`, completely unchanged —
+   on a weekly cron against the wide-net preset (the rule set actually
+   shown live), and publishes `null_test.json` to the `screener-data`
+   branch using the exact same carry-forward pattern
+   `scheduled-scan.yml`/`pattern-sweep.yml`/`thirteenf.yml` already
+   use, rather than the separate `null-test-result` branch it used to
+   push to (which nothing ever read). Weekly, not daily, deliberately:
+   the methodology and the answer do not move day to day, and
+   `pattern-sweep.yml`'s own comment already states the reason a
+   shorter cadence would be wrong — re-testing significance more often
+   than the thing being tested actually changes is its own
+   multiple-comparisons problem.
+3. **`app.py`** gained `_null_test_book()` (registered in all three of
+   `_warm_books()`/`_boot_books()`/`_book_refresher()` — the exact
+   three registration points Round 14 had to retrofit onto four other
+   caches, done right the first time here) and `_wide_net_params()`
+   (memoized; matches `scripts/scheduled_scan.py::PRESETS["wide-net"]`
+   exactly, so a `db.py` query against it hashes to the same config
+   the scheduled scan's own backtest recorded trades under).
+   `/credit/<ticker>` now computes `dip_edge` (`db.edge_for()`,
+   already excludes anything under `MIN_SAMPLE=5`) and `dip_trades`
+   (the real trade list) alongside the whole-market verdict.
+4. **`templates/credit.html`** gained "Buying the dip in {ticker},
+   checked": the whole-market verdict first, always, governing how
+   everything below it should be read; then the ticker's own real
+   trades, if any — with the aggregate win rate/avg R shown only when
+   there are enough trades to say anything, and an explicit refusal to
+   compute a rate below that floor. A ticker that has never triggered
+   the signal says so plainly. Nothing here is a target or a
+   recommendation — same rule as the rest of the site.
+
+**Deliberately not this round:** the other bundled asks in the same
+message (fundamentals/ratios, free sentiment, ticker logos, general
+"research the web and GitHub for everything") — sequenced as separate
+follow-up rounds by the operator's own choice, each needing its own
+feasibility research (sentiment specifically flagged as the riskiest:
+reliable free sentiment sources are scarce and prone to producing
+noisy, invented-feeling numbers, which is the one thing this project
+has never shipped).
+
+**Verification:** `SKIP_WARM=1 python3 tests/test_*.py` — full suite
+green. New file `tests/test_dip_check.py` pins: `db.trades_for()`
+returns the right ticker's trades newest-first and an empty list for
+an unmeasured one; `edge_for()`'s existing `MIN_SAMPLE` exclusion and
+`trades_for()`'s own trade list agree on which tickers clear the bar;
+`/credit/<ticker>` renders three distinct, verified states — enough
+trades (exact win rate/avg R computed independently in the test and
+matched against the rendered page, not eyeballed), too few trades (the
+real trade still shown, the rate explicitly withheld), and never
+triggered (says so, invents nothing); and the whole-market verdict
+card renders its dated hardcoded citation when `null_test.json` isn't
+published yet, and switches to the live published numbers — both the
+`signal_alive=True` and `signal_alive=False` sentences, each rendering
+its own distinct text — the moment it is.

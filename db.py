@@ -309,6 +309,42 @@ def load_backtest(params: dict) -> dict | None:
         return None
 
 
+def trades_for(params: dict, ticker: str) -> list[dict]:
+    """One ticker's own trades under these rules, newest first — the same
+    `signals`/`signal_outcomes` rows `load_backtest()` reads for the whole
+    universe, filtered to a single symbol.
+
+    Zero new computation: the scheduled scan already simulates every
+    ticker in its universe on the existing hourly/daily cadence and
+    stores every trade here via `record_backtest()` — this is a read,
+    not a re-run. Closed trades only (`status != 'open'`), matching
+    `edge_for()`'s own aggregate so the two never disagree about which
+    trades count.
+    """
+    try:
+        with _conn() as c:
+            row = c.execute("SELECT config_id FROM strategy_configs WHERE param_hash=?",
+                            (config_hash(params),)).fetchone()
+            if not row:
+                return []
+            cid = row[0]
+            return [
+                {"date": d, "exit_date": ex, "entry": entry, "stop_px": stop,
+                 "target_px": target, "outcome_r": out_r, "status": status,
+                 "bars_held": bars}
+                for (d, ex, entry, stop, target, out_r, status, bars) in c.execute("""
+                    SELECT s.d, o.exit_date, s.entry, s.stop, s.target,
+                           o.outcome_r, o.status, o.bars_held
+                    FROM signals s
+                    JOIN signal_outcomes o USING (signal_id)
+                    JOIN instruments i USING (instrument_id)
+                    WHERE s.config_id = ? AND s.source = 'backtest'
+                      AND i.symbol = ? AND o.status != 'open'
+                    ORDER BY s.d DESC""", (cid, ticker))]
+    except Exception:
+        return []
+
+
 # Presentation-only settings: changing them cannot change which stocks the
 # scan finds or at what levels, so they must not split the snapshot store
 # into near-duplicate rows.

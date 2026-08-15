@@ -327,6 +327,58 @@
   </div>
   {% endif %}
 
+  <div class="card">
+    <h2>Buying the dip in {{ t }}, checked</h2>
+    {% if null_test %}
+    <p class="muted">This project tested buying the dip against a coin flip
+      across {{ null_test.universe }} stocks together — the real signal and
+      random entry, managed by byte-for-byte identical exit code so only the
+      entry choice differs.
+      {% if null_test.signal_alive %}
+      The signal beat random entry on this sample (z = {{ '%+.2f'|format(null_test.z) }},
+      p = {{ '%.3f'|format(null_test.p_value) }}).
+      {% else %}
+      <b>The signal lost</b> — it carries no information a coin flip does not
+      (z = {{ '%+.2f'|format(null_test.z) }}, p = {{ '%.3f'|format(null_test.p_value) }},
+      over {{ null_test.null.runs }} coin-flip runs).
+      {% endif %}
+      Full numbers: <a href="/limits">what this project has and hasn't found
+      to work</a>.</p>
+    {% else %}
+    <p class="muted">This project's own whole-market test of buying the dip
+      against a coin flip, on 657 stocks together, byte-for-byte identical
+      exit rules on both sides: <b>the signal lost</b> — z = &minus;0.07 to
+      +0.31 depending on the rule set, p = 0.41&ndash;0.50 (not significant;
+      12 August 2026). See <a href="/limits">what this project has and
+      hasn't found to work</a>.</p>
+    {% endif %}
+
+    {% if dip_trades %}
+    <p class="tiny" style="margin-top:.9rem">{{ t }}'s own {{ dip_trades|length }}
+      closed trade{{ 's' if dip_trades|length != 1 }} under these exact rules
+      {%- if dip_edge %}: {{ dip_edge.win_rate }}% winners, average
+      {{ '%+.2f'|format(dip_edge.avg_r) }}R
+      {%- else %} — too few to say anything about {{ t }} specifically (this
+      site never states a rate computed from fewer than {{ dip_min_sample }})
+      {%- endif %}. A handful of trades in one name cannot overturn a result
+      measured across hundreds — shown for transparency, not as a signal.</p>
+    <div class="scroll" style="margin-top:.6rem"><table>
+      <tr><th>Entered</th><th>Exit</th><th class="r">Outcome</th></tr>
+      {% for tr in dip_trades[:10] %}
+      <tr><td>{{ tr.date }}</td><td>{{ tr.exit_date or "—" }} ({{ tr.status }})</td>
+          <td class="r {{ 'ok' if tr.outcome_r and tr.outcome_r > 0 else 'bad' if tr.outcome_r else '' }}">{{ "%+.2f"|format(tr.outcome_r) if tr.outcome_r is not none else "—" }}R</td></tr>
+      {% endfor %}
+    </table></div>
+    {% if dip_trades|length > 10 %}
+    <p class="tiny" style="margin-top:.5rem">{{ dip_trades|length - 10 }} more, not shown.</p>
+    {% endif %}
+    {% else %}
+    <p class="tiny" style="margin-top:.9rem">{{ t }} has not triggered the
+      pullback signal under this site's own rules in the measured window —
+      nothing to show.</p>
+    {% endif %}
+  </div>
+
   <p class="tiny" style="text-align:center;margin-top:1.5rem">
     Research only — not advice, and not a rating.
     <a href="/limits">What this cannot tell you</a>.</p>
