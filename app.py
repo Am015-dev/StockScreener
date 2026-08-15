@@ -927,6 +927,67 @@ _book = {"ts": 0.0, "data": None}
 BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
 BOOKS_POLL_S = float(os.environ.get("BOOKS_POLL_S", "300"))
 RESULTS_POLL_S = float(os.environ.get("RESULTS_POLL_S", "600"))
+MARKET_DB_POLL_S = float(os.environ.get("MARKET_DB_POLL_S", "3600"))
+_market_db_restored = {"ts": 0.0, "ok": False}
+
+
+def _restore_market_db(force: bool = False) -> bool:
+    """Pull the scheduled scan's own market.db into this instance's local
+    copy — the actual source `db.trades_for()`/`db.edge_for()` read from.
+
+    Without this, `db.py`'s `DB_PATH` (`MARKET_DB`, an ephemeral /tmp path
+    by default) starts and stays empty on Render: nothing here ever runs
+    a scan itself, so nothing here ever calls `db.record_backtest()`
+    directly. The scan commits its own copy to the published branch as
+    `state/market.db` — confirmed live, 23k+ signals across 580+ tickers
+    — and this is the only thing that ever reads it back in. A missing
+    or unreachable file is a safe no-op: `/credit/<ticker>`'s dip-check
+    section already degrades to "nothing to show" when the underlying
+    tables are empty, same as any other unmeasured state on this site.
+
+    Downloaded to a temp file and swapped in with `os.replace()` —
+    atomic on the same filesystem, so a request mid-query against the
+    old file is never left holding a half-written one. Any stale
+    -wal/-shm sidecar files from a previous local copy are removed too;
+    SQLite would otherwise try to reconcile them against the new file's
+    header on the next connection.
+    """
+    if not force and time.time() - _market_db_restored["ts"] < MARKET_DB_POLL_S:
+        return _market_db_restored["ok"]
+    import requests as rq
+    url = f"{PUBLISHED_BASE}/state/market.db"
+    try:
+        r = rq.get(url, timeout=30)
+        if r.status_code != 200 or not r.content:
+            _market_db_restored["ts"] = time.time()
+            return _market_db_restored["ok"]
+        target = market_db.DB_PATH
+        os.makedirs(os.path.dirname(os.path.abspath(target)) or ".", exist_ok=True)
+        tmp = target + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(r.content)
+        os.replace(tmp, target)
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.remove(target + suffix)
+            except FileNotFoundError:
+                pass
+        _market_db_restored.update(ts=time.time(), ok=True)
+        print(f"[warm] market.db restored: {len(r.content) / 1e6:.1f}MB", flush=True)
+        return True
+    except Exception as e:
+        print(f"[warm] market.db restore failed: {e}", flush=True)
+        _market_db_restored["ts"] = time.time()
+        return _market_db_restored["ok"]
+
+
+def _market_db_refresher():
+    """Keep the restored market.db from going stale — the scan re-commits
+    it roughly hourly on weekdays, so this polls on the same cadence
+    rather than only ever restoring once at boot."""
+    while True:
+        _restore_market_db(force=True)
+        time.sleep(MARKET_DB_POLL_S)
 
 
 def _price_book(fetch: bool = False) -> dict:
@@ -2658,7 +2719,8 @@ _WARMERS = (("warm-books", lambda: _warm_books()),
             ("books-refresh", lambda: _book_refresher()),
             ("calendar-refresh", lambda: _calendar_refresher()),
             ("results-poll", lambda: _results_refresher()),
-            ("crumb-hunter", lambda: _crumb_hunter()))
+            ("crumb-hunter", lambda: _crumb_hunter()),
+            ("market-db-refresh", lambda: _market_db_refresher()))
 _warm_lock = threading.Lock()
 _warm_done: set = set()          # returned normally; nothing left to do
 _warm_failed: dict = {}          # name -> when it last raised
@@ -2909,7 +2971,14 @@ def published_route():
                     "book_ts": {"earnings": _earn_pub["ts"],
                                "patterns": _patterns_pub["ts"],
                                "regime": _regime_pub["ts"],
-                               "recent_picks": _recent_pub["ts"]}})
+                               "recent_picks": _recent_pub["ts"]},
+                    # market.db is a binary sqlite file, not a JSON book,
+                    # restored separately by _market_db_refresher() — its
+                    # own timestamp and whether the last restore actually
+                    # succeeded, since a silently-empty local copy would
+                    # otherwise look identical to "never tried"
+                    "market_db": {"ts": _market_db_restored["ts"],
+                                 "ok": _market_db_restored["ok"]}})
 
 
 @app.route("/published/refresh", methods=["POST"])
