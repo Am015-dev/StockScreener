@@ -60,7 +60,7 @@
   .flag { display:inline-block; font-size:.72rem; font-weight:640;
           padding:.1rem .45rem; border-radius:999px; margin:.15rem .25rem 0 0;
           background:color-mix(in srgb, var(--amber) 16%, transparent);
-          color:var(--amber); }
+          color:var(--amber); text-decoration:none; }
   .bars { display:grid; gap:.3rem; margin-top:.2rem; }
   .bar { display:grid; grid-template-columns:9.5rem 1fr auto; gap:.6rem;
          align-items:center; font-size:.82rem; }
@@ -246,7 +246,7 @@
   {% for p in picks %}
   <div class="card pick">
     <div style="display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap">
-      <span class="tk">{{ p.ticker }}</span>
+      <a class="tk" href="/credit/{{ p.ticker }}">{{ p.ticker }}</a>
       {% if p.name and p.name != p.ticker %}<span class="co">{{ p.name }}</span>{% endif %}
       <a href="#scoring" class="tiny" style="margin-left:auto;color:inherit;text-decoration:underline dotted"
          title="Why not out of 100? See 'What decided this' below.">{{ '%.0f'|format(p.score) }}/{{ '%.0f'|format(res.max_points_available) }}</a>
@@ -296,8 +296,20 @@
 
     {% if p.held_by_investors %}
     <p style="margin:.6rem 0 0">
-      <span class="flag" data-tip="From SEC 13F filings, up to ~135 days stale and long-only. Not a signal — informational only. See /investors.">Held by {{ p.held_by_investors|length }} superinvestor{{ 's' if p.held_by_investors|length != 1 }}</span>
+      <a class="flag" href="/investors" data-tip="From SEC 13F filings, up to ~135 days stale and long-only. Not a signal — informational only. See /investors.">Held by {{ p.held_by_investors|length }} superinvestor{{ 's' if p.held_by_investors|length != 1 }}</a>
     </p>
+    {% endif %}
+
+    {% if p.streak and p.streak.kind != "new" %}
+    <p style="margin:.3rem 0 0">
+      {% if p.streak.kind == "streak" %}
+      <span class="tiny">On the list {{ p.streak.on }} of the last {{ p.streak.of }} recorded sessions.</span>
+      {% elif p.streak.kind == "returning" %}
+      <span class="tiny">Back — off the list the last {{ p.streak.gap }} session{{ 's' if p.streak.gap != 1 }}.</span>
+      {% endif %}
+    </p>
+    {% elif p.streak %}
+    <p style="margin:.3rem 0 0"><span class="tiny">New today — not on the list in the last {{ p.streak.of }} recorded session{{ 's' if p.streak.of != 1 }}.</span></p>
     {% endif %}
 
     {% if p.flags or p.cooldown_backfill or p.cooldown_waived %}

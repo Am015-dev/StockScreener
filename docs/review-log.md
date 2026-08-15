@@ -1070,3 +1070,113 @@ wired end to end — seeded with cooldown history claiming yesterday's
 unfiltered top 5 were already shown with unchanged scores, `/today`
 is asserted to show a genuinely different five today, not the
 identical set repeated.
+
+### Round 14 — 2026-08-15 — pages that actually point at each other, and real motion
+
+Operator: "the pages do not communicate with each other now that we
+have free actions we must make the site much more dynamic it's so old
+and ugly." Three visual/content rounds already preceded this one
+(Round 7's anti-slop audit, Round 8's charts, Round 12's radar +
+adaptive text) and the complaint persisted — itself evidence the gap
+wasn't purely visual. Asked whether to fold in a full visual redesign
+alongside a structural fix; the answer was structural-only, so a
+palette/typography pass stayed explicitly out of scope. Two parallel
+Explore passes and one Plan pass turned the complaint into three
+concrete, file:line-verified findings before writing anything.
+
+**Finding 1 — tickers were plain text in the two places that matter
+most.** `templates/today.html`'s pick header and `templates/index.html`'s
+`/full` table (both the top-picks cards and the near-miss table) never
+linked to `/credit/<ticker>`, even though `templates/credit.html` and
+`templates/investors.html` already linked tickers there, and
+`today.html` already had a working JS precedent for exactly this kind
+of link. The cross-reference existed; the hyperlink didn't. And
+`/credit/<ticker>` itself had zero awareness of 13F holdings or
+Today's Five membership for that ticker, even though `/today` already
+had both in memory — the gap ran in both directions.
+
+**Finding 2 — a real cross-page data-disagreement bug, not just a
+missing link.** `app.py`'s `_book_refresher()` kept five published
+caches (prices, vol, credit, liquidity, 13F) warm on a 5-minute cycle,
+but four others — earnings, patterns, market regime, and last round's
+cooldown history — were only ever fetched once, at process boot, and
+frozen for the life of the deploy. Confirmed `_earnings_book(fetch=True)`
+is a cheap published-file read, not the expensive live Nasdaq rebuild
+(that's a separate object on its own cycle), so extending the same
+9-book refresh was safe and free. The consequence was real: `/today`
+computed earnings exclusively from the frozen book while `/check`'s
+pre-trade path read a structurally different, separately-refreshing
+calendar — a US ticker whose date Nasdaq corrected after the last
+deploy could show two different dates on two different pages, live.
+
+**Finding 3 — real day-over-day motion already existed and was
+invisible.** Last round's `_record_todays_five()` publishes
+`recent_picks.json` purely to feed the cooldown; nothing on the site
+showed it to a reader. This is the direct, already-computed answer to
+"more dynamic now that we have free actions" — no new GitHub Actions
+compute needed, just surfacing data that already existed.
+
+**What shipped, all three reusing existing patterns:**
+
+1. Every ticker on Today's Five and `/full` is now a real
+   `<a href="/credit/...">` link; "Held by N superinvestors" links to
+   `/investors`. `/credit/<ticker>` gained an "Elsewhere on this site"
+   card — real 13F holder count with a link back to `/investors`, and
+   either "one of Today's Five right now" or a streak/return line, only
+   ever rendered when there is something real to say (confirmed by a
+   test: a ticker with no holders and no history renders no card at
+   all, not an empty one).
+2. `_book_refresher()` now keeps all nine published books on the same
+   5-minute cadence. Scoped honestly, not oversold: this does not
+   unify `/today` and `/check` onto one earnings source — `/check`
+   still reads a structurally different, separately-refreshing
+   calendar object — it only stops the four newly-added caches from
+   being frozen at boot, so they now lag the scheduled scan's hourly
+   publish by minutes instead of by up to a full deploy cycle.
+   `/published` gained a `book_ts` field reporting when each of the
+   four actually last refreshed, so this is verifiable in minutes, not
+   provable only by waiting out a multi-hour staleness window.
+3. `ranking.py` gained `session_streak(ticker, history, today)` — a
+   deliberate sibling to `select_daily_five()`, sharing only the
+   entry-sorting primitive (factored out as `_history_entries()`, with
+   `select_daily_five()`'s own behavior and tests unchanged). Reads the
+   same published cooldown history a second, purely descriptive way —
+   never used to decide ranking, only to describe it — returning "new
+   today," "on the list N of the last M sessions," or "back after N
+   sessions off," and `None` whenever there's nothing sayable (fresh
+   deploy, thin history). Wired into both `/today` (per pick) and
+   `/credit/<ticker>` (the cross-reference card).
+
+**A mistake caught while testing, not by re-reading the plan more
+carefully.** This round's implementation plan was produced by a Plan
+subagent, which read `tests/test_cooldown.py`'s ticker-extraction
+regex (`r'class="tk">([A-Z0-9]+)'`) and reasoned that turning the pick
+header's `<span class="tk">` into `<a class="tk" href="...">` needed no
+test changes, since the class stayed `class="tk"`. Running the test
+immediately after the markup change said otherwise: the regex required
+`class="tk"` to be followed *immediately* by `>`, and the new `href=`
+attribute sat in between, so the match failed outright ("no picks
+rendered"). Widening the regex to `class="tk"[^>]*>` then overmatched
+in a different way — `today.html` also has `<b class="tk"
+style="font-size:1rem">` in the collapsed credit-index section further
+down the page, and the widened pattern matched that too, inflating "5
+picks shown" into "all 12 candidate tickers on the page." Fixed by
+anchoring on the tag itself (`<a class="tk"[^>]*>...</a>`), which
+matches only the pick headers. Logged in `MISTAKES.md`: a delegated
+plan's "no test edit needed" is a claim to verify by running the test,
+not a fact to carry forward, especially for anything built on
+exact-string HTML matching.
+
+**Verification:** `SKIP_WARM=1 python3 tests/test_*.py` — full suite
+green. New file `tests/test_streak.py` pins: `session_streak()`'s
+behavior in isolation (all four return shapes, the stale-isolated-entry
+guard, no-ticker/no-today); `/today` renders the exact streak sentence
+`session_streak()` computes directly on the same fixture, and renders
+nothing when history is empty; every pick header on `/today` is a real
+link; `/credit/<ticker>` renders the correct combination of held-by
+count, `in_todays_five`, or a streak line for tickers in each state,
+and renders no card at all for a ticker with nothing to say; and
+`_book_refresher()` completes one full pass over all nine books with
+every fetch failing, reaching `time.sleep()` rather than dying on the
+first exception (exercised by stubbing `_published_get` to always
+raise and `time.sleep` to break the loop after one pass).

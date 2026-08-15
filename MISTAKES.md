@@ -287,3 +287,35 @@ a double-quoted one — check the underlying data shape before reusing a
 `data-*="{{ x|tojson }}"` pattern from elsewhere in the same file; a
 list-of-numbers precedent proves nothing about a dict-with-string-keys
 case.
+
+## 2026-08-15 — a delegated plan's "no test edit needed" claim didn't survive turning `<span>` into `<a href=...>`
+
+**Assumed:** a Plan subagent's implementation plan said changing
+`templates/today.html`'s pick header from
+`<span class="tk">{{ p.ticker }}</span>` to
+`<a class="tk" href="/credit/{{ p.ticker }}">{{ p.ticker }}</a>`
+needed no test changes, because it read `tests/test_cooldown.py`'s
+regex (`r'class="tk">([A-Z0-9]+)'`) and reasoned the class staying
+`class="tk"` was enough.
+**Actually:** the regex required `class="tk"` to be *immediately*
+followed by `>` with nothing in between. Adding `href="..."` between
+the class attribute and the closing bracket broke the exact-match —
+the test failed with "no picks rendered" the moment it ran. A widened
+fix (`class="tk"[^>]*>`) then overmatched: `today.html` also has
+`<b class="tk" style="font-size:1rem">` in the collapsed credit-index
+section further down the page, which the widened regex now matched
+too, inflating "5 picks shown" into "all 12 candidate tickers on the
+page."
+**Caught by:** running the test immediately after the markup change,
+not by re-reading the plan's reasoning more carefully — the plan's
+claim was plausible-sounding and wrong in a way that only running the
+regex against the real rendered HTML revealed.
+**Rule:** a delegated plan's "no test edit needed" is a claim to
+verify by running the test after the change, not a fact to carry
+forward — especially for any assertion built on exact-string HTML
+matching, where attribute order and other same-class tags elsewhere on
+the page are exactly the kind of thing a plan written without running
+code can get wrong. When fixing an overly narrow regex, anchor on the
+specific tag name too (`<a class="tk"...`), not just a widened
+attribute wildcard — the fix for "too narrow" is easy to overcorrect
+into "too broad" against a page that reuses the same class elsewhere.

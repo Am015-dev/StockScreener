@@ -54,6 +54,10 @@
        color:var(--ink-3); font-weight:640; }
   td.r, th.r { text-align:right; }
   .me { font-weight:680; }
+  .flag { display:inline-block; font-size:.72rem; font-weight:640;
+          padding:.1rem .45rem; border-radius:999px; margin:.15rem .25rem 0 0;
+          background:color-mix(in srgb, var(--amber) 16%, transparent);
+          color:var(--amber); text-decoration:none; }
   /* overflow-x:auto alone makes a wide table swipeable with nothing on
      screen telling a reader that — confirmed against a real render at
      390px: columns just look cut off, easy to read as missing data
@@ -298,6 +302,28 @@
     </table></div>
     <p class="tiny" style="margin-top:.7rem">All figures are from the company's own
       SEC filings and its published share price.</p>
+  </div>
+  {% endif %}
+
+  {% if held_by_investors or in_todays_five or (recent_streak and recent_streak.kind != "new") %}
+  <div class="card">
+    <h2>Elsewhere on this site</h2>
+    {% if held_by_investors %}
+    <p class="tiny"><span class="flag">Held by {{ held_by_investors|length }}
+      tracked superinvestor{{ 's' if held_by_investors|length != 1 }}</span> —
+      from SEC 13F filings, up to ~135 days stale and long-only. See the
+      <a href="/investors">full roll-up</a>.</p>
+    {% endif %}
+    {% if in_todays_five %}
+    <p class="tiny"><span class="flag">One of Today's Five right now</span> —
+      see the <a href="/">entry, stop and thesis</a>.</p>
+    {% elif recent_streak and recent_streak.kind == "streak" %}
+    <p class="tiny">On <a href="/">Today's Five</a> {{ recent_streak.on }} of
+      the last {{ recent_streak.of }} recorded sessions.</p>
+    {% elif recent_streak and recent_streak.kind == "returning" %}
+    <p class="tiny">Was on <a href="/">Today's Five</a> before, off for
+      {{ recent_streak.gap }} session{{ 's' if recent_streak.gap != 1 }}.</p>
+    {% endif %}
   </div>
   {% endif %}
 
