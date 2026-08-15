@@ -28,6 +28,32 @@ curl, a human correction) — never "on reflection."
 
 ---
 
+## 2026-08-15 — read a stale local `main` ref without fetching first, diagnosed a bug that had already been fixed
+
+**Assumed:** `git show main:.github/workflows/scheduled-scan.yml` and
+`git show main:vix.py` reflected the CURRENT state of the repository's
+`main` branch — that GitHub Actions' `schedule:` triggers were running
+unpinned, stale code from `main`, and that this was the reason a live
+feature round (VIX regime signal, Altman Z-score) was invisible on the
+site.
+**Actually:** my local `main` ref was stale — last synced days earlier
+in the session, 3 commits and 6 days behind `origin/main`. Those 3
+missing commits had ALREADY fixed exactly this problem (pinned
+`ref: claude/pullback-uptrend-screener-vvlzeb` in both
+`scheduled-scan.yml`'s and `thirteenf.yml`'s checkout steps) in an
+earlier round of this same session. A full plan to "fix" an
+already-fixed problem was written and approved before the real cause
+(a 20-hour incremental-refresh throttle plus a weekend gap in the
+cron schedule — nothing broken at all) was found.
+**Caught by:** running `git fetch origin main` and re-checking —
+`git rev-parse main` vs `git rev-parse origin/main` disagreed, and
+`git log main..origin/main` showed the 3 commits my diagnosis had
+missed entirely.
+**Rule:** before reading ANY branch with `git show branch:path` or
+`git log branch`, especially one this session has not been actively
+committing to, run `git fetch origin <branch>` first — a local ref is
+a cache, not a live view, and it can be silently days stale.
+
 ## 2026-08-13 — reused a sentinel timestamp across two fixture loads, hid a memo cache
 
 **Assumed:** setting `app._creds.update(data=..., ts=9e9)` twice in the

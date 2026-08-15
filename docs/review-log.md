@@ -750,3 +750,88 @@ first `<h1>`, and render zero emoji codepoints.
 fixture rather than building a new minimal one that turned out to be
 missing fields the "measured" branch of `credit.html` needs (caught by
 a 500 on first run, not by inspection). Full suite (33 files) green.
+
+### Round 11 — 2026-08-15 — why the Fincept round was invisible live (and correcting my own first diagnosis)
+
+Operator: "I see nothing on the site from fincept, you did so much
+bullshit analysis and improved anything." Investigated rather than
+defending — the complaint turned out to be correct in effect, wrong in
+the cause I first assumed, and the real cause needed correcting twice
+before landing on the truth.
+
+**First hypothesis (wrong):** that the scheduled scan was running
+stale code because its GitHub Actions checkout was unpinned and
+GitHub only reads `schedule:` triggers from the default branch
+(`main`), which I found 266 commits behind the deploy branch with
+`vix.py`/`with_altman`/`thirteenf.yml` entirely absent from it. This
+was checked against a **stale local `main` ref** — `git show main:...`
+without first fetching `origin/main`. A fresh `git fetch origin main`
+showed the real `origin/main` was only 3 commits behind, and those 3
+commits (`e264015`, `dd0e740`, `49d37f8`, dated Aug 12 and Aug 14) had
+**already fixed exactly this problem** in an earlier round of this
+same session: both `scheduled-scan.yml` and `thirteenf.yml` on `main`
+already pin `ref: claude/pullback-uptrend-screener-vvlzeb` in their
+checkout step, and one of those commits' own message documents the
+original discovery ("the scheduled runs execute the scan script from
+the DEFAULT branch and that copy does not know how to build either of
+them [credit.json/vol.json]"). Caught before any unnecessary push to
+`main` — the plan approved for this round was never executed, because
+the premise it was built on turned out to be false. **Rule for next
+time: `git fetch` the ref before reading it with `git show branch:path`
+— a local branch ref can silently be stale relative to `origin`.**
+
+**Second, correct diagnosis:** the pipeline was fine. The actual gap
+was simpler and purely about timing. `scripts/scheduled_scan.py`'s
+`credit_book()` only re-fetches a company whose `built` timestamp is
+more than `CREDIT_REFRESH_S` (20 hours) old — a deliberate,
+already-tested incremental design (see Round 3's SEC-budget reasoning)
+that lets coverage widen without re-measuring the whole book every
+run. The VIX/Altman code (commit `d8a1262`) shipped Friday 2026-08-14
+23:52 UTC, **after** that day's last scheduled run (21:27 UTC). The
+scan only runs weekdays (`cron: "5 13-21 * * 1-5"`), and 2026-08-15 is
+a Saturday — so between shipping and this investigation, the scan had
+not run even once with the new code.
+
+**What was actually verified, live, with real data, this round:**
+- Manually dispatched `scheduled-scan.yml` via `workflow_dispatch`
+  (GitHub API) rather than waiting for Monday. Confirmed via the
+  published `regime.json`: `{"vix": {"level": 14.25, "as_of":
+  "2026-08-14", "percentile_5y": 16, "n_obs": 1259}}` — the VIX code
+  ran, fetched real CBOE data, and computed a real percentile. It is
+  silent on the front page **correctly**: 16th percentile is inside
+  the ordinary range (`HIGH_PCTL=90`, `LOW_PCTL=10`), so `vix.note()`
+  returning `None` here is the feature working as designed, not a bug
+  — genuinely indistinguishable from "broken" to a reader without this
+  investigation, which is itself worth remembering.
+- `credit.json` after that same dispatch: 831 companies, 0 carrying an
+  `"altman"` key — expected and correct, not a defect: every company
+  was already measured within the last 10.5 hours (last successful run
+  21:27 UTC the day before), so `CREDIT_REFRESH_S`'s 20-hour gate
+  skipped re-fetching all 831 of them. Monday's first run (~63 hours
+  after Friday's last one) will clear essentially the whole book past
+  the threshold and should populate `altman` broadly.
+- Attempted an immediate live proof via a not-yet-published ticker
+  (`/credit/SOFI`, `/credit/LCID`, `/credit/DKNG` — confirmed absent
+  from the published book first) to exercise the on-demand
+  `with_altman()` path directly, bypassing the 20-hour gate entirely.
+  Hit a **separate, pre-existing, unrelated** live issue: the Render
+  instance's SEC ticker-list cache (`app.py`'s `_cik_map`) was
+  returning "The SEC's company list could not be read just now" on
+  every attempt (confirmed not code-specific: this blocks the CIK
+  lookup every live report depends on, before Altman or even Merton
+  ever runs; confirmed SEC.gov itself was reachable with a proper
+  User-Agent from outside Render at the same time, so this reads as a
+  transient Render-side condition — matching `_cik_for()`'s own
+  documented behavior of retrying on every call with no cooldown,
+  rather than a stuck cache). Not chased further — a live SEC-fetch
+  hiccup unrelated to this round's code is a different problem from
+  "does Altman work," which the unit tests in `tests/test_credit.py`
+  and `tests/test_credit_endpoint.py` already answer with certainty.
+
+**Correction to Round 9's own entry:** that entry's "Verification"
+section said the live build was "confirmed live via curl" — true only
+in the narrow sense that `/credit/AAPL` returned 200 and didn't crash.
+It did not confirm the *data* had actually changed, because it
+couldn't have: no scan had run with the new code yet at that point
+either. The gap between "the page didn't error" and "the feature is
+visibly live" is exactly what this round exists to name.
