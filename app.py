@@ -2950,12 +2950,16 @@ def _warm_guard():
 STALL_AFTER_S = float(os.environ.get("STALL_AFTER_S", "300"))
 
 
-# The scan publishes every two hours while US markets are open, on
-# weekdays. When it stops — an exhausted Actions quota, a broken job — the
-# site keeps serving the last thing it published, which is correct. What
-# was NOT correct was saying nothing about why, or telling the reader to
+# The scan publishes hourly while US markets are open, on weekdays
+# (.github/workflows/scheduled-scan.yml's own cron: "5 13-21 * * 1-5" —
+# reverted from an earlier two-hour throttle once the repo went public and
+# Actions minutes became unmetered; the default below had been left at
+# the old cadence, making the overdue check below 2x too lenient). When
+# the scan stops — an exhausted Actions quota, a broken job — the site
+# keeps serving the last thing it published, which is correct. What was
+# NOT correct was saying nothing about why, or telling the reader to
 # "press Run" for a button that was removed months ago.
-SCAN_EVERY_H = float(os.environ.get("SCAN_EVERY_H", "2"))
+SCAN_EVERY_H = float(os.environ.get("SCAN_EVERY_H", "1"))
 SCAN_WINDOW = "13:00-21:00 UTC on weekdays"
 
 
@@ -3247,7 +3251,12 @@ def journal_restore():
 
 @app.route("/results.csv")
 def results_csv():
-    if not _state["results"]:
+    # Qualified picks and blocked (pending) rows are populated
+    # independently — a scan can finish with zero qualified picks but a
+    # non-empty pending list, and this guard used to 404 before ever
+    # reaching the code below whose own comment guarantees blocked picks
+    # are always carried.
+    if not _state["results"] and not _state.get("pending"):
         return Response("no results yet\n", status=404, mimetype="text/plain")
     buf = io.StringIO()
     # The export must carry the blocked picks too. The page shows them as

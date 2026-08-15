@@ -982,3 +982,16 @@ print("GET /configs' clears_bar and fails[] correctly flag each of the three "
       "thresholds (profit factor, drawdown vs SPY, Sortino) independently")
 
 print("\n/CONFIGS CLEARS_BAR PINNED")
+
+
+# ---- /results.csv must not 404 away the blocked rows it promises to
+# carry, on a scan with zero qualified picks but pending ones ----
+A._state.update(results=[], pending=[{"ticker": "PEND", "score": None}],
+                results_ts=time.time())
+r = client.get("/results.csv")
+assert r.status_code == 200, r.status_code
+body = r.get_data(as_text=True)
+assert "PEND" in body and "BLOCKED" in body, body
+print("/results.csv exports blocked-only rows instead of 404ing them away")
+
+print("\n/RESULTS.CSV PENDING-ONLY EXPORT PINNED")

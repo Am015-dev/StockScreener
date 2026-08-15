@@ -1139,7 +1139,15 @@ def _finnhub_days_to_earnings(ticker: str) -> int | None:
         return stored
     days = None
     try:
-        today = pd.Timestamp.now().normalize()
+        # Naive .now() is the container's wall clock — UTC on Render — which
+        # flips to the next calendar date 4-5 hours before US-Eastern does
+        # (~8pm-midnight ET), under-counting days-to-earnings by one during
+        # that window. Anchor to ET's own calendar date instead, the same
+        # fix _get_days_to_earnings() already applies for its own tz-aware
+        # index; stripped back to naive here since Finnhub's own dates
+        # (below) carry no tz and must compare against something that
+        # doesn't either.
+        today = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
         r = requests.get(
             "https://finnhub.io/api/v1/calendar/earnings",
             params={"from": today.strftime("%Y-%m-%d"),
@@ -1203,16 +1211,20 @@ def _earnings_calendar(days_ahead: int = EARN_CAL_DAYS, progress=None,
     """
     key = f"earncal:{days_ahead}"
     hit, stored = cache_store.fetch(key, EARN_CAL_TTL)
+    # Anchored to US-Eastern's own calendar date, not the container's naive
+    # wall clock (UTC on Render) — UTC's date flips 4-5 hours before ET's
+    # does, under-counting every cached ticker's days-to-earnings by one
+    # during that window. Stripped back to naive since `stored["as_of"]`
+    # and the Nasdaq dates built below carry no tz of their own.
+    today = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
     if hit and isinstance(stored, dict) and "map" in stored:
         # stored as days-from-that-date; re-base onto today
-        shift = int((pd.Timestamp.now().normalize()
-                     - pd.Timestamp(stored["as_of"])).days)
+        shift = int((today - pd.Timestamp(stored["as_of"])).days)
         cal = {s: d - shift for s, d in stored["map"].items() if d - shift >= 0}
         return cal, bool(stored.get("complete"))
     if not build:
         return {}, False
 
-    today = pd.Timestamp.now().normalize()
     cal: dict[str, int] = {}
     complete, checked = True, 0
     for i in range(days_ahead + 1):
