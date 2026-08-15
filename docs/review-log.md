@@ -835,3 +835,128 @@ It did not confirm the *data* had actually changed, because it
 couldn't have: no scan had run with the new code yet at that point
 either. The gap between "the page didn't error" and "the feature is
 visibly live" is exactly what this round exists to name.
+
+### Round 12 — 2026-08-15 — picks that visibly differ from each other, and from day to day
+
+Operator: "Website is very basic stiff and boring showing the same
+analysis all the time investigate similar sites and pick improvements
+and include them." Researched real competitor products (Finviz,
+TradingView, Simply Wall St, Zacks, Seeking Alpha, Koyfin, Yahoo
+Finance) rather than guessing at generic redesign ideas, then audited
+this codebase's actual output against what was found.
+
+**What competitors do differently:** the common thread across all of
+them is that the same underlying score renders in a genuinely
+different visual *shape* per subject, not the same chart with
+different numbers substituted in — Simply Wall St's five-axis
+"Snowflake" radar is the clearest case: a strong-credit/weak-momentum
+company draws a visibly different polygon than the opposite profile,
+at a glance, no reading required. None of them fix "boring" with
+layout tricks; they let real score variance produce real visual
+variance, and surface what is specifically notable about *this* item
+today instead of a fixed paragraph shape.
+
+**What was actually repetitive here** (confirmed by direct audit,
+file:line, before writing anything): `plan.py`'s `trade_plan()` built
+`stop_text`, `typical_move_text`, `time_stop_text`, and `wrong_if` as
+one fixed f-string per field — identical sentence structure every
+pick, every day, only the numbers swapped in. And the one place cards
+already *did* differ from each other — `ranking.py`'s 4 real score
+components (`p.components`) — was hidden by default behind a collapsed
+`<details>` ("Why it ranks where it does"). The most differentiating
+real data on the page was the thing nobody saw without clicking.
+
+**What shipped, all three grounded in data already computed —
+nothing invented, no randomization, per this project's own house
+rule:**
+
+1. **A 4-axis radar of the real score components, surfaced by
+   default.** `templates/today.html` gained `radarSVG()`, following the
+   exact inline-SVG-no-library pattern `pickChartSVG()` already
+   established in Round 8 (data embedded as a `data-*` JSON attribute,
+   SVG built by JS at render time — explicitly rejecting a chart
+   library again, same reasoning as Round 8's `lightweight-charts`/
+   `uPlot` rejection). The collapsed exact-numbers bar list is
+   unchanged and still there — the radar promotes the same data, it
+   does not replace the one place it used to live.
+
+2. **Content-adaptive branches in `plan.py`'s four previously-fixed
+   fields.** Each now has 2–3 real branches keyed on thresholds already
+   in hand: `stop_text` on whether measured volatility clears
+   `credit.REFERENCE_VOL` (the existing, already-published median
+   constant — reused, not reinvented); `typical_move_text` on whether
+   the move-to-cost ratio is strong (≥5×) or marginal;
+   `time_stop_text` on whether an earnings report falls inside the
+   5-session window right after the hold ends; `wrong_if` on which
+   score component actually put the name on the list. None of these
+   are new measurements — they are new sentences describing
+   measurements this project already made.
+
+3. **`plan.standout(picks, i)`** — one line naming the single real,
+   cross-pick fact that makes a pick different from its four peers that
+   day: tightest stop, best edge (lowest cost-as-share-of-typical-move),
+   or the only pick with an earnings date on the calendar. Deliberately
+   *not* based on which score component won — `thesis()` already claims
+   that ground, and duplicating it would just be the same repetition in
+   a different sentence. A pick that is not the extreme on any of the
+   three gets nothing, on purpose: not every pick is standout at
+   something, and a fallback sentence here would be exactly the kind of
+   filler this line exists to replace. A tie for an extreme belongs to
+   neither side of the tie.
+
+**Deliberately not this round** (real ideas from the research, each a
+separate build): a Finviz/TradingView-style sector heatmap, and a
+same-sector comparison strip.
+
+**A real mistake, caught while writing the integration test, not
+before:** the radar's first version wrote
+`data-components="{{ p.components|tojson }}"` into a *double*-quoted
+attribute. `data-spark="{{ p.spark|tojson }}"`, already in this same
+template, uses the identical pattern and works — but `spark` is a list
+of floats with no quotes in its JSON at all, so that precedent proved
+nothing about a dict with string keys. Jinja's `tojson`
+(`htmlsafe_json_dumps`) escapes `<`, `>`, `&`, and `'` because its
+documented target is a `<script>` tag — it deliberately leaves `"`
+alone, and every one of a dict's key-quotes closed the attribute
+early. Caught by parsing the rendered `data-components` value back out
+in `tests/test_today_visuals.py` and diffing it against `ranking.py`'s
+real output: the double-quoted regex matched nothing, and the raw HTML
+showed the attribute truncated at the first `{"`. Fixed by switching to
+a single-quoted attribute (`tojson` does escape `'`); a regression pin
+now asserts the broken double-quoted form never reappears. Logged in
+`MISTAKES.md`, since this is exactly the kind of reasoning error —
+reusing a same-file precedent without checking whether the precedent's
+data shape made the pattern accidentally safe — that file exists to
+catch.
+
+**Also caught only by rendering the real page, not by the unit
+tests:** the radar's first sizing (108×108px canvas, 16px margin) left
+too little room for its own longest labels — "Credit" and "Pattern" —
+to fit inside the SVG's viewBox before its default `overflow:hidden`
+silently ate their leading or trailing characters ("Credit" rendered
+as "it", "Calm" as "C"). Unit tests only ever saw the underlying data,
+which was correct throughout; a screenshot at both breakpoints (via
+the local Flask mirror + Playwright, `prefers-reduced-motion: reduce`
+forced so every card's `.reveal` fires immediately instead of only on
+scroll-into-view) is what actually caught it. Fixed by widening the
+canvas to 150×150 with margin sized for the two longest label strings
+specifically, plus `overflow:visible` on the SVG as a backstop, not a
+fix in itself.
+
+**Verification:** `SKIP_WARM=1 python3 tests/test_*.py` — full suite
+green. New file `tests/test_today_visuals.py` pins: `trade_plan()`'s
+four branches produce genuinely different sentences for genuinely
+different inputs (not cosmetic — asserted on distinct substrings, e.g.
+"genuinely calm" vs. "swings harder"); `standout()` picks the correct
+extreme fact for a synthetic 5-pick fixture with one deliberately
+extreme value per slot, returns nothing for the two picks holding no
+extreme, and returns nothing for a tied extreme or a single-pick list;
+`/today`'s rendered `data-components` for every real pick matches
+`ranking.py`'s actual output exactly (parsed back out of the HTML, not
+assumed); the exact-numbers bar list is confirmed still present
+alongside the radar; a regression pin blocks the double-quoted-attribute
+bug from coming back. Screenshotted a synthetic 5-pick day at 390px and
+900px — radar shapes are visibly different from each other within the
+same day's five cards, and standout lines appear only on the picks that
+actually hold an extreme (2 of 5 in the synthetic fixture), none on the
+other 3.

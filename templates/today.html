@@ -154,6 +154,27 @@
   .chart .cap { font-size:.68rem; color:var(--ink-3); text-align:right;
                 margin-top:.15rem; }
 
+  /* Radar of the 4 real score components, surfaced by default instead of
+     hidden behind "Why it ranks where it does" — the shape itself is the
+     point: two picks that both scored ~70 but got there by different
+     components draw visibly different quadrilaterals, at a glance, with
+     zero reading required. The exact numbers are not gone, only
+     promoted out of the primary spot — the collapsed bars below still
+     carry them. */
+  .thesis-row { display:flex; gap:1rem; align-items:flex-start;
+                flex-wrap:wrap; margin:.5rem 0 0; }
+  .thesis-row .thesis { flex:1 1 220px; margin:0 0 1rem; }
+  .radar { flex:0 0 150px; width:150px; height:150px; margin-bottom:.6rem; }
+  /* overflow:visible as a backstop, not the fix — the actual fix is
+     radarSVG()'s own margin math leaving room for "Credit"/"Pattern" to
+     fit inside the viewBox. An SVG's default overflow is hidden (unlike
+     an HTML box), so text that misjudges that margin doesn't overflow
+     visibly, it silently loses its tail — caught on a real render, not
+     by a test, since a unit test only sees the data, not the pixels. */
+  .radar svg { display:block; width:100%; height:100%; overflow:visible; }
+  .standout { font-size:.86rem; font-weight:640; color:var(--accent);
+              margin:-.4rem 0 1rem; }
+
   /* Entrance reveal: content ships visible in the static HTML (this class
      is added by JS, never by the server) so a reader with JS off or a
      slow connection never sees blank cards — only a browser that can run
@@ -230,7 +251,17 @@
       <a href="#scoring" class="tiny" style="margin-left:auto;color:inherit;text-decoration:underline dotted"
          title="Why not out of 100? See 'What decided this' below.">{{ '%.0f'|format(p.score) }}/{{ '%.0f'|format(res.max_points_available) }}</a>
     </div>
-    <p class="thesis">{{ p.thesis }}</p>
+    <div class="thesis-row">
+      <p class="thesis">{{ p.thesis }}</p>
+      {% if p.components %}
+      <div class="radar" data-components='{{ p.components|tojson }}'
+           data-max='{{ p.component_max|tojson }}'
+           aria-label="Score breakdown for {{ p.ticker }}"></div>
+      {% endif %}
+    </div>
+    {% if p.standout %}
+    <p class="standout">{{ p.standout }}</p>
+    {% endif %}
 
     {% if p.spark and p.spark|length >= 10 %}
     <div class="chart" data-spark="{{ p.spark|tojson }}" data-stop="{{ p.stop }}"
@@ -495,6 +526,63 @@ document.querySelectorAll(".chart[data-spark]").forEach(el => {
     if (!spark || spark.length < 10 || !isFinite(stop)) return;
     el.innerHTML = pickChartSVG(spark, stop, entry, 560, 64) +
       `<div class="cap">${spark.length} sessions &middot; stop marked</div>`;
+  } catch (e) {}
+});
+
+// The 4 score components as a radar, same inline-SVG-no-library approach
+// as pickChartSVG above. Short axis labels here; the full label and exact
+// number for each stay in the collapsed "Why it ranks where it does" bars
+// — this is a second view of the same numbers, not a replacement.
+const RADAR_LABELS = {"credit headroom": "Credit", "calm enough to size up": "Calm",
+  "adds to what you own": "Fit", "confirmed pattern": "Pattern"};
+function radarSVG(comp, max, w, h) {
+  const keys = Object.keys(comp);
+  const n = keys.length;
+  if (n < 3) return "";
+  // Margin (44) is sized for the two longest labels this project's own
+  // component names produce — "Credit" and "Pattern" — not a round
+  // number: 150 - 2*44 leaves 31px of clearance on the short side, which
+  // is what "Credit" (anchor="end", ~31px wide at 9px font) needs to
+  // clear the viewBox edge without SVG's default overflow:hidden
+  // eating its first characters.
+  const cx = w / 2, cy = h / 2, r = Math.min(w, h) / 2 - 44;
+  const angle = i => -Math.PI / 2 + i * 2 * Math.PI / n;
+  const ring = frac => keys.map((k, i) => {
+    const a = angle(i);
+    return `${(cx + r * frac * Math.cos(a)).toFixed(1)},${(cy + r * frac * Math.sin(a)).toFixed(1)}`;
+  }).join(" ");
+  const pts = keys.map((k, i) => {
+    const frac = max[k] ? Math.max(0, Math.min(1, comp[k] / max[k])) : 0;
+    const a = angle(i);
+    return [cx + r * frac * Math.cos(a), cy + r * frac * Math.sin(a)];
+  });
+  const axes = keys.map((k, i) => {
+    const a = angle(i);
+    return `<line x1="${cx}" y1="${cy}" x2="${(cx + r * Math.cos(a)).toFixed(1)}" y2="${(cy + r * Math.sin(a)).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`;
+  }).join("");
+  const labels = keys.map((k, i) => {
+    const a = angle(i);
+    const lx = cx + (r + 8) * Math.cos(a), ly = cy + (r + 8) * Math.sin(a);
+    const dx = Math.cos(a);
+    const anchor = Math.abs(dx) < .3 ? "middle" : (dx > 0 ? "start" : "end");
+    return `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${anchor}" dominant-baseline="middle" font-size="9" fill="var(--ink-3)">${RADAR_LABELS[k] || k}</text>`;
+  }).join("");
+  const rings = [.5, 1].map(f => `<polygon points="${ring(f)}" fill="none" stroke="var(--line)" stroke-width="1"/>`).join("");
+  const poly = pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  const dots = pts.map(p => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.2" fill="var(--accent)"/>`).join("");
+  const alt = keys.map(k => `${RADAR_LABELS[k] || k} ${comp[k]} of ${max[k]}`).join(", ");
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${alt}">
+    ${rings}${axes}
+    <polygon points="${poly}" fill="var(--accent)" fill-opacity=".22" stroke="var(--accent)" stroke-width="1.75" stroke-linejoin="round"/>
+    ${dots}${labels}
+  </svg>`;
+}
+document.querySelectorAll(".radar[data-components]").forEach(el => {
+  try {
+    const comp = JSON.parse(el.dataset.components);
+    const max = JSON.parse(el.dataset.max);
+    if (!comp || !max || Object.keys(comp).length < 3) return;
+    el.innerHTML = radarSVG(comp, max, 150, 150);
   } catch (e) {}
 });
 

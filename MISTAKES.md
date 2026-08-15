@@ -263,3 +263,27 @@ failing test (none existed for this at the time).
 compute anything that must reflect the *pre-narrowed* state before the
 narrowing line runs, not after — and name the two so a diff makes the
 distinction obvious (`whole_book` vs `book`).
+
+## 2026-08-15 — dict serialized with `tojson` straight into a double-quoted HTML attribute
+
+**Assumed:** `data-components="{{ p.components|tojson }}"` was safe,
+because `data-spark="{{ p.spark|tojson }}"` (already in this same
+template) works fine and looks like the identical pattern.
+**Actually:** `spark` is a list of floats — its JSON has no double
+quotes in it at all, so the pattern happened to work by accident of the
+data shape, not because the pattern is safe. `components` is a dict with
+string keys, so its JSON is full of `"..."`, and Jinja's `tojson`
+(`htmlsafe_json_dumps`) only escapes characters that are unsafe inside a
+`<script>` tag — `<`, `>`, `&`, and `'` — because that is the documented
+use case. It deliberately leaves `"` alone. Every one of those literal
+quotes closed the HTML attribute early, corrupting the tag.
+**Caught by:** writing an integration test that parsed the rendered
+`data-components` attribute back out and diffed it against
+`ranking.py`'s real output — the regex for a double-quoted attribute
+matched nothing, and printing the raw HTML showed the attribute ending
+at the first `{"` instead of at the closing brace.
+**Rule:** `|tojson` is safe inside a *single*-quoted HTML attribute, not
+a double-quoted one — check the underlying data shape before reusing a
+`data-*="{{ x|tojson }}"` pattern from elsewhere in the same file; a
+list-of-numbers precedent proves nothing about a dict-with-string-keys
+case.
