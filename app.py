@@ -2124,6 +2124,11 @@ def today_page():
         # own comment in _today_candidates()
         p["held_by_investors"] = row.get("held_by_investors") or []
         picks.append(p)
+    # standout() compares picks against each other, so it can only run
+    # once the day's whole list is assembled — a second pass, same as
+    # thesis()'s rank=len(picks) needs the count settled first.
+    for i, p in enumerate(picks):
+        p["standout"] = plan.standout(picks, i)
     return render_template("today.html", picks=picks, res=res,
                            budget=budget, horizon=horizon,
                            cost=ranking.ROUND_TRIP_COST_PCT,
