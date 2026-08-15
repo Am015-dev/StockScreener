@@ -792,7 +792,14 @@ def run():
                       finished_at=None,
                       rejection_summary=[], near_misses=[], params_used=params,
                       near_board=[], relax_hints={}, scanned=None, health=None,
-                      pending=[])
+                      pending=[],
+                      # _results_refresher()'s adopt gate is purely a
+                      # results_ts freshness comparison, not a status check
+                      # — leaving the old value in place let a scheduled
+                      # scan publishing mid-run look "newer" than a scan
+                      # that had not written its first result yet, and get
+                      # silently adopted on top of it.
+                      results_ts=0)
         _auto["cycles"] = 0   # a manual run resets the auto-verify budget
         try:   # the latest scan's filters double as the daily-alert profile
             with open(ALERT_PROFILE, "w") as f:
@@ -1801,6 +1808,9 @@ def _company_identity(cik: int, timeout: float = 10.0) -> dict:
     return credit.parse_submissions_identity(buf)
 
 
+_peer_standings_memo = {"key": None, "data": {}}
+
+
 def _with_peers(rep: dict) -> dict:
     """Rank a distance against every other measured name on today's board
     — the whole book, and again within its own sector when enough of the
@@ -1811,12 +1821,34 @@ def _with_peers(rep: dict) -> dict:
     peers at all, and a ranking cached at that moment would be served as
     "unavailable" for the next 24 hours to everyone who asked. It costs
     nothing to redo — these are cache reads, not network calls.
+
+    peer_standings() itself IS worth memoizing, though: it is O(n^2) over
+    the book (confirmed ~65ms wall-clock at 389 measured names, and this
+    is a single-worker instance where CPU-bound Python holds the GIL for
+    every other in-flight request), and the common case — a ticker
+    already in the published book — asks the identical question on every
+    single /credit/<ticker> view. Recomputed once per book refresh
+    (_credit_view()'s own cache key), not once per page view.
     """
     if rep.get("dd") is None:
         return rep
     me = (rep.get("ticker") or "").upper()
     published = _credit_view() or {}
     if len(published) >= 5:
+        key = (_creds["ts"], _book["ts"])
+        if _peer_standings_memo["key"] != key:
+            whole = {t2.upper(): r for t2, r in published.items()}
+            _peer_standings_memo.update(key=key, data=credit.peer_standings(whole))
+        stand = _peer_standings_memo["data"]
+        if me in stand:
+            # `rep` here is sourced FROM this same published view (see
+            # _credit_for()'s `pub = view.get(ticker)` path) whenever `me`
+            # is already a key in it, so the memoized standing is exactly
+            # what a fresh computation on this `rep` would have produced.
+            return dict(rep, **stand[me])
+        # A brand-new company (a live SEC fetch, or a cache_store hit,
+        # neither yet in the published book) — the rare case, worth the
+        # one-off O(n) computation rather than invalidating the memo.
         book = {t2.upper(): r for t2, r in published.items()}
         book[me] = rep
         stand = credit.peer_standings(book)
@@ -2586,7 +2618,17 @@ def snapshot_restore():
     if not params:
         return jsonify({"ok": True, "restored": False})
     market_db.save_snapshot(params, {k: snap.get(k) for k in SNAPSHOT_KEYS})
-    return jsonify({"ok": True, "restored": bool(_load_snapshot(params))})
+    # snapshot_load() (its own POST sibling, same _load_snapshot() call)
+    # already guards this against a scan that is running; this one didn't,
+    # so a mirror restore firing mid-scan could flip _state["status"] to
+    # "done" and repopulate results underneath a scan thread still writing
+    # its own partial rows on top.
+    with _lock:
+        if _state["status"] == "running":
+            return jsonify({"ok": False, "restored": False,
+                            "message": "A scan is running."}), 409
+        restored = bool(_load_snapshot(params))
+    return jsonify({"ok": True, "restored": restored})
 
 
 @app.route("/auth/export")

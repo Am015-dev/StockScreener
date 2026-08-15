@@ -119,6 +119,51 @@ assert scanned["n"] == 0, "/alert started a scan on the web instance"
 print("/alert reports the published board and never scans")
 
 
+# ---- /run and /backtest: the actual buttons, never previously POSTed
+# through the test client anywhere in the suite ----
+# Both carry real, user-facing behavior with zero regression protection
+# before this: the WEB_SCAN_MAX cap (the number KNOWN_ISSUES.md documents
+# to readers), the 409-when-already-running guard on each, and /backtest's
+# 400 when there is nothing to simulate.
+_saved_run_scan = A._run_scan
+A._run_scan = lambda params: None   # don't actually scan in a test
+try:
+    A._state.update(status="idle", results_ts=999.0)
+    over_cap = A.WEB_SCAN_MAX + 500
+    r = client.post("/run", json={"universe_max": over_cap})
+    body = r.get_json()
+    assert r.status_code == 200, r.status_code
+    assert body["params"]["universe_max"] == A.WEB_SCAN_MAX, \
+        f"a request for {over_cap} must be capped to {A.WEB_SCAN_MAX}, got {body['params']}"
+    assert body["capped_from"] == over_cap
+    # the freshness gate a scheduled-scan adoption checks is a bare
+    # results_ts comparison — leaving the pre-scan value in place let a
+    # scan starting look "stale" and get silently overwritten mid-run
+    assert A._state["results_ts"] == 0, \
+        "/run must reset results_ts, or the adopt-published gate can " \
+        "silently overwrite an in-flight scan"
+    print(f"POST /run caps universe_max to {A.WEB_SCAN_MAX} and resets results_ts")
+
+    r2 = client.post("/run", json={})
+    assert r2.status_code == 409, r2.status_code
+    print("a second POST /run while one is in flight is refused, not queued")
+finally:
+    A._run_scan = _saved_run_scan
+    A._state.update(status="idle")
+
+_saved_universe = screener._cache.get("universe")
+screener._cache["universe"] = None
+try:
+    r3 = client.post("/backtest", json={})
+    assert r3.status_code == 400, r3.status_code
+    assert "have not been simulated" in r3.get_json()["message"]
+    print("POST /backtest with no cached universe and no stored run refuses with a real reason")
+finally:
+    screener._cache["universe"] = _saved_universe
+
+print("\n/RUN AND /BACKTEST ROUTE COVERAGE PINNED")
+
+
 # ---- request bodies are bounded on a 512MB instance ----
 assert A.app.config.get("MAX_CONTENT_LENGTH"), "an unbounded body is a memory bomb"
 big = "x" * (A.app.config["MAX_CONTENT_LENGTH"] + 1024)
