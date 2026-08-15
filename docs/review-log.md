@@ -1423,3 +1423,24 @@ without a reload, tapping a row reveals its collapsed columns — run
 against a fully-warmed local server with a real published scan
 adopted (not `SKIP_WARM=1`, which leaves `wait_for_build()` polling
 forever for books that were never fetched): 51 passed, 0 failed.
+
+**Independent score (fresh agent, did not write the fix), against the
+deployed commit `4eb7de5`:** decisive answers 25/25, clarity 17/20
+(the unexplained z/p line on `/credit/<ticker>` — pre-existing, not
+part of this round), value density 20/20, honesty 15/15 (no floor
+violations), correctness 8/10 (docked only for the sandbox's inability
+to run a live headless browser against the deployed host — same
+network limitation logged elsewhere in this file), coverage 9/10.
+**Total 94/100 — clears the 80 bar.**
+
+One real finding worth carrying forward, not fixed this round: the
+scorer read the filter's own code and found `refresh()` (which the
+debounced filter calls) re-fetches the full `/status` payload from the
+server rather than filtering the already-loaded rows in memory — the
+same pattern the sort-header click handler already uses deliberately
+(documented there as "a small in-memory read"), so this isn't a new
+choice, but on a single-worker instance that went down once already
+this session from stacked requests (see `MISTAKES.md`,
+2026-08-15), a keystroke-triggered network call is worth tightening to
+a pure in-memory filter in a future round. Logged here rather than
+silently deferred.
