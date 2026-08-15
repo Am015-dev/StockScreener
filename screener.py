@@ -1410,6 +1410,19 @@ def _clamp01(x: float) -> float:
     return min(max(x, 0.0), 1.0)
 
 
+# The single source of truth for each component's weight — score_row()
+# below computes against it directly, and app.py's /defaults exposes it so
+# the /full page's score-breakdown bars size themselves against the real
+# weights instead of a hand-copied JS literal that would silently drift
+# the instant these numbers changed here (templates/today.html's own
+# radar chart already gets its weights from the server this way, via
+# ranking.py's component_max — this does the same for /full).
+SCORE_PART_MAX = {"reward vs risk": 30.0, "strength vs market": 15.0,
+                  "depth of the dip": 15.0, "closeness to support": 15.0,
+                  "pullback volume": 10.0, "earnings distance": 7.5,
+                  "analyst consensus": 7.5}
+
+
 def score_row(row: dict, p: dict) -> tuple[int, str, dict]:
     """0-100 composite quality score + a one-line human rationale + the
     exact arithmetic behind it.
@@ -1444,13 +1457,13 @@ def score_row(row: dict, p: dict) -> tuple[int, str, dict]:
     an_score = 0.5 if am is None else _clamp01((4.0 - am) / 3.0)     # 1.0 -> 1, 4.0 -> 0
 
     contributions = {
-        "reward vs risk": 30.0 * rr_score,
-        "strength vs market": 15.0 * rs_score,
-        "depth of the dip": 15.0 * pullback,
-        "closeness to support": 15.0 * support_prox,
-        "pullback volume": 10.0 * vol_score,
-        "earnings distance": 7.5 * earn,
-        "analyst consensus": 7.5 * an_score,
+        "reward vs risk": SCORE_PART_MAX["reward vs risk"] * rr_score,
+        "strength vs market": SCORE_PART_MAX["strength vs market"] * rs_score,
+        "depth of the dip": SCORE_PART_MAX["depth of the dip"] * pullback,
+        "closeness to support": SCORE_PART_MAX["closeness to support"] * support_prox,
+        "pullback volume": SCORE_PART_MAX["pullback volume"] * vol_score,
+        "earnings distance": SCORE_PART_MAX["earnings distance"] * earn,
+        "analyst consensus": SCORE_PART_MAX["analyst consensus"] * an_score,
     }
 
     flags = [f for f in str(row.get("flags") or "").split(",") if f]

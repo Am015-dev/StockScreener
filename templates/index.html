@@ -853,15 +853,16 @@ let lastNearRows = [];  // current "Best of the rest" rows, same purpose
 let resultsFilterText = "";
 
 // The maximum points each score component can contribute (screener.py's
-// score_row weights), used only to size the bar fills — the numbers
-// themselves come from the row's own score_parts. Also fixes the display
-// order: jsonify sorts object keys alphabetically, which would otherwise
-// scramble "reward vs risk" (30 points) in between "penalties" and
-// "pullback volume".
-const PART_MAX = {"reward vs risk": 30, "strength vs market": 15,
-                   "depth of the dip": 15, "closeness to support": 15,
-                   "pullback volume": 10, "earnings distance": 7.5,
-                   "analyst consensus": 7.5};
+// SCORE_PART_MAX), used only to size the bar fills — the numbers
+// themselves come from the row's own score_parts. Read from /defaults
+// (loadDefaults() below) so a rebalance of the real weights can never
+// silently drift out of sync with this display-only copy the way a
+// hand-typed literal could; this starting value is only what renders
+// for the instant before that fetch resolves.
+let PART_MAX = {"reward vs risk": 30, "strength vs market": 15,
+                "depth of the dip": 15, "closeness to support": 15,
+                "pullback volume": 10, "earnings distance": 7.5,
+                "analyst consensus": 7.5};
 const PART_ORDER = ["reward vs risk", "strength vs market", "depth of the dip",
                      "closeness to support", "pullback volume", "earnings distance",
                      "analyst consensus", "penalties", "did not qualify",
@@ -957,6 +958,7 @@ function tkLink(t) {
 async function loadDefaults() {
   const d = await (await fetch("/defaults")).json();
   DEFAULTS = d.defaults; SECTORS = d.sectors;
+  if (d.score_part_max) PART_MAX = d.score_part_max;
   document.getElementById("sectorChecks").innerHTML = SECTORS.map(s =>
     `<label><input type="checkbox" class="sector" value="${esc(s)}"> ${esc(s)}</label>`).join("");
   resetFilters();

@@ -772,7 +772,8 @@ def full_board():
 
 @app.route("/defaults")
 def defaults():
-    return jsonify({"defaults": screener.DEFAULTS, "sectors": screener.ALL_SECTORS})
+    return jsonify({"defaults": screener.DEFAULTS, "sectors": screener.ALL_SECTORS,
+                    "score_part_max": screener.SCORE_PART_MAX})
 
 
 @app.route("/run", methods=["POST"])
