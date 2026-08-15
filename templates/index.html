@@ -287,6 +287,17 @@
     table.rsp td::before { content: attr(data-l); color: var(--ink-2);
                            font-size: .8125rem; text-align: left; flex: 0 0 auto; font-weight: 400; }
     table.rsp td:first-child { font-weight: 680; font-size: 1.0625rem; }
+    /* The results table's non-essential columns (18 of 24) stay collapsed
+       on a phone until the row is tapped open — see PRIMARY_COLS and the
+       "expanded" class toggle in the results click handler. Without this,
+       every stock on /full is a scroll through 24 stacked label:value
+       lines with nothing to compare against. */
+    table.rsp td.sec { display: none; }
+    table.rsp tr.expanded td.sec { display: flex; }
+    #results table.rsp tr.expandable:not(.expanded)::after {
+      content: "Tap for the rest of this row"; display: block; text-align: center;
+      font-size: .75rem; color: var(--ink-3); padding-top: .3rem;
+    }
     [data-tip]:hover::after { max-width: 85vw; }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -520,6 +531,13 @@
     <div id="resultsAge" class="hint" style="display:none;margin:0 0 .6rem"></div>
     <div class="secsub">Every stock that passed all filters, best score first.
       Hover a column header for what it means.</div>
+    <div id="resultsFilterBar" style="display:none;margin:0 0 .6rem;gap:.5rem;
+         flex-wrap:wrap;align-items:center">
+      <input type="text" id="resultsFilter" placeholder="Filter by ticker, company or sector…"
+        style="flex:1;min-width:12rem;padding:.5rem .7rem;border:1px solid var(--line);
+        border-radius:var(--r);background:var(--surface-1);color:var(--ink);font:inherit">
+      <span id="resultsFilterCount" class="hint" style="white-space:nowrap"></span>
+    </div>
     <div id="portSummary" class="hint" style="display:none;margin:0 0 .6rem"></div>
     <div id="pendingWrap" style="display:none;margin:0 0 .8rem">
       <div style="color:var(--amber);font-weight:600;margin-bottom:.35rem" id="pendingTitle"></div>
@@ -712,6 +730,13 @@ const COLDEFS = [
   ["sector_after","Sector after","What % of your portfolio this sector would be after buying — warned if above your cap.", v => v + "%"],
   ["flags",    "Notes",        "Warnings and data caveats for this pick, in plain words.", fmtNum],
 ];
+// On a phone-width screen this table's responsive layout turns every column
+// into its own stacked line — 24 of them, per stock, with nothing to compare
+// against. These are the ones worth seeing without asking: what it is, what
+// it costs, what it's worth, and the one column (earnings) that can gap a
+// price straight through a stop. Everything else is one tap away, not gone.
+const PRIMARY_COLS = new Set(["ticker", "sector", "score", "price", "stop",
+                               "resistance", "RR", "earnings_in", "mpc_r"]);
 
 // machine flags -> plain words (shown in Notes and on the cards)
 const FLAG_TEXT = {
@@ -820,6 +845,11 @@ let jRecentSortKey = null, jRecentSortDesc = true;
 let jOpenSortKey = null, jOpenSortDesc = true;
 let lastAllRows = [];   // current results table rows, for the click-to-expand handler
 let lastNearRows = [];  // current "Best of the rest" rows, same purpose
+// Live client-side text filter over the already-loaded results table — a
+// live scan or the scheduled one already did the expensive work, so
+// narrowing 40+ rows down to the two the reader is actually comparing
+// should never mean re-running anything.
+let resultsFilterText = "";
 
 // The maximum points each score component can contribute (screener.py's
 // score_row weights), used only to size the bar fills — the numbers
@@ -938,6 +968,17 @@ function collectParams() {
   p.holdings = parseHoldings(document.getElementById("holdingsText").value);
   return p;
 }
+
+// Same re-render path the sort headers already use (refresh() re-fetches
+// /status, a small in-memory read — see the sort click handler's own
+// comment above). Debounced, unlike that click handler, since typing
+// fires once per keystroke rather than once per click.
+let resultsFilterTimer = null;
+document.getElementById("resultsFilter").addEventListener("input", (ev) => {
+  resultsFilterText = ev.target.value;
+  clearTimeout(resultsFilterTimer);
+  resultsFilterTimer = setTimeout(refresh, 200);
+});
 
 document.getElementById("restorePublished").addEventListener("click", async (ev) => {
   const b = ev.target;
@@ -1944,10 +1985,19 @@ async function refresh() {
       const tr = ev.target.closest("tbody tr[data-idx]");
       if (!tr) return;
       const next = tr.nextElementSibling;
-      if (next && next.classList.contains("detailrow")) { next.remove(); return; }
+      if (next && next.classList.contains("detailrow")) {
+        next.remove();
+        tr.classList.remove("expanded");
+        return;
+      }
       res.querySelectorAll("tr.detailrow").forEach(el => el.remove());
+      // "expanded" also unhides this row's secondary columns on a narrow
+      // screen (see the .sec CSS rule) — same click, same lifecycle, so a
+      // reader never has the columns open with no breakdown or vice versa.
+      res.querySelectorAll("tr.expanded").forEach(el => el.classList.remove("expanded"));
       const row = lastAllRows[Number(tr.dataset.idx)];
       if (!row) return;
+      tr.classList.add("expanded");
       const colspan = tr.children.length;
       let body;
       if (row.__blocked) {
@@ -1987,11 +2037,28 @@ async function refresh() {
     }
     // blocked setups are shown in the same table, at the top, marked and
     // unscored — never omitted, never scored as if they had passed
-    const blocked = (s.pending || []).map(r => Object.assign({}, r, {__blocked: true}));
+    let blocked = (s.pending || []).map(r => Object.assign({}, r, {__blocked: true}));
     // Sorting reorders the PICKS only. Blocked rows stay pinned to the top
     // whatever the sort — they are not ranked, and letting a sort bury them
     // would undo the reason they were moved into this table.
     let picks = s.results.slice();
+    const totalCount = picks.length + blocked.length;
+    const blockedTotal = blocked.length;
+    const filterBar = document.getElementById("resultsFilterBar");
+    if (filterBar) filterBar.style.display = "flex";
+    const q = resultsFilterText.trim().toLowerCase();
+    if (q) {
+      const hit = r => (r.ticker || "").toLowerCase().includes(q) ||
+        (r.name || "").toLowerCase().includes(q) ||
+        (r.sector || "").toLowerCase().includes(q);
+      picks = picks.filter(hit);
+      blocked = blocked.filter(hit);
+    }
+    const filterCountEl = document.getElementById("resultsFilterCount");
+    if (filterCountEl) {
+      const shown = picks.length + blocked.length;
+      filterCountEl.textContent = q ? `${shown} of ${totalCount} shown` : "";
+    }
     if (sortKey) {
       const dir = sortDesc ? -1 : 1;
       picks.sort((a, b) => {
@@ -2006,8 +2073,8 @@ async function refresh() {
     }
     const allRows = blocked.concat(picks);
     lastAllRows = allRows;
-    count.textContent = blocked.length
-      ? `(${s.results.length} + ${blocked.length} blocked)` : `(${s.results.length})`;
+    count.textContent = blockedTotal
+      ? `(${s.results.length} + ${blockedTotal} blocked)` : `(${s.results.length})`;
     csv.style.display = "";
     res.classList.remove("empty");
     res.innerHTML = "<table class=\"rsp\"><thead><tr>" +
@@ -2016,7 +2083,7 @@ async function refresh() {
         `${sortKey === k ? " sorted" : ""}">${esc(label)}` +
         `${sortKey === k ? (sortDesc ? " ▼" : " ▲") : ""}</th>`).join("") +
       "</tr></thead><tbody>" +
-      allRows.map((row, idx) => `<tr class="expandable${row.__blocked ? " blockedrow" : ""}" data-idx="${idx}" title="Click for the score breakdown">` +
+      allRows.map((row, idx) => `<tr class="expandable${row.__blocked ? " blockedrow" : ""}" data-idx="${idx}" title="Click for the score breakdown, and the rest of this row's columns on a phone">` +
         cols.map(([k, label, tip, fmt]) => {
         if (row.__blocked) {
           // a blocked pick has no score and no share count: showing either
@@ -2059,6 +2126,7 @@ async function refresh() {
           v = n ? `${n} flag${n === 1 ? "" : "s"}` : "—";
           if (all) tipAttr = ` data-tip="${esc(all)}"`;
         }
+        if (!PRIMARY_COLS.has(k)) cls = (cls + " sec").trim();
         return `<td class="${cls}"${style}${tipAttr} data-l="${esc(label)}">${esc(v)}</td>`;
       }).join("") + "</tr>").join("") +
       "</tbody></table>";

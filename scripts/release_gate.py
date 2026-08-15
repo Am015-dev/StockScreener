@@ -230,6 +230,29 @@ def main() -> int:
         check("tested against random entry and failed"
               in pg.inner_text("body"),
               "/full states the falsification before its table")
+        # ---- /full: live filtering, and a phone doesn't get 24 raw
+        # fields dumped on every stock ----
+        rows = pg.locator("#results tbody tr[data-idx]")
+        n_before = rows.count()
+        if n_before > 0:
+            sec_visible_before = pg.locator("#results tbody tr[data-idx] td.sec:visible").count()
+            check(sec_visible_before == 0,
+                  "/full: secondary columns start collapsed on a phone",
+                  f"{sec_visible_before} visible")
+            pg.fill("#resultsFilter", rows.first.locator("td").first.inner_text())
+            pg.wait_for_timeout(400)
+            n_after = pg.locator("#results tbody tr[data-idx]").count()
+            check(0 < n_after <= n_before,
+                  "/full: the live filter narrows the table without a reload",
+                  f"{n_before} -> {n_after}")
+            pg.fill("#resultsFilter", "")
+            pg.wait_for_timeout(400)
+            rows.first.click()
+            sec_visible_after = pg.locator("#results tbody tr[data-idx] td.sec:visible").count()
+            check(sec_visible_after > 0,
+                  "/full: tapping a row reveals its collapsed columns",
+                  f"{sec_visible_after} visible")
+
         pg.goto(base + "/limits", wait_until="load", timeout=90000)
         lim = pg.inner_text("body")
         check("0.50" in lim and "0.41" in lim,
