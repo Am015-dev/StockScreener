@@ -360,3 +360,44 @@ published state on this site already had that step — this one didn't,
 because it read from a local SQLite file instead of a fetched JSON
 book, which made the missing step easy to not notice by pattern-
 matching against the wrong precedent.
+
+## 2026-08-15 — Verifying the fix above took the live site down for ~5 minutes
+
+**Assumed:** hitting `/credit/JNJ`, `/credit/AAPL`, and `/credit/JNJ`
+again a few times in a row, with progressively longer curl
+`--max-time` values (20s, then 90s, then 150s) as each attempt
+"failed," was a harmless way to confirm the market.db restore fix was
+live. When `/credit/<ticker>` kept timing out, assumed it must be a
+code bug — first suspected the new `_restore_market_db()` code racing
+with a live SQLite read, then suspected `render.yaml`'s gunicorn
+command was silently single-threaded (`--threads 8` with no explicit
+`-k gthread`).
+**Actually:** neither theory was it. `render.yaml`'s command was fine
+— gunicorn auto-selects the `gthread` worker class the moment
+`--threads > 1` is set, confirmed by reading `gunicorn.config
+.WorkerThreads`'s own docstring and `SyncWorker.run()` directly, and
+reproduced locally against a toy Flask app under the exact deployed
+command. The real mechanism: this is a `render.yaml` free-tier
+instance with `--workers 1`, so all concurrency comes from an 8-slot
+thread pool shared by every visitor. Firing several `/credit/<ticker>`
+requests back to back, each individually bounded to a ~16s SEC-fetch
+budget but abandoning slow SEC-fetch threads rather than killing them
+(documented, intentional, in `app.py`'s own `_sec_fetch` comment), let
+my own test traffic saturate that shared pool — and once it was
+saturated, even `/published`, which touches none of the new code,
+queued behind it. The outage didn't clear on its own within 5 minutes
+of me stopping; it cleared the moment an unrelated small commit
+(the render.yaml comment fix) triggered a fresh Render deploy and
+restarted the process.
+**Caught by:** `/published` — a route with zero dependency on
+anything I'd changed — timing out identically to `/credit/<ticker>`
+was the tell that ruled out a bug in the new feature's own code and
+pointed at shared-resource exhaustion instead.
+**Rule:** verifying a fix on a live, single-worker free-tier instance
+is not "curl it a few times" — one request at a time, waiting for
+each to actually return before sending the next, is the only way to
+avoid the check itself causing the outage it's trying to rule out.
+If a page is unexpectedly slow, don't retry with a longer timeout;
+stop, and check a completely unrelated route first — if that's also
+degraded, the problem is shared-resource exhaustion, not that specific
+page, and more requests make it worse, not better.

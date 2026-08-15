@@ -1281,3 +1281,77 @@ card renders its dated hardcoded citation when `null_test.json` isn't
 published yet, and switches to the live published numbers — both the
 `signal_alive=True` and `signal_alive=False` sentences, each rendering
 its own distinct text — the moment it is.
+
+## Round 15 follow-up: the dip-check feature was shipping to a database
+nobody ever filled
+
+Asked to "test the website directly." Curling every page turned up
+something suspicious: all five of Today's Five — a mixed set of
+tickers with no reason to share a fate — showed the identical "has not
+triggered the pullback signal... nothing to show" state on
+`/credit/<ticker>`. Downloaded the published `state/market.db` (the
+scheduled scan's own backtest database, committed to the
+`screener-data` branch every run) and queried it directly: 23,117
+signals across 583 tickers, JNJ among them with 10. The feature above
+was reading real data that was sitting one branch away and never
+arriving.
+
+**Root cause:** `app.py` — the Render web process — never had any
+mechanism to pull `db.py`'s SQLite file in from anywhere. The
+scheduled scan's `db.record_backtest()` calls run inside the GitHub
+Actions runner's own process, writing to that runner's own ephemeral
+`/tmp`; the workflow commits the result to `screener-data` as
+`state/market.db` and the runner is torn down. Nothing on Render ever
+runs the scan itself, so nothing on Render ever populates its local
+copy — every other piece of published state on this site (earnings,
+patterns, regime, recent picks, the null test) is a small JSON file
+fetched and cached the same way; this was the one built as a raw
+SQLite file read, which made the missing fetch/restore step easy to
+not notice by pattern-matching against the wrong precedent.
+
+**Fix — `app.py`:** `_restore_market_db()` downloads
+`state/market.db` from the published branch, writes it to a temp file,
+and swaps it into place with `os.replace()` (atomic on the same
+filesystem, so a request mid-query is never left holding a
+half-written file); stale `-wal`/`-shm` sidecar files from any
+previous local copy are removed so SQLite doesn't try to reconcile
+them against the new file's header. `_market_db_refresher()` runs this
+on its own thread at boot and roughly hourly after, registered in
+`_WARMERS` the same way every other book warmer is. A missing or
+unreachable file is a safe no-op — the dip-check card already
+degrades to "nothing to show" for genuinely unmeasured tickers, same
+behavior, no new failure mode. `/published` now reports
+`market_db: {ts, ok}` so this has the same transparency every other
+cache already had.
+
+**Verified live** after deploy: `/credit/JNJ` now shows JNJ's real 10
+closed trades (60.0% winners, average +0.39R) instead of "nothing to
+show"; `/credit/KO` shows KO's real 15 trades (40.0% winners, average
+-0.19R) — a losing record for this specific name, shown plainly,
+exactly the kind of unflattering-but-honest result the site exists to
+surface rather than hide.
+
+**A second, self-inflicted problem surfaced during that same live
+verification:** firing several `/credit/<ticker>` requests back to
+back with escalating curl timeouts (to "wait out" what looked like a
+slow response) saturated this Render free-tier instance's entire
+8-thread pool — it runs `--workers 1`, so all concurrency is that one
+shared pool — and took the whole site down for about five minutes,
+including routes with no connection to any of this (`/published`).
+Chased two wrong theories first (a locking race in the new restore
+code — ruled out by a concurrent-access reproduction that showed no
+hang; a gunicorn worker-class misconfiguration — ruled out by reading
+gunicorn's own source, which auto-selects the threaded `gthread`
+worker the moment `--threads > 1` is set). The actual fix needed was
+behavioral, not code: verify a single-worker live instance one request
+at a time, and treat an unrelated route going slow at the same moment
+as the sign to stop and look for shared-resource exhaustion, not to
+retry with a longer timeout. Full account in `MISTAKES.md`
+(2026-08-15, two entries).
+
+**Verification:** `SKIP_WARM=1 python3 tests/test_*.py` — full suite
+green. `tests/test_dip_check.py` gained a fourth section pinning
+`_restore_market_db()`: a successful restore is immediately queryable;
+a failed fetch after a prior success stays healthy (the last good copy
+is kept); a failed fetch on a cold instance stays correctly unhealthy;
+without `force=True`, a recent restore is not re-fetched.
