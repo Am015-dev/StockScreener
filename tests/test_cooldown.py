@@ -211,7 +211,11 @@ c = app.app.test_client()
 r = c.get("/today")
 assert r.status_code == 200, r.status_code
 body = r.data.decode()
-shown = set(__import__("re").findall(r'class="tk">([A-Z0-9]+)', body))
+# <a class="tk" href="...">TICKER</a> is the main pick header; the
+# collapsed "credit_index" section further down the page also carries
+# class="tk" (on a <b>, for the exact-match list of every measured
+# company) — anchored on the tag so this counts only the five picks.
+shown = set(__import__("re").findall(r'<a class="tk"[^>]*>([A-Z0-9]+)</a>', body))
 assert shown, "no picks rendered"
 assert shown != set(baseline_top5), \
     ("/today showed the identical five names the day after they were "

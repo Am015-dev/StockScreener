@@ -383,6 +383,16 @@ COOLDOWN_MATERIAL_FRACTION = 0.15
 COOLDOWN_MAX_CALENDAR_GAP_DAYS = 14
 
 
+def _history_entries(history: dict | None) -> list[dict]:
+    """History entries sorted oldest-first — the one place both
+    `select_daily_five()`'s cooldown and `session_streak()`'s longer
+    look-back parse the published file, so the two cannot drift apart
+    on what "the entries" even means.
+    """
+    return sorted((history or {}).get("history") or [],
+                  key=lambda e: e.get("date") or "")
+
+
 def select_daily_five(ranked: list[dict], history: dict | None, today: str,
                       max_points_available: float, n: int = 5,
                       cooldown_sessions: int = COOLDOWN_SESSIONS,
@@ -415,8 +425,7 @@ def select_daily_five(ranked: list[dict], history: dict | None, today: str,
         today_d = _dt.date.fromisoformat(today)
     except (TypeError, ValueError):
         return ranked[:n]
-    entries = sorted((history or {}).get("history") or [],
-                     key=lambda e: e.get("date") or "")
+    entries = _history_entries(history)
     candidate_dates = sorted({e["date"] for e in entries
                               if e.get("date") and e["date"] < today},
                              reverse=True)
@@ -464,6 +473,67 @@ def select_daily_five(ranked: list[dict], history: dict | None, today: str,
         picks += [dict(row, cooldown_backfill=True) for row in cooling[:need]]
     picks.sort(key=lambda r: -(r.get("score") or 0))
     return picks
+
+
+# Same purpose as COOLDOWN_MAX_CALENDAR_GAP_DAYS — never let a gap in the
+# history read as continuity — sized for the full kept window (up to
+# COOLDOWN_SESSIONS + 5 = 10 sessions; see scheduled_scan.py's
+# _record_todays_five), not just the cooldown's own 5-session slice.
+STREAK_MAX_CALENDAR_GAP_DAYS = 21
+
+
+def session_streak(ticker: str, history: dict | None, today: str,
+                   max_gap_days: int = STREAK_MAX_CALENDAR_GAP_DAYS
+                   ) -> dict | None:
+    """How this ticker's presence in Today's Five has moved over the
+    recorded sessions strictly before `today` — the same published
+    history `select_daily_five()`'s cooldown reads, read a second,
+    purely descriptive way. Never used to decide ranking, only to
+    describe it.
+
+    Returns None when there is nothing to say: no ticker, no `today`,
+    or every recorded date too old to mean anything (the same kind of
+    guard the cooldown applies, at a wider gap because this looks
+    further back). Otherwise one of:
+      {"kind": "new", "of": N}             — absent from all N recorded
+                                              sessions in range
+      {"kind": "streak", "on": k, "of": N} — present in the session
+                                              immediately before `today`,
+                                              and in k of the N sessions
+                                              recorded
+      {"kind": "returning", "gap": g}      — absent the last g sessions,
+                                              present before that
+    """
+    if not ticker or not today:
+        return None
+    import datetime as _dt
+    try:
+        today_d = _dt.date.fromisoformat(today)
+    except (TypeError, ValueError):
+        return None
+    entries = _history_entries(history)
+    dates = sorted({e["date"] for e in entries
+                    if e.get("date") and e["date"] < today}, reverse=True)
+    kept = []
+    for d in dates:
+        try:
+            gap = (today_d - _dt.date.fromisoformat(d)).days
+        except (TypeError, ValueError):
+            continue
+        if gap <= max_gap_days:
+            kept.append(d)
+    if not kept:
+        return None
+    kept_set = set(kept)
+    present = {e["date"] for e in entries
+              if e.get("date") in kept_set and ticker in (e.get("picks") or {})}
+    if not present:
+        return {"kind": "new", "of": len(kept)}
+    if kept[0] in present:
+        return {"kind": "streak", "on": sum(1 for d in kept if d in present),
+                "of": len(kept)}
+    gap_sessions = next(i for i, d in enumerate(kept) if d in present)
+    return {"kind": "returning", "gap": gap_sessions}
 
 
 def _confirmed_shapes(report: dict | None) -> list:

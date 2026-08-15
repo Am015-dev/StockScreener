@@ -190,6 +190,12 @@
   .card .rank { position: absolute; top: var(--sp-3); right: var(--sp-4); font-size: .85rem;
                 font-weight: 680; color: var(--ink-3); font-variant-numeric: tabular-nums; }
   .card .tk { font-size: 1.25rem; font-weight: 680; letter-spacing: -.02em; }
+  /* Ticker mentions used to be plain text everywhere on this page except
+     the hand-built /credit links elsewhere on the site — no blanket a{}
+     rule exists here, so a bare <a> would fall back to browser-default
+     blue/underline, uglier than the plain text it replaced. */
+  .tk-link, .card .tk a { color: var(--accent); text-decoration: none; }
+  .tk-link:hover, .card .tk a:hover { text-decoration: underline; }
   .card .nm { color: var(--ink-2); font-size: .8125rem; margin-bottom: var(--sp-3);
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scorebar { height: 4px; background: var(--line-soft); border-radius: 2px;
@@ -894,6 +900,14 @@ function esc(s) {
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
+// Every ticker on this page is one click away from its own full report
+// and used to be plain text everywhere but the near-miss table's own
+// hand-built links — same pattern already used for the "full report →"
+// link on /today (see today.html's pickChartSVG-adjacent JS).
+function tkLink(t) {
+  return `<a class="tk-link" href="/credit/${encodeURIComponent(t)}">${esc(t)}</a>`;
+}
+
 async function loadDefaults() {
   const d = await (await fetch("/defaults")).json();
   DEFAULTS = d.defaults; SECTORS = d.sectors;
@@ -1097,7 +1111,7 @@ function renderTopPicks(picks, near) {
   document.getElementById("topCards").innerHTML = picks.map((p, i) => `
     <div class="card">
       <div class="rank">${rankLabel(i)}</div>
-      <div class="tk">${esc(p.ticker)} <span style="color:${scoreColor(p.score)}" data-tip="Quality score 0–100: 70+ strong, 50–69 okay, below 50 weak.">${esc(p.score ?? "")}</span>
+      <div class="tk">${tkLink(p.ticker)} <span style="color:${scoreColor(p.score)}" data-tip="Quality score 0–100: 70+ strong, 50–69 okay, below 50 weak.">${esc(p.score ?? "")}</span>
         ${p.status && p.status !== "NEW" ? `<span class="pill" style="margin-left:.4rem;font-size:.7rem" data-tip="You already hold this stock (and the % you're up or down on it).">${esc(p.status)}</span>` : ""}</div>
       <div class="nm">${esc(p.name ?? "")} · ${esc(p.sector ?? "")}</div>
       <div class="scorebar"><div style="width:${Math.min(p.score ?? 0, 100)}%;background:${scoreColor(p.score)}"></div></div>
@@ -1203,7 +1217,7 @@ function renderNearBoard(nearRows, hints, nQualified) {
     "</tr></thead><tbody>" +
     sorted.map((r, idx) =>
       `<tr class="expandable" data-idx="${idx}" title="Click for the score breakdown">` +
-      `<td data-l="Stock"${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${esc(r.ticker)}</td>` +
+      `<td data-l="Stock"${r.name && r.name !== r.ticker ? ` data-tip="${esc(r.name)}"` : ""}>${tkLink(r.ticker)}</td>` +
       `<td class="score" style="color:${scoreColor(r.score)}" data-l="Score">${esc(r.score)}</td>` +
       `<td class="whynot" data-l="Why not">${esc(r.why_not || "")}</td>` +
       `<td data-l="Sector">${esc(r.sector && r.sector !== "?" ? r.sector : "—")}</td>` +
@@ -1217,6 +1231,7 @@ function renderNearBoard(nearRows, hints, nQualified) {
     nb.dataset.expandWired = "1";
     nb.addEventListener("click", ev => {
       if (ev.target.closest("th")) return;
+      if (ev.target.closest("a")) return;
       const tr = ev.target.closest("tbody tr[data-idx]");
       if (!tr) return;
       const next = tr.nextElementSibling;

@@ -1292,7 +1292,19 @@ def _results_refresher():
 
 
 def _book_refresher():
-    """Keep the books warm without ever making a request wait for them."""
+    """Keep all nine published books warm without ever making a request
+    wait for them.
+
+    Four of these — earnings, patterns, regime, recent-picks — used to
+    be fetched only once, inside `_warm_books()` at process boot, and
+    never again: found by tracing every `fetch=True` call site and
+    seeing that four of the nine `_*_book()` functions never appeared
+    in this loop. On a long-lived instance that meant those four went
+    stale for the life of the deploy, while the other five kept
+    refreshing every `BOOKS_POLL_S` — which is exactly how two pages
+    reading the "same" published fact at different ages can end up
+    disagreeing with each other. All nine now share one cadence.
+    """
     while True:
         try:
             _price_book(fetch=True)
@@ -1314,6 +1326,22 @@ def _book_refresher():
             _inv13f_book(fetch=True)
         except Exception as e:
             print(f"[warm] 13F book refresh failed: {e}", flush=True)
+        try:
+            _earnings_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] earnings calendar (published) refresh failed: {e}", flush=True)
+        try:
+            _patterns_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] pattern sweep refresh failed: {e}", flush=True)
+        try:
+            _regime_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] market regime refresh failed: {e}", flush=True)
+        try:
+            _recent_picks_book(fetch=True)
+        except Exception as e:
+            print(f"[warm] recent picks (cooldown) refresh failed: {e}", flush=True)
         # The books are local file reads on this deployment, so refreshing
         # them is nearly free — and the scan publishes hourly, so an
         # instance that only looked once an hour could sit half an hour
@@ -1939,6 +1967,23 @@ def credit_page(ticker: str):
         i = next(j for j, (_, k) in enumerate(rows) if k == t)
         near = [{"ticker": k, "dd": d, "band": credit.band(d)}
                 for d, k in rows[max(0, i - 2):i + 3]]
+    # Cross-references, so this report points back outward too — reusing
+    # the exact same in-memory books /today already reads, zero new
+    # network calls. A ticker with 13F holders or a spot on Today's Five
+    # is a genuinely different fact from anything measured above, and
+    # this used to be the one page on the site that never said so.
+    held_by = list(((_inv13f_book() or {}).get("tickers") or {})
+                   .get(t, {}).get("holders") or [])
+    recent = _recent_picks_book() or {}
+    recent_entries = recent.get("history") or []
+    today_for_streak = all_dates[-1] if all_dates else ""
+    latest_entry = max(recent_entries, key=lambda e: e.get("date") or "",
+                       default=None)
+    in_todays_five = bool(latest_entry
+                          and latest_entry.get("date") == today_for_streak
+                          and t in (latest_entry.get("picks") or {}))
+    recent_streak = (None if in_todays_five else
+                     ranking.session_streak(t, recent, today_for_streak))
     return render_template("credit.html", r=rep, t=t, hist=hist, near=near,
                            dates=hdates, horizons=horizons,
                            # the filing date and the price date are different
@@ -1950,7 +1995,10 @@ def credit_page(ticker: str):
                            # the same set the front page counts — a
                            # live-measured extra made this page say 180
                            # while the directory said 179, in one minute
-                           n_measured=n_book)
+                           n_measured=n_book,
+                           held_by_investors=held_by,
+                           in_todays_five=in_todays_five,
+                           recent_streak=recent_streak)
 
 
 @app.route("/credit", methods=["POST"])
@@ -2099,8 +2147,8 @@ def today_page():
     # in the last few sessions behind fresh names unless its score has
     # genuinely moved; with no published history yet this is exactly
     # res["ranked"][:5], unchanged.
-    top5 = ranking.select_daily_five(res["ranked"], _recent_picks_book(),
-                                     price_date or "",
+    history = _recent_picks_book()
+    top5 = ranking.select_daily_five(res["ranked"], history, price_date or "",
                                      res["max_points_available"])
     for row in top5:
         # row already carries its own cal_covered/earnings_single_source
@@ -2116,6 +2164,11 @@ def today_page():
         p["component_max"] = row.get("component_max") or {}
         p["cooldown_backfill"] = row.get("cooldown_backfill", False)
         p["cooldown_waived"] = row.get("cooldown_waived", False)
+        # a real, computed "how long has this been here" — same history
+        # select_daily_five() just read, described a second way; see
+        # ranking.session_streak()
+        p["streak"] = ranking.session_streak(row["ticker"], history,
+                                             price_date or "")
         # informational only — never read by ranking.py, see the field's
         # own comment in _today_candidates()
         p["held_by_investors"] = row.get("held_by_investors") or []
@@ -2789,7 +2842,15 @@ def published_route():
                                "vol": len(_vol_book()),
                                "credit": len(_credit_book()),
                                "liquidity": len(_liq_book()),
-                               "investors13f": len((_inv13f_book() or {}).get("tickers") or {})}})
+                               "investors13f": len((_inv13f_book() or {}).get("tickers") or {})},
+                    # when each of the four books that used to freeze at
+                    # boot last actually refreshed — the only way to tell
+                    # "fixed" from "looks fixed" without waiting out a
+                    # multi-hour staleness window on faith
+                    "book_ts": {"earnings": _earn_pub["ts"],
+                               "patterns": _patterns_pub["ts"],
+                               "regime": _regime_pub["ts"],
+                               "recent_picks": _recent_pub["ts"]}})
 
 
 @app.route("/published/refresh", methods=["POST"])
