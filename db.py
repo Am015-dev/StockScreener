@@ -96,10 +96,23 @@ CREATE TABLE IF NOT EXISTS edge_stats (
 """
 
 
+_schema_ready = False
+
+
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_SCHEMA)
+    global _schema_ready
+    if not _schema_ready:
+        # CREATE TABLE/INDEX IF NOT EXISTS is idempotent, so re-running it
+        # on every single call (this is the one function every db.py
+        # operation goes through) was pure overhead after the first —
+        # including against a market.db swapped in later by
+        # app.py's _restore_market_db(): that file is itself produced by
+        # this same _SCHEMA via a scan runner's own db.py, so every
+        # IF NOT EXISTS in it is already trivially satisfied.
+        conn.executescript(_SCHEMA)
+        _schema_ready = True
     return conn
 
 

@@ -45,11 +45,30 @@ def _get_text(url: str, timeout: float = 20):
     return r.text
 
 
+FTD_MAX_RETRIES = 3
+
+
 def _get_bytes(url: str, timeout: float = 30):
-    r = requests.get(url, headers={"User-Agent": screener.SEC_UA}, timeout=timeout)
-    if r.status_code != 200:
-        raise RuntimeError(f"SEC {r.status_code}: {url}")
-    return r.content
+    """Each manager's own 13F filing fetch already tolerates one bad
+    filing without costing the others (a per-manager try/except further
+    down). The fails-to-deliver zips this feeds had no such protection —
+    one timeout or reset on any of the three discarded ALL of them for
+    the run, degrading the whole week's ticker mapping to issuer-name-only
+    over a single transient failure. Same retry-with-backoff shape
+    polygon_data.py already uses for this class of failure."""
+    last = None
+    for attempt in range(FTD_MAX_RETRIES):
+        try:
+            r = requests.get(url, headers={"User-Agent": screener.SEC_UA},
+                             timeout=timeout)
+            if r.status_code != 200:
+                raise RuntimeError(f"SEC {r.status_code}: {url}")
+            return r.content
+        except Exception as e:                              # noqa: BLE001
+            last = e
+            if attempt < FTD_MAX_RETRIES - 1:
+                time.sleep(2 * (attempt + 1))
+    raise last
 
 
 def _latest_ftd_files(n: int = 3) -> list[bytes]:

@@ -438,6 +438,26 @@ def test_pattern(series: dict, fn, horizon: int = DEFAULT_HORIZON,
     }
 
 
+def _sorted_p_items(results: dict) -> list:
+    items = [(k, v) for k, v in results.items() if v and v.get("p") is not None]
+    items.sort(key=lambda kv: kv[1]["p"])
+    return items
+
+
+def _fdr_cutoff(items: list, m: int, fdr: float, divisor: float = 1.0) -> float:
+    """The largest p-value that clears the step-up line at its own rank —
+    the arithmetic benjamini_hochberg() and benjamini_yekutieli() share.
+    They are NOT interchangeable (BY is a stricter, independent
+    cross-check of BH's survivors, not a replacement — see
+    benjamini_yekutieli()'s own docstring); only this inner scan, which
+    both perform identically, is worth naming once."""
+    cutoff = 0.0
+    for i, (_, v) in enumerate(items, start=1):
+        if v["p"] <= (i / m) * fdr / divisor:
+            cutoff = v["p"]
+    return cutoff
+
+
 def benjamini_hochberg(results: dict, fdr: float = 0.10) -> dict:
     """Which p-values survive testing a whole family of patterns.
 
@@ -447,15 +467,11 @@ def benjamini_hochberg(results: dict, fdr: float = 0.10) -> dict:
     matches what this is for: finding candidates worth a second look,
     not proving a theorem.
     """
-    items = [(k, v) for k, v in results.items() if v and v.get("p") is not None]
+    items = _sorted_p_items(results)
     if not items:
         return {}
-    items.sort(key=lambda kv: kv[1]["p"])
     m = len(items)
-    cutoff = 0.0
-    for i, (_, v) in enumerate(items, start=1):
-        if v["p"] <= (i / m) * fdr:
-            cutoff = v["p"]
+    cutoff = _fdr_cutoff(items, m, fdr)
     out = {}
     for k, v in items:
         out[k] = dict(v, survives=bool(cutoff and v["p"] <= cutoff),
@@ -683,16 +699,12 @@ def benjamini_yekutieli(results: dict, fdr: float = 0.10) -> dict:
     a matter of course — but a pattern that survives BH and NOT this is
     worth a second look before it is called confirmed.
     """
-    items = [(k, v) for k, v in results.items() if v and v.get("p") is not None]
+    items = _sorted_p_items(results)
     if not items:
         return {}
-    items.sort(key=lambda kv: kv[1]["p"])
     m = len(items)
     c_m = sum(1.0 / i for i in range(1, m + 1))
-    cutoff = 0.0
-    for i, (_, v) in enumerate(items, start=1):
-        if v["p"] <= (i / m) * fdr / c_m:
-            cutoff = v["p"]
+    cutoff = _fdr_cutoff(items, m, fdr, divisor=c_m)
     out = {}
     for k, v in items:
         out[k] = dict(v, survives_by=bool(cutoff and v["p"] <= cutoff),
