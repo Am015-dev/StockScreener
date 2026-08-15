@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 import backtest
 import db
 import journal
+import ranking
 import screener
 import polygon_data as polygon
 import pandas as _pd
@@ -738,6 +739,86 @@ def run_preset(name: str, overrides: dict, universe_max: int,
     return payload
 
 
+def _record_todays_five(out: Path) -> None:
+    """What Today's Five would show right now, from the files this run
+    just published — recorded, not published as a page in its own
+    right, so `ranking.select_daily_five()` can push a name shown
+    recently behind fresh names next session.
+
+    Why this exists at all: two of the four score components
+    (`adds to what you own`, `confirmed pattern`) are structurally zero
+    for an anonymous site visitor — no holdings to compare against, and
+    nothing has yet survived this project's own pattern holdout (see
+    /patterns). Ranking on the other two alone, both slow-moving
+    fundamentals, floats the same handful of ultra-stable blue chips to
+    the top for weeks. This is the fix's data source.
+
+    Reads back the files this run just wrote rather than reusing
+    in-memory variables from earlier in `main()`, so it always reflects
+    exactly what the site itself will read — including a run where one
+    of the books failed to publish this time (an empty dict there is
+    the same safe degradation `ranking.build_candidates()` already
+    tolerates for a missing book).
+    """
+    def _read(name):
+        try:
+            return json.loads((out / name).read_text())
+        except Exception:
+            return {}
+
+    book = _read("prices.json")
+    dates = book.get("dates") or []
+    price_date = dates[-1] if dates else None
+    if not price_date:
+        print("today's-five history: no price date this run, skipping",
+              file=sys.stderr)
+        return
+
+    vols = _read("vol.json")
+    creds = _read("credit.json")
+    liq = _read("liquidity.json")
+    earn_payload = _read("earnings.json")
+    cal = earn_payload.get("map") or {}
+    cal_ok = bool(earn_payload.get("complete"))
+    eu_map = (earn_payload.get("eu") or {}).get("map") or {}
+    earn, earn_single_source = dict(cal), set()
+    for t, d in eu_map.items():
+        if t not in earn:            # US source never overridden
+            earn[t] = d
+            earn_single_source.add(t)
+
+    prev_history = {}
+    try:
+        prev_history = json.loads(Path("/tmp/prev_recent_picks.json").read_text())
+    except Exception:
+        pass
+
+    candidates = ranking.build_candidates(
+        book.get("series") or {}, vols, creds, liq, earn, cal_ok,
+        earn_single_source=earn_single_source, region_of=screener._region)
+    res = ranking.score(candidates, holdings=[], patterns_report=None,
+                        risk_budget=100.0, horizon=ranking.DEFAULT_HORIZON,
+                        corr_by_ticker=None)
+    top5 = ranking.select_daily_five(res["ranked"], prev_history, price_date,
+                                     res["max_points_available"])
+    if not top5:
+        print("today's-five history: nothing ranked this run, skipping",
+              file=sys.stderr)
+        return
+
+    history = [e for e in (prev_history.get("history") or [])
+              if e.get("date") != price_date]
+    history.append({"date": price_date,
+                    "picks": {r["ticker"]: {"score": r["score"]} for r in top5
+                              if r.get("ticker")}})
+    history.sort(key=lambda e: e.get("date") or "")
+    keep = ranking.COOLDOWN_SESSIONS + 5      # a little slack past the window
+    history = history[-keep:]
+    (out / "recent_picks.json").write_text(json.dumps({"history": history}))
+    print(f"published today's-five history: {price_date} -> "
+          f"{sorted(history[-1]['picks'])}, {len(history)} session(s) kept")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="published")
@@ -980,6 +1061,15 @@ def main() -> int:
                      f"(single source)" if payload.get("eu") else ""))
     except Exception as e:
         print(f"earnings calendar not published: {type(e).__name__}: {e}",
+              file=sys.stderr)
+
+    # See _record_todays_five()'s own docstring for why this exists: the
+    # anonymous view's ranking is structurally slow-moving, and this is
+    # what lets it stop showing the same five names every session.
+    try:
+        _record_todays_five(out)
+    except Exception as e:
+        print(f"today's-five history not recorded: {type(e).__name__}: {e}",
               file=sys.stderr)
 
     (out / "index.json").write_text(json.dumps({

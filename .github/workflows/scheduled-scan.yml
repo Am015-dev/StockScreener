@@ -80,6 +80,12 @@ jobs:
           if git show origin/screener-data:credit.json > /tmp/prev_credit.json 2>/dev/null; then
             echo "restored $(python -c "import json;print(len(json.load(open('/tmp/prev_credit.json'))))" 2>/dev/null || echo '?') credit standings"
           fi
+          # Today's-five cooldown history: without last session's actual
+          # picks, every run would think nothing was ever shown before and
+          # the cooldown could never engage.
+          if git show origin/screener-data:recent_picks.json > /tmp/prev_recent_picks.json 2>/dev/null; then
+            echo "restored $(python -c "import json;print(len(json.load(open('/tmp/prev_recent_picks.json')).get('history') or []))" 2>/dev/null || echo '?') session(s) of pick history"
+          fi
 
       - name: Run the preset scans
         env:
