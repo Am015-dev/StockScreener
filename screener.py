@@ -1621,7 +1621,28 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 if support is None or support >= price:
                     reject(ticker, "no valid pivot support below price")
                     continue
-                stop = support * (1 - p["stop_buffer_pct"] / 100)
+                # Needed here, not just for the diagnostic stop_atr value
+                # below: DEFAULTS["stop_mode"] is "atr" (STRATEGY.md's own
+                # sweep found switching from a fixed pivot-percentage stop
+                # to 1.5xATR moved the return from -14.3% to +25.0% and
+                # halved the drawdown), and backtest.py already implements
+                # this branch correctly — this scanner, the one that
+                # actually prices every live pick, did not, and was
+                # unconditionally using the pivot-only stop the project's
+                # own measurement found inferior. Mirrors backtest.py's
+                # stop_mode branch exactly.
+                a = atr(hist)
+                if p["stop_mode"] == "atr":
+                    if a is None:
+                        reject(ticker, "insufficient data for a volatility-based stop")
+                        continue
+                    # Never place it ABOVE the pivot — the structural level
+                    # is what invalidates the setup, so the wider of the
+                    # two stops is the honest one.
+                    stop = min(support * (1 - p["stop_buffer_pct"] / 100),
+                              price - p["stop_atr_mult"] * a)
+                else:
+                    stop = support * (1 - p["stop_buffer_pct"] / 100)
                 resistance = float(hist["High"].tail(p["swing_lookback"]).max())
                 if resistance <= price:
                     reject(ticker, "price at/above swing high (no target)")
@@ -1638,7 +1659,6 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 misses: list[tuple[str, str]] = []
                 r = rsi(hist["Close"])
                 dollar_vol = avg_vol * price
-                a = atr(hist)
                 stop_atr = round(risk_ps / a, 2) if a else None
                 if p["require_market_uptrend"] and regime.get(region) is False:
                     misses.append(("regime", f"market regime ({BENCHMARKS[region]} below SMA200)"))
