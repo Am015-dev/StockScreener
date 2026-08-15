@@ -2308,12 +2308,16 @@ loadDefaults();
 refresh();
 
 // filters restored from this browser, or edited by hand: look for a stored
-// scan matching them rather than making the user re-scan to see anything
+// scan matching them rather than making the user re-scan to see anything.
+// saveLocal() used to fire only from the CSV-import success handler —
+// "Everything stays in your browser" was true for an imported portfolio
+// and silently false for one typed by hand, which vanished on reload with
+// no error. Same delegated listeners, so every edit persists either way.
 document.addEventListener("change", (e) => {
-  if (e.target.closest("#filterBox, .sector")) filtersChanged();
+  if (e.target.closest("#filterBox, .sector")) { filtersChanged(); saveLocal(); }
 });
 document.addEventListener("input", (e) => {
-  if (e.target.closest("#filterBox")) filtersChanged();
+  if (e.target.closest("#filterBox")) { filtersChanged(); saveLocal(); }
 });
 setTimeout(() => loadStoredScan(true), 900);   // after loadDefaults() settles
 </script>

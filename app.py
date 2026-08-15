@@ -464,7 +464,11 @@ def _drop_offmethod(payload: dict) -> tuple[dict, int]:
         rows = payload.get(key)
         if not isinstance(rows, list):
             continue
-        keep = [r for r in rows if not _methodology_violations(r)]
+        # defense in depth alongside snapshot_restore()'s own shape check —
+        # a stray non-dict row degrades to "dropped" here rather than
+        # 500ing every future load of this same filter set
+        keep = [r for r in rows
+               if isinstance(r, dict) and not _methodology_violations(r)]
         if key == "results":
             dropped = len(rows) - len(keep)
         payload[key] = keep
@@ -621,6 +625,27 @@ def _on_partial(rows, scanned, total, pending=None, gen=None):
         _state["pending"] = pending
 
 
+def _friendly_error(e: Exception) -> str:
+    """An unhandled exception, in a sentence a reader can act on.
+
+    `f"{type(e).__name__}: {e}"` used to go straight into the primary
+    error banner — a reader saw "KeyError: 'RSI'" as the headline, with
+    the raw exception the ONLY thing on screen. Every other failure path
+    in this file (the cancel handler, the SEC timeout, the earnings
+    calendar) already explains what happened in plain words and
+    reassures the reader it isn't about the data; this brings the
+    catch-all in line with that. The rate-limit case keeps a phrase the
+    page's own detection (a client-side regex on this exact string)
+    still matches, so that existing hint keeps firing.
+    """
+    print(f"[error] {type(e).__name__}: {e}", flush=True)
+    text = str(e).lower()
+    if any(k in text for k in ("rate limit", "too many requests", "429")):
+        return "Yahoo Finance is rate-limiting requests right now."
+    return "Hit an unexpected error while processing. Check the log " \
+           "below, then try again."
+
+
 def _run_scan(params):
     gen = _state.get("generation", 0)
     try:
@@ -684,7 +709,7 @@ def _run_scan(params):
         if _state["pending"]:
             _start_auto_reverify(dict(params or {}))
     except Exception as e:
-        _state["error"] = f"{type(e).__name__}: {e}"
+        _state["error"] = _friendly_error(e)
         _state["status"] = "error"
         _progress(f"Scan failed: {_state['error']}")
     finally:
@@ -853,7 +878,7 @@ def _run_backtest_thread(params):
         _save_snapshot(params)
     except Exception as e:
         _state["bt_status"] = "error"
-        _progress(f"Simulation failed: {type(e).__name__}: {e}")
+        _progress(f"Simulation failed: {_friendly_error(e)}")
 
 
 @app.route("/backtest", methods=["POST"])
@@ -1954,8 +1979,11 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
                            "with the company — try again in a moment.",
                 "missing": ["SEC filings"]}
     except Exception as e:
+        print(f"[credit] {ticker}: {type(e).__name__}: {e}", flush=True)
         return {"ok": True, "ticker": ticker, "dd": None,
-                "verdict": f"Could not read the filings ({type(e).__name__}).",
+                "verdict": "Could not read the filings just now — a fetch "
+                          "problem, not a statement about the company. "
+                          "Try again in a moment.",
                 "missing": ["SEC filings"]}
 
     row = next((r for r in (_state.get("results") or [])
@@ -2618,6 +2646,18 @@ def snapshot_restore():
     params = snap.get("_params")
     if not params:
         return jsonify({"ok": True, "restored": False})
+    # db.restore_edge() and journal.restore() (the two structurally similar
+    # mirror-restore endpoints) both validate their input's shape before
+    # writing it; this one didn't. A non-dict row here reaches
+    # _methodology_violations() on the next load of this same filter set
+    # (row.get(...) on a string) and 500s until a real scan overwrites it —
+    # reject the shape up front instead.
+    for key in ("results", "top_picks", "near_board", "pending"):
+        rows = snap.get(key)
+        if rows is not None and (not isinstance(rows, list)
+                                 or not all(isinstance(r, dict) for r in rows)):
+            return jsonify({"ok": False, "restored": False,
+                            "message": f"'{key}' must be a list of objects"}), 400
     market_db.save_snapshot(params, {k: snap.get(k) for k in SNAPSHOT_KEYS})
     # snapshot_load() (its own POST sibling, same _load_snapshot() call)
     # already guards this against a scan that is running; this one didn't,
