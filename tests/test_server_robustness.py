@@ -807,6 +807,17 @@ for _payload, _want in (
 A._credit_view = _saved_view_p
 print("every holdings shape the page teaches parses to tickers, never numbers")
 
+# ---- /check refuses an absurdly long holdings list instead of iterating it ----
+_too_many = [{"ticker": "AAPL", "shares": 1} for _ in range(A.HOLDINGS_MAX + 1)]
+r = _c2.post("/check", json={"ticker": "ZQX", "holdings": _too_many})
+assert r.status_code == 400, r.status_code
+assert "too many holdings" in (r.get_json() or {}).get("error", "")
+_ok_many = [{"ticker": "AAPL", "shares": 1} for _ in range(A.HOLDINGS_MAX)]
+r2 = _c2.post("/check", json={"ticker": "ZQX", "holdings": _ok_many})
+assert r2.status_code == 200, r2.status_code
+print(f"a holdings list over {A.HOLDINGS_MAX} entries is refused with 400, "
+      f"exactly {A.HOLDINGS_MAX} is accepted")
+
 print("\nCHECK PARSER PINNED")
 
 

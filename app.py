@@ -107,7 +107,6 @@ def _no_stale_html(resp):
     return resp
 
 RESULTS_CSV = os.environ.get("RESULTS_CSV", "/tmp/screener_results.csv")
-ALERT_PROFILE = os.environ.get("ALERT_PROFILE", "/tmp/alert_profile.json")
 TOP_N = 3
 
 # How many stocks a scan started from the web page may touch.
@@ -119,6 +118,11 @@ TOP_N = 3
 # work; the button's job is to answer a custom filter question quickly and
 # actually finish. Clamping and SAYING SO beats failing and guessing why.
 WEB_SCAN_MAX = int(os.environ.get("WEB_SCAN_MAX", "250"))
+
+# How many holdings /check accepts in one request. Real portfolios are
+# tens of positions, not thousands; this bounds an unauthenticated
+# client's worst case before pretrade.check() starts iterating them.
+HOLDINGS_MAX = int(os.environ.get("HOLDINGS_MAX", "500"))
 
 _lock = threading.Lock()
 _state = {
@@ -827,11 +831,6 @@ def run():
                       # silently adopted on top of it.
                       results_ts=0)
         _auto["cycles"] = 0   # a manual run resets the auto-verify budget
-        try:   # the latest scan's filters double as the daily-alert profile
-            with open(ALERT_PROFILE, "w") as f:
-                json.dump(params, f)
-        except Exception:
-            pass
         if capped:
             _state["log"].append(
                 f"Live scan limited to the {WEB_SCAN_MAX} largest stocks (you "
@@ -957,7 +956,6 @@ def snapshot_load():
 # fail outright from a datacenter IP, which is the whole reason this
 # cannot be done live.
 _book = {"ts": 0.0, "data": None}
-BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
 BOOKS_POLL_S = float(os.environ.get("BOOKS_POLL_S", "300"))
 RESULTS_POLL_S = float(os.environ.get("RESULTS_POLL_S", "600"))
 MARKET_DB_POLL_S = float(os.environ.get("MARKET_DB_POLL_S", "3600"))
@@ -1481,6 +1479,16 @@ def check_trade():
     if not ticker:
         return jsonify({"ok": False, "error": "no ticker given"}), 400
     holdings = body.get("holdings") or []
+    # Unauthenticated POST, single worker: nothing upstream bounds how many
+    # holdings a client can send before pretrade.check() starts iterating
+    # and building a correlation matrix over them. No real portfolio needs
+    # anywhere near this many lines/entries.
+    _n_holdings = (len(holdings.splitlines()) if isinstance(holdings, str)
+                  else len(holdings) if isinstance(holdings, (list, dict))
+                  else 0)
+    if _n_holdings > HOLDINGS_MAX:
+        return jsonify({"ok": False,
+                        "error": f"too many holdings (max {HOLDINGS_MAX})"}), 400
     # the shipped page sends objects, but a hand-edited localStorage or an
     # API client can send bare tickers, and pretrade did h.get(...) on them
     if isinstance(holdings, dict):
@@ -3130,8 +3138,8 @@ def _send_alert(text: str) -> list[str]:
 
 @app.route("/alert", methods=["GET", "POST"])
 def alert():
-    """Scheduled entry point (GitHub Actions cron): rerun the saved filter
-    profile and push the verified top picks to the configured channels."""
+    """Scheduled entry point (GitHub Actions cron): read the published
+    board and push the current watchlist to the configured channels."""
     # This used to run a full scan inline, in the request thread, with
     # universe_max=1000 whenever the saved profile was missing — which is
     # after every deploy, because /tmp is wiped. That is four times the
