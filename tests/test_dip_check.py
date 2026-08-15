@@ -275,4 +275,57 @@ print("without force=True, a recent restore is not re-fetched — same rate "
 
 print("\nMARKET.DB RESTORE PINNED")
 
+
+# ---- 5. db.export_edge()/db.restore_edge(): the one member of the
+# export/restore disaster-recovery family (journal, snapshots, edge) that
+# had no round-trip test at all — the only prior coverage timed
+# export_edge() without asserting anything about its output.
+#
+# Self-contained on its own trades rather than reusing section 1's MANY/
+# FEW: section 4 above already swapped MARKET_DB's underlying file
+# contents (that is what _restore_market_db() does), so by this point
+# the database no longer holds section 1's fixture.
+os.environ["MARKET_DB"] = os.path.join(TMP, "edge_source.db")
+importlib.reload(db)
+db.record_backtest(P, [
+    {"ticker": "RT-WIN", "date": "2025-06-01", "exit_date": "2025-06-10",
+     "outcome_r": 2.0, "status": "target", "rr_planned": 3.0, "entry": 20.0,
+     "stop_px": 19.0, "target_px": 26.0, "bars_held": 7, "mfe_r": 2.0, "mae_r": -0.3},
+    {"ticker": "RT-WIN", "date": "2025-07-01", "exit_date": "2025-07-10",
+     "outcome_r": 1.5, "status": "target", "rr_planned": 3.0, "entry": 22.0,
+     "stop_px": 21.0, "target_px": 28.0, "bars_held": 6, "mfe_r": 1.5, "mae_r": -0.1},
+    {"ticker": "RT-WIN", "date": "2025-08-01", "exit_date": "2025-08-10",
+     "outcome_r": -1.0, "status": "stop", "rr_planned": 3.0, "entry": 24.0,
+     "stop_px": 23.0, "target_px": 30.0, "bars_held": 5, "mfe_r": 0.4, "mae_r": -1.0},
+    {"ticker": "RT-WIN", "date": "2025-09-01", "exit_date": "2025-09-10",
+     "outcome_r": 2.5, "status": "target", "rr_planned": 3.0, "entry": 26.0,
+     "stop_px": 25.0, "target_px": 33.0, "bars_held": 8, "mfe_r": 2.5, "mae_r": -0.2},
+    {"ticker": "RT-WIN", "date": "2025-10-01", "exit_date": "2025-10-10",
+     "outcome_r": 1.0, "status": "target", "rr_planned": 3.0, "entry": 28.0,
+     "stop_px": 27.0, "target_px": 34.0, "bars_held": 4, "mfe_r": 1.0, "mae_r": -0.4},
+], n_stocks=50)
+before = db.edge_for(P)
+assert before.get("RT-WIN", {}).get("n") == 5, before
+dump = db.export_edge()
+assert dump, "export_edge() must not come back empty right after record_backtest()"
+
+# simulate the disk wipe this exists for: a brand-new, empty db
+os.environ["MARKET_DB"] = os.path.join(TMP, "edge_wiped.db")
+importlib.reload(db)
+assert db.edge_for(P) == {}, "the fresh db must start with nothing to restore into"
+
+added = db.restore_edge(dump)
+assert added == len(dump), (added, len(dump))
+after = db.edge_for(P)
+assert after.get("RT-WIN") == before.get("RT-WIN"), (after.get("RT-WIN"), before.get("RT-WIN"))
+print("export_edge() -> restore_edge() round-trips RT-WIN's exact "
+      "n/win_rate/avg_r into a fresh database")
+
+assert db.restore_edge([{"bad": 1}]) == 0, "a malformed row must be skipped, not raise"
+assert db.restore_edge("garbage") == 0, "non-list input must be refused, not raise"
+assert db.restore_edge([]) == 0
+print("restore_edge() refuses malformed rows and non-list input without raising")
+
+print("\nEDGE EXPORT/RESTORE ROUND TRIP PINNED")
+
 print("\nALL DIP-CHECK TESTS PASSED")

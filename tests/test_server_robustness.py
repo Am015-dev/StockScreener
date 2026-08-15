@@ -943,3 +943,42 @@ finally:
     A._price_book, A._credit_view = _saved_pb2, _saved_view2
 
 print("\nWARM-UP VS UNKNOWN PINNED")
+
+
+# ---- /configs: clears_bar had zero test coverage ----
+# This is the project's own machine-checked version of "don't render an
+# unmeasured thing as safe" for simulated rule sets (profit factor >= 1.5,
+# drawdown no worse than SPY/-20%, Sortino >= 1.0) — a sign or boundary
+# error here would silently let a losing configuration report
+# clears_bar=true with nothing to catch it.
+import db as market_db_direct
+
+def _seed_config(rsi_low, metrics):
+    p = screener.clean_params({"rsi_low": rsi_low})
+    market_db_direct.record_backtest(p, [{
+        "ticker": "CFG", "date": "2025-01-01", "exit_date": "2025-01-10",
+        "outcome_r": 1.0, "status": "target", "rr_planned": 3.0,
+        "entry": 10.0, "stop_px": 9.0, "target_px": 13.0,
+        "bars_held": 5, "mfe_r": 1.0, "mae_r": -0.2}], n_stocks=10)
+    market_db_direct.record_metrics(p, metrics)
+    return p
+
+_seed_config(10, {"profit_factor": 2.0, "mdd_pct": 10.0, "sortino": 1.5,
+                  "spy": {"mdd_pct": 15.0}})
+_seed_config(12, {"profit_factor": 1.2, "mdd_pct": 10.0, "sortino": 1.5,
+                  "spy": {"mdd_pct": 15.0}})
+_seed_config(14, {"profit_factor": 2.0, "mdd_pct": 25.0, "sortino": 1.5,
+                  "spy": {"mdd_pct": 15.0}})
+_seed_config(16, {"profit_factor": 2.0, "mdd_pct": 10.0, "sortino": 0.5,
+                  "spy": {"mdd_pct": 15.0}})
+
+rows = {r["rules"]["rsi_low"]: r for r in
+        client.get("/configs").get_json()["configs"]}
+assert rows[10]["clears_bar"] is True and rows[10]["fails"] == [], rows[10]
+assert rows[12]["clears_bar"] is False and "profit factor" in rows[12]["fails"][0], rows[12]
+assert rows[14]["clears_bar"] is False and "drawdown" in rows[14]["fails"][0], rows[14]
+assert rows[16]["clears_bar"] is False and "Sortino" in rows[16]["fails"][0], rows[16]
+print("GET /configs' clears_bar and fails[] correctly flag each of the three "
+      "thresholds (profit factor, drawdown vs SPY, Sortino) independently")
+
+print("\n/CONFIGS CLEARS_BAR PINNED")
