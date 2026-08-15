@@ -106,7 +106,7 @@
 </style>
 
 <div class="wrap">
-  <p class="tiny" style="margin:0 0 1rem"><a href="/">← Today's Five</a></p>
+{% include "_nav.html" %}
 
   {% if not rows %}
   <div class="card">
@@ -276,6 +276,8 @@
       optimistic end.{% if source %} Read from the {{ source }}.{% endif %}</p>
   </div>
   {% endif %}
+  {% set nav_variant = "bottom" %}
+  {% include "_nav.html" %}
 </div>
 
 <script>

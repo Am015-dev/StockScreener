@@ -187,7 +187,8 @@
           border-radius: var(--r); padding: var(--sp-4); position: relative;
           transition: border-color .15s ease, box-shadow .15s ease; }
   .card:hover { border-color: var(--ink-3); box-shadow: var(--shadow); }
-  .card .rank { position: absolute; top: var(--sp-3); right: var(--sp-4); font-size: 1.15rem; }
+  .card .rank { position: absolute; top: var(--sp-3); right: var(--sp-4); font-size: .85rem;
+                font-weight: 680; color: var(--ink-3); font-variant-numeric: tabular-nums; }
   .card .tk { font-size: 1.25rem; font-weight: 680; letter-spacing: -.02em; }
   .card .nm { color: var(--ink-2); font-size: .8125rem; margin-bottom: var(--sp-3);
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -235,7 +236,8 @@
   td.notes { text-align: left; font-size: .8125rem; color: var(--amber); max-width: 260px; }
   td.whynot { text-align: left; font-size: .8125rem; color: var(--amber); max-width: 240px; }
   tr.blockedrow > td { opacity: .72; }
-  tr.blockedrow > td:first-child::after { content: " ⛔"; }
+  tr.blockedrow > td:first-child::after { content: " — blocked"; color: var(--amber);
+    font-size: .8em; font-weight: 500; }
   td.blockedcell { color: var(--amber); font-weight: 620; }
   th.sortable { cursor: pointer; user-select: none; }
   th.sortable:hover { color: var(--accent); }
@@ -292,6 +294,7 @@
 </head>
 <body>
 <main>
+{% include "_nav.html" %}
   <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem">
     <h1>Dip Finder</h1>
     <button class="ghost" id="themeBtn" onclick="toggleTheme()"
@@ -321,7 +324,7 @@
   <div id="stallBox" style="display:none;margin:.3rem 0 .6rem;padding:.7rem .9rem;
        background:var(--surface-1);border:1px solid var(--line);
        border-left:3px solid var(--amber);border-radius:var(--r);color:var(--ink)">
-    <b style="color:var(--amber)">⚠ This scan has stopped responding.</b>
+    <b style="color:var(--amber)">This scan has stopped responding.</b>
     <span id="stallText" style="color:var(--ink-2)"></span>
     <button class="ghost" style="margin-left:.5rem" onclick="cancelScan()">
       Abandon it and show my last results</button>
@@ -338,7 +341,6 @@
          every stale download came from — and once pressed it replaced the
          full scheduled scan with whatever the trimmed run found. Scans now
          happen only on a schedule; this page reads what they produced. -->
-    <a class="dl" href="/">← Today's Five</a>
     <button class="ghost" onclick="resetFilters()">Reset filters</button>
     <span id="statusPill" class="pill">ready</span>
     <span id="timing" class="pill" style="display:none"></span>
@@ -442,7 +444,7 @@
         <div style="margin:.6rem 0 .2rem; display:flex; gap:.6rem; align-items:center; flex-wrap:wrap">
           <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none">
           <button type="button" class="ghost" onclick="document.getElementById('csvFile').click()">
-            📥 Import broker CSV</button>
+            Import broker CSV</button>
           <span class="hint" style="margin:0">Revolut transaction export or a simple
             <code>ticker,shares,cost</code> list</span>
         </div>
@@ -661,9 +663,10 @@
     — what this tool cannot do, and the fact that its own strategy does not
     currently clear its bar. Read it before acting on anything here.<br>
     <a href="/results.csv">Download this scan (CSV)</a> ·
-    <a href="/investors">Superinvestors</a> ·
     <span>Picks are a hypothesis, not advice. Verify earnings dates yourself.</span>
   </footer>
+  {% set nav_variant = "bottom" %}
+  {% include "_nav.html" %}
 </main>
 
 <script>
@@ -699,7 +702,7 @@ const COLDEFS = [
   ["support",  "Support",      "The price floor where buyers stepped in before — the stop-loss sits just below it.", fmtNum],
   ["friction_pct","Costs",     "Commission + spread as % of the hoped-for profit on this trade.", v => v + "%"],
   ["cum_risk_EUR","Σ risk",    "Running total of € at risk if you took this pick and every pick above it.", v => "€" + v],
-  ["fits_risk_budget","In budget?","✓ while the running total of risk still fits inside your portfolio's max total risk.", fmtNum],
+  ["fits_risk_budget","In budget?","Yes, while the running total of risk still fits inside your portfolio's max total risk.", fmtNum],
   ["sector_after","Sector after","What % of your portfolio this sector would be after buying — warned if above your cap.", v => v + "%"],
   ["flags",    "Notes",        "Warnings and data caveats for this pick, in plain words.", fmtNum],
 ];
@@ -725,7 +728,7 @@ const FLAG_TEXT = {
   sector_cap: "would push this sector above your portfolio cap",
 };
 // Some flags say only where a number came from. Rendering those behind a
-// ⚠ told the reader something was wrong with a pick whose earnings date
+// warning icon told the reader something was wrong with a pick whose earnings date
 // was in fact verified — the warning and the good news looked identical.
 const PROVENANCE_FLAGS = new Set([
   "earnings_from_calendar", "earnings_none_in_window",
@@ -942,18 +945,18 @@ document.getElementById("csvFile").addEventListener("change", async (ev) => {
   try {
     const r = await fetch("/parse_portfolio", {method: "POST", body: await file.text()});
     const d = await r.json();
-    if (!d.ok) { note.textContent = "⚠ " + (d.error || "could not parse file"); return; }
+    if (!d.ok) { note.textContent = d.error || "could not parse file"; return; }
     document.getElementById("holdingsText").value = d.holdings
       .map(h => `${h.ticker}, ${h.shares}, ${h.cost}`).join("\n");
     if (d.cash_eur > 0) document.getElementById("cash_eur").value = d.cash_eur;
     saveLocal();
-    let msg = `✓ Imported ${d.holdings.length} open positions` +
+    let msg = `Imported ${d.holdings.length} open positions` +
       (d.cash_eur > 0 ? `, cash €${d.cash_eur}` : "") +
       (d.stats && d.stats.rows ? ` (from ${d.stats.rows} events)` : "") + ".";
     if (d.notes && d.notes.length) msg += " " + d.notes.join(" · ");
     note.textContent = msg;
   } catch (e) {
-    note.textContent = "⚠ import failed: " + e;
+    note.textContent = "Import failed: " + e;
   } finally {
     ev.target.value = "";
   }
@@ -977,7 +980,7 @@ async function loadStoredScan(silent) {
     if (d.found) {
       const mins = Math.max(0, Math.round(Date.now() / 1000 / 60 - d.results_ts / 60));
       note.style.color = "var(--muted)";
-      note.textContent = `📂 Loaded the stored scan for these filters ` +
+      note.textContent = `Loaded the stored scan for these filters ` +
         `(${d.n_results} pick${d.n_results === 1 ? "" : "s"}, ` +
         `${mins < 60 ? mins + " min" : (mins / 60).toFixed(1) + " h"} old). ` +
         `The scheduled scan refreshes it; nothing here needs pressing.`;
@@ -1017,7 +1020,7 @@ function startPolling() {
   refresh();
 }
 
-function medal(i) { return ["🥇","🥈","🥉"][i] || "🏅"; }
+function rankLabel(i) { return "#" + (i + 1); }
 function scoreColor(s) { return s >= 70 ? "var(--green)" : s >= 50 ? "var(--amber)" : "var(--red)"; }
 
 const STATUS_TEXT = {idle: "ready", running: "scanning…", done: "done", error: "failed"};
@@ -1085,7 +1088,7 @@ function renderTopPicks(picks, near) {
   sec.style.display = "";
   if (fallback) {
     banner.style.display = "block";
-    banner.innerHTML = "⚠ <b>Nothing met every rule today</b> — the market is " +
+    banner.innerHTML = "<b>Nothing met every rule today</b> — the market is " +
       "not offering this setup right now. These are the closest candidates, " +
       "each with the reason it fell short. They are <b>not</b> trade signals; " +
       "treat them as a watchlist.";
@@ -1093,7 +1096,7 @@ function renderTopPicks(picks, near) {
   picks = shown;
   document.getElementById("topCards").innerHTML = picks.map((p, i) => `
     <div class="card">
-      <div class="rank">${medal(i)}</div>
+      <div class="rank">${rankLabel(i)}</div>
       <div class="tk">${esc(p.ticker)} <span style="color:${scoreColor(p.score)}" data-tip="Quality score 0–100: 70+ strong, 50–69 okay, below 50 weak.">${esc(p.score ?? "")}</span>
         ${p.status && p.status !== "NEW" ? `<span class="pill" style="margin-left:.4rem;font-size:.7rem" data-tip="You already hold this stock (and the % you're up or down on it).">${esc(p.status)}</span>` : ""}</div>
       <div class="nm">${esc(p.name ?? "")} · ${esc(p.sector ?? "")}</div>
@@ -1113,12 +1116,12 @@ function renderTopPicks(picks, near) {
       </div>
       ${sparkSVG(p, 260, 64)}
       ${p.edge_negative ? `<div class="warn" style="color:var(--red);font-weight:620">` +
-        `⛔ Your own rules lost money on this setup: ${esc(p.edge_r)}R average over ` +
+        `Your own rules lost money on this setup: ${esc(p.edge_r)}R average over ` +
         `${esc(p.edge_n)} past occurrences on this stock. The score rates the shape ` +
         `of the setup and cannot see that.</div>` : ""}
       ${p.why_not ? `<div class="warn">Fell short: ${esc(p.why_not)}</div>` : ""}
       ${p.rationale ? `<div class="why">${esc(p.rationale)}</div>` : ""}
-      ${flagText(p.flags, "warn") ? `<div class="warn">⚠ ${esc(flagText(p.flags, "warn"))}</div>` : ""}
+      ${flagText(p.flags, "warn") ? `<div class="warn">${esc(flagText(p.flags, "warn"))}</div>` : ""}
       ${flagText(p.flags, "source") ? `<div class="why">${esc(flagText(p.flags, "source"))}</div>` : ""}
     </div>`).join("");
   window.__topPicks = picks;
@@ -1242,7 +1245,7 @@ async function runBacktest() {
     body: JSON.stringify(collectParams())});
   const d = await r.json().catch(() => ({}));
   const msg = document.getElementById("btMsg");
-  if (!r.ok) { msg.style.display = "block"; msg.textContent = "⚠ " + (d.message || "could not start"); }
+  if (!r.ok) { msg.style.display = "block"; msg.textContent = d.message || "could not start"; }
   else { msg.style.display = "none"; document.getElementById("logBox").open = true; }
   startPolling();
 }
@@ -1317,7 +1320,7 @@ function renderBacktest(bt, btStatus) {
   }
   if (mismatch.length) {
     stale_rules.style.display = "block";
-    stale_rules.textContent = "⚠ These simulation results are for different rules (" +
+    stale_rules.textContent = "These simulation results are for different rules (" +
       mismatch.join(", ") + " have changed since it ran). Re-run the simulation " +
       "before judging the current filters.";
   } else stale_rules.style.display = "none";
@@ -1326,7 +1329,7 @@ function renderBacktest(bt, btStatus) {
   if (bt.from_db) {
     src_note.style.display = "block";
     const hrs = bt.ran_at ? (Date.now() / 1000 - bt.ran_at) / 3600 : null;
-    src_note.textContent = "📂 Loaded from the database" +
+    src_note.textContent = "Loaded from the database" +
       (hrs != null ? ` — simulated ${hrs < 1 ? "under an hour" : hrs.toFixed(0) + " h"} ago` : "") +
       ". These exact rules were already simulated, so nothing was re-downloaded.";
   } else src_note.style.display = "none";
@@ -1362,7 +1365,8 @@ function renderBacktest(bt, btStatus) {
     gate.style.display = "block";
     gate.style.color = "var(--text)";
     gate.innerHTML = "Backtest profile — reference only, not a recommendation: " +
-      checks.map(([ok, txt]) => `${ok ? "✓" : "✗"} ${esc(txt)}`).join(" · ") +
+      checks.map(([ok, txt]) => `<span style="color:${ok ? "var(--green)" : "var(--ink-3)"}">` +
+        `${ok ? "Yes" : "No"}</span> ${esc(txt)}`).join(" · ") +
       `<div class="hint" style="color:var(--muted)">These thresholds describe a configuration's simulated history; they do not mean it will work going forward, and the entry signal behind all of it already failed testing against random entry.</div>`;
   } else gate.style.display = "none";
   drawCurve((pf_v && pf_v.curve && pf_v.curve.length ? pf_v.curve : bt.curve) || []);
@@ -1425,8 +1429,8 @@ function renderConcentration(c, rows) {
   // the headline states the gap between what the list looks like and what
   // it is; the wording changes only when the finding does
   head.innerHTML = ratio >= 0.8
-    ? `🎯 <b>${esc(n)}</b> picks, and about <b>${esc(eb)}</b> genuinely separate bets — this list is well spread.`
-    : `⚠️ <b>${esc(n)}</b> picks, but only about <b>${esc(eb)}</b> genuinely separate bets.`;
+    ? `<b>${esc(n)}</b> picks, and about <b>${esc(eb)}</b> genuinely separate bets — this list is well spread.`
+    : `<b>${esc(n)}</b> picks, but only about <b>${esc(eb)}</b> genuinely separate bets.`;
   head.style.color = ratio >= 0.8 ? "var(--green)" : "var(--amber)";
 
   const big = c.biggest_cluster;
@@ -1493,7 +1497,7 @@ function renderPending(pending) {
   if (!pending || !pending.length) { wrap.style.display = "none"; return; }
   wrap.style.display = "block";
   document.getElementById("pendingTitle").textContent =
-    `⏳ ${pending.length} pick(s) awaiting safety verification`;
+    `${pending.length} pick(s) awaiting safety verification`;
   // Deliberately NOT a second table. The old panel repeated each blocked
   // setup with its technical score in the same green-to-red colour a
   // qualified pick gets, which reads as a ranking — the fail-open
@@ -1501,7 +1505,7 @@ function renderPending(pending) {
   // live in the results table, marked BLOCKED and unscored; this is only
   // the pointer to them.
   document.getElementById("pendingTable").innerHTML =
-    `<div class="hint" style="margin:0">Marked <b class="blockedcell">⛔ BLOCKED</b> at the ` +
+    `<div class="hint" style="margin:0">Marked <b class="blockedcell">BLOCKED</b> at the ` +
     `top of the results table: ` +
     pending.map(r => `<b>${esc(r.ticker)}</b>`).join(", ") +
     `. They are not scored and not ranked until their checks come back.</div>`;
@@ -1578,9 +1582,9 @@ async function syncAuthBackup() {
 
 // ---- track record ----
 const OUTCOME_TEXT = {
-  hit_target: ["✅ hit target", "var(--green)"],
-  hit_stop:   ["❌ stopped out", "var(--red)"],
-  expired:    ["⏳ expired (2 months, neither hit)", "var(--muted)"],
+  hit_target: ["hit target", "var(--green)"],
+  hit_stop:   ["stopped out", "var(--red)"],
+  expired:    ["expired (2 months, neither hit)", "var(--muted)"],
 };
 function rFmt(r) {
   if (r == null) return "—";
@@ -1832,7 +1836,7 @@ async function refresh() {
   if (s.capped_universe && s.status === "done") {
     capBox.style.display = "block";
     document.getElementById("cappedText").textContent =
-      `⚠ Showing a quick scan of the top ${esc(s.universe_size || 0)} stocks ` +
+      `Showing a quick scan of the top ${esc(s.universe_size || 0)} stocks ` +
       `(you asked for ${esc(s.capped_universe)}) — ${(s.results || []).length} result(s).`;
   } else capBox.style.display = "none";
 
@@ -1859,20 +1863,20 @@ async function refresh() {
         ? `best: ${esc(top.ticker)} — expected to add ${esc(top.mpc_r)}R` +
           ` (score ${esc(top.score)}; ranked by what it adds, not by score).`
         : `best: ${esc(top.ticker)} (score ${esc(top.score)}).`;
-      verdict.innerHTML = `✅ ${esc(n)} of ${esc(s.universe_size)} scanned stocks ` +
+      verdict.innerHTML = `${esc(n)} of ${esc(s.universe_size)} scanned stocks ` +
         `qualify today — ${lead}` +
-        (br.risk_factor < 1 ? ` <span style="color:var(--amber)">⚠ weak market ` +
+        (br.risk_factor < 1 ? ` <span style="color:var(--amber)">weak market ` +
          `breadth (${esc(br.pct)}%) — position sizes throttled to ${esc(br.risk_factor)}×.</span>` : "");
     } else if ((s.pending || []).length) {
-      verdict.textContent = `⏳ ${s.pending.length} pick(s) passed every technical test ` +
+      verdict.textContent = `${s.pending.length} pick(s) passed every technical test ` +
         `and are awaiting safety verification below — this completes automatically ` +
         `within a few minutes.`;
     } else if ((s.near_board || []).length) {
-      verdict.textContent = `📭 None of the ${s.universe_size} scanned stocks fully ` +
+      verdict.textContent = `None of the ${s.universe_size} scanned stocks fully ` +
         `qualifies today. The closest are under "Best of the rest" below, each with ` +
         `exactly what's missing — or click a blue suggestion to relax one filter.`;
     } else {
-      verdict.textContent = `📭 None of the ${s.universe_size} scanned stocks ` +
+      verdict.textContent = `None of the ${s.universe_size} scanned stocks ` +
         `qualifies today, and nothing came close. Usually a falling market — ` +
         `patience is a position too.`;
     }
@@ -1890,7 +1894,7 @@ async function refresh() {
     ps.style.display = "";
     const w = Object.entries(s.portfolio.sector_weights || {})
       .sort((a, b) => b[1] - a[1]).map(([k, v]) => `${esc(k)} ${esc(v)}%`).join(" · ");
-    ps.innerHTML = `📊 Your portfolio: €${esc(s.portfolio.book_eur)} total · €${esc(s.portfolio.cash_eur)} cash` +
+    ps.innerHTML = `Your portfolio: €${esc(s.portfolio.book_eur)} total · €${esc(s.portfolio.cash_eur)} cash` +
       ` · ${esc(s.portfolio.n_positions)} positions · room for ` +
       (s.portfolio.risk_budget_eur == null ? "n/a" : `€${esc(s.portfolio.risk_budget_eur)}`) +
       ` more risk` + (w ? `<br>Sector split: ${w}` : "");
@@ -2009,7 +2013,7 @@ async function refresh() {
             `${esc(row.blocked === "unverified" ? "safety checks could not be verified — not a pick" : (row.blocked || "blocked"))}</td>`;
         }
         let v = (row[k] == null || row[k] === "") ? "—" : fmt(row[k]);
-        if (k === "fits_risk_budget" && row[k] != null) v = row[k] ? "✓" : "✗";
+        if (k === "fits_risk_budget" && row[k] != null) v = row[k] ? "Yes" : "No";
         let cls = k === "RR" ? "rr" : k === "score" ? "score" : k === "flags" ? "notes" : "";
         let style = k === "score" ? ` style="color:${scoreColor(row.score)}"` :
                     k === "fits_risk_budget" && row[k] === false ? ` style="color:var(--red)"` : "";
@@ -2029,15 +2033,15 @@ async function refresh() {
         }
         let tipAttr = k === "ticker" && row.name ? ` data-tip="${esc(row.name)}"` : "";
         if (k === "flags") {
-          // keep rows compact: a ⚠ count in the cell, the full plain-language
-          // explanation on hover (cards above show it in full)
+          // keep rows compact: a warning count in the cell, the full
+          // plain-language explanation on hover (cards above show it in full)
           // the count must be of WARNINGS only — counting "earnings date
-          // from the market calendar" as a warning put a ⚠ on every
+          // from the market calendar" as a warning put a flag on every
           // correctly-verified row
           const warn = flagText(row[k], "warn");
           const all = flagText(row[k]);
           const n = warn ? warn.split("; ").length : 0;
-          v = n ? `⚠ ${n}` : "—";
+          v = n ? `${n} flag${n === 1 ? "" : "s"}` : "—";
           if (all) tipAttr = ` data-tip="${esc(all)}"`;
         }
         return `<td class="${cls}"${style}${tipAttr} data-l="${esc(label)}">${esc(v)}</td>`;

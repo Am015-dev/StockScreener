@@ -663,3 +663,90 @@ addition cannot tell a reader — Z'' only alongside a working Merton
 read, `us-gaap` only, EBIT-as-operating-income, no retroactive backfill
 for the VIX note; a fixed lookback window is a choice, and a CBOE outage
 reads identically to an ordinary day, by design.
+
+### Round 10 — 2026-08-15 — one shared nav, sitewide, and every emoji dropped
+
+Operator: "The website is not easy to navigate drop emojis and prose
+user can not navigate neither from browser or phone." Ran a full
+read-only audit (file:line level, via a research subagent) before
+touching anything, rather than guessing at what "hard to navigate"
+meant.
+
+**What the audit found, concretely:**
+
+- **No shared navigation existed.** `grep -r "{% extends\|{% include"
+  templates/` returned nothing — all 7 templates hand-rolled their own
+  nav independently. Two different CSS classes (`.tiny` vs `.top-nav`)
+  implemented the visually-identical back-link, and every page's footer
+  link list carried a DIFFERENT set of "other pages" links — no two
+  pages agreed on what else existed on the site.
+- **`/` (the page every visitor lands on) had zero navigation until the
+  very bottom** — after the h1, intro prose, up to 5 full pick cards,
+  and two explainer cards (~700-900+ words). Four of six secondary
+  pages (`/patterns`, `/credit/<ticker>`, `/limits`, `/changelog`) were
+  dead ends: a single "back to home" link, no route to any OTHER page
+  without returning to `/` first. `/changelog` was linked from
+  nowhere at all — reachable only by typing the URL directly.
+- **Nav links had no tap padding.** Every back-link/footer-nav link used
+  `.tiny`/`.top-nav`/`.hint` (~13px text, zero padding) against real
+  buttons on the same pages (`.55rem 1.1rem` padding) — footer link
+  lists packed 3-4 links on one line separated only by `·`.
+- **Real pictographic emoji were concentrated almost entirely in
+  `templates/index.html`** (`/full`): a literal `medal()` function
+  returning `🥇🥈🥉🏅`, plus `⛔⚠️📥↩▶✅📂🎯⏳❌📭📊` scattered through
+  inline JS status messages. `today.html` had one `ICON` map (`✓⚠⛔`)
+  feeding the credit-standing widget. `investors.html`, `changelog.html`,
+  `markdown_page.html` were already emoji-free — proof the rest of the
+  codebase already knew how to do this: `credit.py`/`plan.py` use plain
+  words + CSS color only, never a glyph.
+
+**What shipped:**
+
+- **`templates/_nav.html`** (new): one shared partial, included via
+  `{% include "_nav.html" %}` at both the top (right after `<div
+  class="wrap">`, before any content) and bottom of all 7 templates.
+  Same 5 primary links everywhere (Today's Five, Full screener,
+  Superinvestors, Patterns tested, Limits), plus Changelog rendered
+  visually smaller/demoted (now reachable for the first time) rather
+  than given equal weight. The current page renders as bold, non-link
+  text via `request.path`, with `/today` explicitly folded onto `/` —
+  they render the identical template, and treating them as different
+  paths would have made `/`'s and `/today`'s bytes differ for the first
+  time ever, breaking `test_today_gate.py`'s own "/ and /today serve
+  the same page" pin (caught by that exact test failing, not by
+  inspection — fixed by computing `nav_path` once rather than reading
+  `request.path` directly in the loop). CSS written against only the
+  custom-property names spelled identically across all 7 templates
+  (`--bg`/`--line`/`--ink`/`--ink-2`/`--ink-3`/`--accent`), deliberately
+  avoiding `--card`/`--panel` (the one pair that is NOT spelled the
+  same on `index.html` vs. the other six) so the nav needed zero
+  per-page token edits to look right. Link padding matches this
+  codebase's own existing button convention (`.55rem`-ish), not an
+  invented tap-target number.
+- **Every real emoji removed**, replaced with this codebase's own
+  established pattern (plain word + existing CSS color class, matching
+  `credit.py`/`plan.py`): `medal()` → `rankLabel()` returning `#1`/`#2`/
+  etc.; every `⛔⚠️📥↩▶✅📂🎯⏳❌📭📊✓✗` in `index.html`'s JS dropped, in each
+  case leaving the color-coded word that was already sitting next to
+  it (or adding one, e.g. "Yes"/"No" for a bare `✓`/`✗` risk-budget
+  check); `today.html`'s `ICON` map removed entirely, keeping the
+  `COLOR` map beside it. Two non-website spots cleaned in the same
+  pass: `screener.py`'s progress log line (renders verbatim into
+  `/full`'s live log panel) and `app.py`'s `/alert` Slack-message
+  builder. Kept deliberately: `←`/`→` (back-link and trend arrows),
+  `▲▼` (sort-direction indicators), `▸` (expand-hint chips), `━`/`┄`
+  (chart legend line styles), `·` (separator) — none of these are
+  pictographic emoji, all are standard non-emoji typographic/UI
+  symbols already used the same way elsewhere on the web.
+  `scripts/sweep.py` (a local dev CI report generator, never served by
+  Flask) was left untouched — out of scope for "the website."
+
+**Tests:** `tests/test_page_robustness.py` gained a check that all 6
+core pages (`/`, `/full`, `/investors`, `/patterns`, `/limits`,
+`/changelog`) share the identical nav link set, positioned before the
+first `<h1>`, and render zero emoji codepoints.
+`tests/test_credit_endpoint.py` gained the same check for
+`/credit/<ticker>`, reusing its existing complete `PUBLISHED_CREDIT["P05"]`
+fixture rather than building a new minimal one that turned out to be
+missing fields the "measured" branch of `credit.html` needs (caught by
+a 500 on first run, not by inspection). Full suite (33 files) green.

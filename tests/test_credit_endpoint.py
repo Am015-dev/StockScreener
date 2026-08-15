@@ -466,6 +466,33 @@ assert "held at the" in html and "filing across this" in html
 print("the report carries the metric, the history, the drivers, the peers "
       "and the provenance")
 
+# ---- the shared site nav renders here too, and no emoji anywhere ----
+# credit.html is the one page a full nav+emoji fixture actually needs
+# more than a bare book entry — checked here, where PUBLISHED_CREDIT's
+# P05 already carries every field the "measured" branch reads.
+import re as _re_nav
+import html as _html_mod_nav
+_EMOJI_RE_NAV = _re_nav.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000026FF"
+    "\U00002700-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "]+"
+)
+assert 'class="sitenav' in html, "/credit/<ticker> has no shared nav"
+for _label in ("Today's Five", "Full screener", "Superinvestors",
+              "Patterns tested", "Limits", "Changelog"):
+    assert _label in _html_mod_nav.unescape(html), \
+        f"/credit/<ticker> is missing the '{_label}' nav link"
+_nav_at = html.find('class="sitenav')
+_h1_at = html.find("<h1")
+assert _nav_at != -1 and (_h1_at == -1 or _nav_at < _h1_at), \
+    "the nav must precede the first <h1> on /credit/<ticker> too"
+assert not _EMOJI_RE_NAV.findall(html), "/credit/<ticker> still renders emoji"
+print("/credit/<ticker> carries the same shared nav, ahead of the h1, "
+      "with no emoji")
+
 # a company it cannot measure gets a page that says so and claims nothing
 A._credit_book = lambda fetch=False: {}
 A._cik_for = lambda t, timeout=8.0: None

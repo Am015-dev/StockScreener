@@ -91,7 +91,7 @@
 </style>
 
 <div class="wrap">
-  <p class="tiny" style="margin:0 0 1rem"><a href="/">&larr; Today's Five</a></p>
+{% include "_nav.html" %}
 
   {% if not loaded %}
   <div class="card">
@@ -203,12 +203,8 @@
   {% endif %}
   {% endif %}
 
-  <p class="tiny" style="text-align:center;margin-top:1.4rem">
-    <a href="/">Today's Five</a> ·
-    <a href="/full">Full screener</a> ·
-    <a href="/patterns">Patterns tested</a> ·
-    <a href="/limits">Limits &amp; data notes</a>
-  </p>
+  {% set nav_variant = "bottom" %}
+  {% include "_nav.html" %}
 </div>
 
 <script>
