@@ -107,7 +107,6 @@ def _no_stale_html(resp):
     return resp
 
 RESULTS_CSV = os.environ.get("RESULTS_CSV", "/tmp/screener_results.csv")
-ALERT_PROFILE = os.environ.get("ALERT_PROFILE", "/tmp/alert_profile.json")
 TOP_N = 3
 
 # How many stocks a scan started from the web page may touch.
@@ -119,6 +118,11 @@ TOP_N = 3
 # work; the button's job is to answer a custom filter question quickly and
 # actually finish. Clamping and SAYING SO beats failing and guessing why.
 WEB_SCAN_MAX = int(os.environ.get("WEB_SCAN_MAX", "250"))
+
+# How many holdings /check accepts in one request. Real portfolios are
+# tens of positions, not thousands; this bounds an unauthenticated
+# client's worst case before pretrade.check() starts iterating them.
+HOLDINGS_MAX = int(os.environ.get("HOLDINGS_MAX", "500"))
 
 _lock = threading.Lock()
 _state = {
@@ -464,7 +468,11 @@ def _drop_offmethod(payload: dict) -> tuple[dict, int]:
         rows = payload.get(key)
         if not isinstance(rows, list):
             continue
-        keep = [r for r in rows if not _methodology_violations(r)]
+        # defense in depth alongside snapshot_restore()'s own shape check —
+        # a stray non-dict row degrades to "dropped" here rather than
+        # 500ing every future load of this same filter set
+        keep = [r for r in rows
+               if isinstance(r, dict) and not _methodology_violations(r)]
         if key == "results":
             dropped = len(rows) - len(keep)
         payload[key] = keep
@@ -621,6 +629,27 @@ def _on_partial(rows, scanned, total, pending=None, gen=None):
         _state["pending"] = pending
 
 
+def _friendly_error(e: Exception) -> str:
+    """An unhandled exception, in a sentence a reader can act on.
+
+    `f"{type(e).__name__}: {e}"` used to go straight into the primary
+    error banner — a reader saw "KeyError: 'RSI'" as the headline, with
+    the raw exception the ONLY thing on screen. Every other failure path
+    in this file (the cancel handler, the SEC timeout, the earnings
+    calendar) already explains what happened in plain words and
+    reassures the reader it isn't about the data; this brings the
+    catch-all in line with that. The rate-limit case keeps a phrase the
+    page's own detection (a client-side regex on this exact string)
+    still matches, so that existing hint keeps firing.
+    """
+    print(f"[error] {type(e).__name__}: {e}", flush=True)
+    text = str(e).lower()
+    if any(k in text for k in ("rate limit", "too many requests", "429")):
+        return "Yahoo Finance is rate-limiting requests right now."
+    return "Hit an unexpected error while processing. Check the log " \
+           "below, then try again."
+
+
 def _run_scan(params):
     gen = _state.get("generation", 0)
     try:
@@ -684,7 +713,7 @@ def _run_scan(params):
         if _state["pending"]:
             _start_auto_reverify(dict(params or {}))
     except Exception as e:
-        _state["error"] = f"{type(e).__name__}: {e}"
+        _state["error"] = _friendly_error(e)
         _state["status"] = "error"
         _progress(f"Scan failed: {_state['error']}")
     finally:
@@ -772,7 +801,8 @@ def full_board():
 
 @app.route("/defaults")
 def defaults():
-    return jsonify({"defaults": screener.DEFAULTS, "sectors": screener.ALL_SECTORS})
+    return jsonify({"defaults": screener.DEFAULTS, "sectors": screener.ALL_SECTORS,
+                    "score_part_max": screener.SCORE_PART_MAX})
 
 
 @app.route("/run", methods=["POST"])
@@ -792,13 +822,15 @@ def run():
                       finished_at=None,
                       rejection_summary=[], near_misses=[], params_used=params,
                       near_board=[], relax_hints={}, scanned=None, health=None,
-                      pending=[])
+                      pending=[],
+                      # _results_refresher()'s adopt gate is purely a
+                      # results_ts freshness comparison, not a status check
+                      # — leaving the old value in place let a scheduled
+                      # scan publishing mid-run look "newer" than a scan
+                      # that had not written its first result yet, and get
+                      # silently adopted on top of it.
+                      results_ts=0)
         _auto["cycles"] = 0   # a manual run resets the auto-verify budget
-        try:   # the latest scan's filters double as the daily-alert profile
-            with open(ALERT_PROFILE, "w") as f:
-                json.dump(params, f)
-        except Exception:
-            pass
         if capped:
             _state["log"].append(
                 f"Live scan limited to the {WEB_SCAN_MAX} largest stocks (you "
@@ -845,7 +877,7 @@ def _run_backtest_thread(params):
         _save_snapshot(params)
     except Exception as e:
         _state["bt_status"] = "error"
-        _progress(f"Simulation failed: {type(e).__name__}: {e}")
+        _progress(f"Simulation failed: {_friendly_error(e)}")
 
 
 @app.route("/backtest", methods=["POST"])
@@ -924,7 +956,6 @@ def snapshot_load():
 # fail outright from a datacenter IP, which is the whole reason this
 # cannot be done live.
 _book = {"ts": 0.0, "data": None}
-BOOK_TTL = float(os.environ.get("BOOK_TTL", "3600"))
 BOOKS_POLL_S = float(os.environ.get("BOOKS_POLL_S", "300"))
 RESULTS_POLL_S = float(os.environ.get("RESULTS_POLL_S", "600"))
 MARKET_DB_POLL_S = float(os.environ.get("MARKET_DB_POLL_S", "3600"))
@@ -1448,6 +1479,16 @@ def check_trade():
     if not ticker:
         return jsonify({"ok": False, "error": "no ticker given"}), 400
     holdings = body.get("holdings") or []
+    # Unauthenticated POST, single worker: nothing upstream bounds how many
+    # holdings a client can send before pretrade.check() starts iterating
+    # and building a correlation matrix over them. No real portfolio needs
+    # anywhere near this many lines/entries.
+    _n_holdings = (len(holdings.splitlines()) if isinstance(holdings, str)
+                  else len(holdings) if isinstance(holdings, (list, dict))
+                  else 0)
+    if _n_holdings > HOLDINGS_MAX:
+        return jsonify({"ok": False,
+                        "error": f"too many holdings (max {HOLDINGS_MAX})"}), 400
     # the shipped page sends objects, but a hand-edited localStorage or an
     # API client can send bare tickers, and pretrade did h.get(...) on them
     if isinstance(holdings, dict):
@@ -1480,6 +1521,19 @@ def check_trade():
         holdings = parsed
 
     book = _price_book()
+    series = pretrade._series_of(book)
+    view = _credit_view() or {}
+    # Brokers print BRK.B; this app's price/earnings/credit books all use
+    # the dash form (BRK-B). _credit_for() already resolves this internally,
+    # but every OTHER lookup below (series, earn, screener._region — which
+    # is literally '"." in ticker' -> EU) used to run on the un-aliased dot
+    # form, so a real, well-covered US ticker like BRK.B got a wrong region
+    # classification and an empty price/credit read here even though
+    # /credit/BRK.B alone looked fine. Canonicalize once, up front.
+    if "." in ticker and ticker not in series and ticker not in view:
+        alias = ticker.replace(".", "-")
+        if alias in series or alias in view:
+            ticker = alias
     # Earnings come from the same published scan, so the answer here is the
     # one the board used — not a second opinion that could disagree with it.
     # Never build inside the request — see _earnings_calendar(build=...).
@@ -1522,10 +1576,7 @@ def check_trade():
     # ticks. "ZZZZ: no earnings due for at least 45 days" was a true
     # sentence about the calendar and a false impression about a company
     # that does not exist.
-    series = pretrade._series_of(book)
-    view = _credit_view() or {}
-    known = (ticker in series or ticker in (earn or {})
-             or ticker in view or ticker.replace(".", "-") in view)
+    known = ticker in series or ticker in (earn or {}) or ticker in view
     # "unknown" is only a fact when the books are loaded. On a freshly
     # restarted instance they are empty for a minute, and this gate told
     # a visitor "Nothing is known about AAPL — check the spelling". An
@@ -1791,6 +1842,9 @@ def _company_identity(cik: int, timeout: float = 10.0) -> dict:
     return credit.parse_submissions_identity(buf)
 
 
+_peer_standings_memo = {"key": None, "data": {}}
+
+
 def _with_peers(rep: dict) -> dict:
     """Rank a distance against every other measured name on today's board
     — the whole book, and again within its own sector when enough of the
@@ -1801,12 +1855,34 @@ def _with_peers(rep: dict) -> dict:
     peers at all, and a ranking cached at that moment would be served as
     "unavailable" for the next 24 hours to everyone who asked. It costs
     nothing to redo — these are cache reads, not network calls.
+
+    peer_standings() itself IS worth memoizing, though: it is O(n^2) over
+    the book (confirmed ~65ms wall-clock at 389 measured names, and this
+    is a single-worker instance where CPU-bound Python holds the GIL for
+    every other in-flight request), and the common case — a ticker
+    already in the published book — asks the identical question on every
+    single /credit/<ticker> view. Recomputed once per book refresh
+    (_credit_view()'s own cache key), not once per page view.
     """
     if rep.get("dd") is None:
         return rep
     me = (rep.get("ticker") or "").upper()
     published = _credit_view() or {}
     if len(published) >= 5:
+        key = (_creds["ts"], _book["ts"])
+        if _peer_standings_memo["key"] != key:
+            whole = {t2.upper(): r for t2, r in published.items()}
+            _peer_standings_memo.update(key=key, data=credit.peer_standings(whole))
+        stand = _peer_standings_memo["data"]
+        if me in stand:
+            # `rep` here is sourced FROM this same published view (see
+            # _credit_for()'s `pub = view.get(ticker)` path) whenever `me`
+            # is already a key in it, so the memoized standing is exactly
+            # what a fresh computation on this `rep` would have produced.
+            return dict(rep, **stand[me])
+        # A brand-new company (a live SEC fetch, or a cache_store hit,
+        # neither yet in the published book) — the rare case, worth the
+        # one-off O(n) computation rather than invalidating the memo.
         book = {t2.upper(): r for t2, r in published.items()}
         book[me] = rep
         stand = credit.peer_standings(book)
@@ -1911,8 +1987,11 @@ def _credit_for(ticker: str, budget_s: float = 16.0) -> dict:
                            "with the company — try again in a moment.",
                 "missing": ["SEC filings"]}
     except Exception as e:
+        print(f"[credit] {ticker}: {type(e).__name__}: {e}", flush=True)
         return {"ok": True, "ticker": ticker, "dd": None,
-                "verdict": f"Could not read the filings ({type(e).__name__}).",
+                "verdict": "Could not read the filings just now — a fetch "
+                          "problem, not a statement about the company. "
+                          "Try again in a moment.",
                 "missing": ["SEC filings"]}
 
     row = next((r for r in (_state.get("results") or [])
@@ -2016,6 +2095,19 @@ def credit_page(ticker: str):
     page costs no outbound call.
     """
     t = (ticker or "").strip().upper()
+    # _credit_for() resolves BRK.B -> BRK-B internally, but only for ITS
+    # OWN lookups — the alias never propagates back here, so every other
+    # use of `t` below (the price chart, the dip-check trades) stayed on
+    # the un-aliased dot form and came back empty even when the credit
+    # standing above it was correct. Canonicalize once, up front, the same
+    # way /check now does.
+    if t and "." in t:
+        series_t = pretrade._series_of(_price_book())
+        view_t = _credit_view() or {}
+        if t not in series_t and t not in view_t:
+            alias = t.replace(".", "-")
+            if alias in series_t or alias in view_t:
+                t = alias
     rep = _credit_for(t) if t else {}
     # Dates and closes are paired BEFORE any filtering. The published
     # calendar is the union of US and EU sessions, so a US ticker carries
@@ -2562,8 +2654,30 @@ def snapshot_restore():
     params = snap.get("_params")
     if not params:
         return jsonify({"ok": True, "restored": False})
+    # db.restore_edge() and journal.restore() (the two structurally similar
+    # mirror-restore endpoints) both validate their input's shape before
+    # writing it; this one didn't. A non-dict row here reaches
+    # _methodology_violations() on the next load of this same filter set
+    # (row.get(...) on a string) and 500s until a real scan overwrites it —
+    # reject the shape up front instead.
+    for key in ("results", "top_picks", "near_board", "pending"):
+        rows = snap.get(key)
+        if rows is not None and (not isinstance(rows, list)
+                                 or not all(isinstance(r, dict) for r in rows)):
+            return jsonify({"ok": False, "restored": False,
+                            "message": f"'{key}' must be a list of objects"}), 400
     market_db.save_snapshot(params, {k: snap.get(k) for k in SNAPSHOT_KEYS})
-    return jsonify({"ok": True, "restored": bool(_load_snapshot(params))})
+    # snapshot_load() (its own POST sibling, same _load_snapshot() call)
+    # already guards this against a scan that is running; this one didn't,
+    # so a mirror restore firing mid-scan could flip _state["status"] to
+    # "done" and repopulate results underneath a scan thread still writing
+    # its own partial rows on top.
+    with _lock:
+        if _state["status"] == "running":
+            return jsonify({"ok": False, "restored": False,
+                            "message": "A scan is running."}), 409
+        restored = bool(_load_snapshot(params))
+    return jsonify({"ok": True, "restored": restored})
 
 
 @app.route("/auth/export")
@@ -2844,12 +2958,16 @@ def _warm_guard():
 STALL_AFTER_S = float(os.environ.get("STALL_AFTER_S", "300"))
 
 
-# The scan publishes every two hours while US markets are open, on
-# weekdays. When it stops — an exhausted Actions quota, a broken job — the
-# site keeps serving the last thing it published, which is correct. What
-# was NOT correct was saying nothing about why, or telling the reader to
+# The scan publishes hourly while US markets are open, on weekdays
+# (.github/workflows/scheduled-scan.yml's own cron: "5 13-21 * * 1-5" —
+# reverted from an earlier two-hour throttle once the repo went public and
+# Actions minutes became unmetered; the default below had been left at
+# the old cadence, making the overdue check below 2x too lenient). When
+# the scan stops — an exhausted Actions quota, a broken job — the site
+# keeps serving the last thing it published, which is correct. What was
+# NOT correct was saying nothing about why, or telling the reader to
 # "press Run" for a button that was removed months ago.
-SCAN_EVERY_H = float(os.environ.get("SCAN_EVERY_H", "2"))
+SCAN_EVERY_H = float(os.environ.get("SCAN_EVERY_H", "1"))
 SCAN_WINDOW = "13:00-21:00 UTC on weekdays"
 
 
@@ -3020,8 +3138,8 @@ def _send_alert(text: str) -> list[str]:
 
 @app.route("/alert", methods=["GET", "POST"])
 def alert():
-    """Scheduled entry point (GitHub Actions cron): rerun the saved filter
-    profile and push the verified top picks to the configured channels."""
+    """Scheduled entry point (GitHub Actions cron): read the published
+    board and push the current watchlist to the configured channels."""
     # This used to run a full scan inline, in the request thread, with
     # universe_max=1000 whenever the saved profile was missing — which is
     # after every deploy, because /tmp is wiped. That is four times the
@@ -3063,8 +3181,21 @@ def alert():
                      + (f" ({len(pend)} awaiting data verification)" if pend else ""))
     lines.append("https://pullback-screener.onrender.com")
     text = "\n".join(lines)
+    # "no channels configured" and "configured but delivery failed" used to
+    # look identical to the caller — both a 200 with an empty `sent` list —
+    # so the scheduled workflow's green checkmark could not tell "nothing
+    # is set up" from "Telegram/Discord rejected this and nobody noticed".
+    # The first is a deliberate, expected state; the second is a real
+    # failure the cron's own curl should be able to fail loudly on.
+    configured = bool(os.environ.get("ALERT_TELEGRAM_TOKEN")
+                       and os.environ.get("ALERT_TELEGRAM_CHAT")) \
+        or bool(os.environ.get("ALERT_DISCORD_WEBHOOK"))
     sent = _send_alert(text)
     if not sent:
+        if configured:
+            return jsonify({"ok": False, "sent": [], "verified": len(res),
+                            "note": "a channel is configured but delivery "
+                                    "failed"}), 502
         return jsonify({"ok": True, "sent": [], "verified": len(res),
                         "note": "no channels configured — set ALERT_TELEGRAM_TOKEN"
                                 "+ALERT_TELEGRAM_CHAT and/or ALERT_DISCORD_WEBHOOK"})
@@ -3128,7 +3259,12 @@ def journal_restore():
 
 @app.route("/results.csv")
 def results_csv():
-    if not _state["results"]:
+    # Qualified picks and blocked (pending) rows are populated
+    # independently — a scan can finish with zero qualified picks but a
+    # non-empty pending list, and this guard used to 404 before ever
+    # reaching the code below whose own comment guarantees blocked picks
+    # are always carried.
+    if not _state["results"] and not _state.get("pending"):
         return Response("no results yet\n", status=404, mimetype="text/plain")
     buf = io.StringIO()
     # The export must carry the blocked picks too. The page shows them as

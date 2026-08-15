@@ -119,6 +119,51 @@ assert scanned["n"] == 0, "/alert started a scan on the web instance"
 print("/alert reports the published board and never scans")
 
 
+# ---- /run and /backtest: the actual buttons, never previously POSTed
+# through the test client anywhere in the suite ----
+# Both carry real, user-facing behavior with zero regression protection
+# before this: the WEB_SCAN_MAX cap (the number KNOWN_ISSUES.md documents
+# to readers), the 409-when-already-running guard on each, and /backtest's
+# 400 when there is nothing to simulate.
+_saved_run_scan = A._run_scan
+A._run_scan = lambda params: None   # don't actually scan in a test
+try:
+    A._state.update(status="idle", results_ts=999.0)
+    over_cap = A.WEB_SCAN_MAX + 500
+    r = client.post("/run", json={"universe_max": over_cap})
+    body = r.get_json()
+    assert r.status_code == 200, r.status_code
+    assert body["params"]["universe_max"] == A.WEB_SCAN_MAX, \
+        f"a request for {over_cap} must be capped to {A.WEB_SCAN_MAX}, got {body['params']}"
+    assert body["capped_from"] == over_cap
+    # the freshness gate a scheduled-scan adoption checks is a bare
+    # results_ts comparison — leaving the pre-scan value in place let a
+    # scan starting look "stale" and get silently overwritten mid-run
+    assert A._state["results_ts"] == 0, \
+        "/run must reset results_ts, or the adopt-published gate can " \
+        "silently overwrite an in-flight scan"
+    print(f"POST /run caps universe_max to {A.WEB_SCAN_MAX} and resets results_ts")
+
+    r2 = client.post("/run", json={})
+    assert r2.status_code == 409, r2.status_code
+    print("a second POST /run while one is in flight is refused, not queued")
+finally:
+    A._run_scan = _saved_run_scan
+    A._state.update(status="idle")
+
+_saved_universe = screener._cache.get("universe")
+screener._cache["universe"] = None
+try:
+    r3 = client.post("/backtest", json={})
+    assert r3.status_code == 400, r3.status_code
+    assert "have not been simulated" in r3.get_json()["message"]
+    print("POST /backtest with no cached universe and no stored run refuses with a real reason")
+finally:
+    screener._cache["universe"] = _saved_universe
+
+print("\n/RUN AND /BACKTEST ROUTE COVERAGE PINNED")
+
+
 # ---- request bodies are bounded on a 512MB instance ----
 assert A.app.config.get("MAX_CONTENT_LENGTH"), "an unbounded body is a memory bomb"
 big = "x" * (A.app.config["MAX_CONTENT_LENGTH"] + 1024)
@@ -762,6 +807,17 @@ for _payload, _want in (
 A._credit_view = _saved_view_p
 print("every holdings shape the page teaches parses to tickers, never numbers")
 
+# ---- /check refuses an absurdly long holdings list instead of iterating it ----
+_too_many = [{"ticker": "AAPL", "shares": 1} for _ in range(A.HOLDINGS_MAX + 1)]
+r = _c2.post("/check", json={"ticker": "ZQX", "holdings": _too_many})
+assert r.status_code == 400, r.status_code
+assert "too many holdings" in (r.get_json() or {}).get("error", "")
+_ok_many = [{"ticker": "AAPL", "shares": 1} for _ in range(A.HOLDINGS_MAX)]
+r2 = _c2.post("/check", json={"ticker": "ZQX", "holdings": _ok_many})
+assert r2.status_code == 200, r2.status_code
+print(f"a holdings list over {A.HOLDINGS_MAX} entries is refused with 400, "
+      f"exactly {A.HOLDINGS_MAX} is accepted")
+
 print("\nCHECK PARSER PINNED")
 
 
@@ -831,6 +887,37 @@ try:
     assert rep.get("not_modelled"), rep
     print("the dot form gets the same honest refusal as the dash form")
 
+    # _credit_for()'s own alias resolution is local to itself — it never
+    # propagated back to the caller, so /check's OTHER lookups (series,
+    # region) and /credit/<ticker>'s price-history read stayed on the
+    # un-aliased dot form even though the credit standing above looked
+    # fine. A ticker with real series data under the dash form only,
+    # asked for under the dot form, must resolve everywhere, not just in
+    # the one call that happened to alias internally.
+    _saved_pb3 = A._price_book
+    A._price_book = lambda fetch=False: {
+        "series": {"BRK-B": [300.0 + i for i in range(25)]},
+        "dates": [f"2026-07-{d:02d}" for d in range(1, 26)]}
+    A._credit_view = lambda: {"BRK-B": {"dd": 12.5, "name": "Berkshire",
+                                        "sector": "Financials", "band": "very calm",
+                                        "driven_by": "both", "equity_vol": 0.2,
+                                        "equity": 5e11, "default_point": 1e10,
+                                        "market_leverage": 0.05, "asset_vol": 0.15}}
+    try:
+        _c5 = A.app.test_client()
+        r5 = _c5.post("/check", json={"ticker": "BRK.B", "holdings": ""}).get_json()
+        assert r5["verdict"] != "warn" or "check the spelling" not in r5["bottom_line"], \
+            "BRK.B must resolve to BRK-B's real series/credit data, not read as unknown"
+        assert r5["book_size"] > 0
+        page = _c5.get("/credit/BRK.B")
+        assert page.status_code == 200
+        assert "300.0" in page.get_data(as_text=True) or "12.5" in page.get_data(as_text=True), \
+            "the dot-form page must carry the dash-form ticker's real price/credit data through"
+        print("BRK.B resolves to BRK-B's real data in /check and /credit/<ticker>, "
+              "not just inside _credit_for()")
+    finally:
+        A._price_book = _saved_pb3
+
     _c4 = A.app.test_client()
     r = _c4.post("/check", json={"ticker": "ZZZZ", "holdings": ""}).get_json()
     assert r["verdict"] == "warn"
@@ -867,3 +954,55 @@ finally:
     A._price_book, A._credit_view = _saved_pb2, _saved_view2
 
 print("\nWARM-UP VS UNKNOWN PINNED")
+
+
+# ---- /configs: clears_bar had zero test coverage ----
+# This is the project's own machine-checked version of "don't render an
+# unmeasured thing as safe" for simulated rule sets (profit factor >= 1.5,
+# drawdown no worse than SPY/-20%, Sortino >= 1.0) — a sign or boundary
+# error here would silently let a losing configuration report
+# clears_bar=true with nothing to catch it.
+import db as market_db_direct
+
+def _seed_config(rsi_low, metrics):
+    p = screener.clean_params({"rsi_low": rsi_low})
+    market_db_direct.record_backtest(p, [{
+        "ticker": "CFG", "date": "2025-01-01", "exit_date": "2025-01-10",
+        "outcome_r": 1.0, "status": "target", "rr_planned": 3.0,
+        "entry": 10.0, "stop_px": 9.0, "target_px": 13.0,
+        "bars_held": 5, "mfe_r": 1.0, "mae_r": -0.2}], n_stocks=10)
+    market_db_direct.record_metrics(p, metrics)
+    return p
+
+_seed_config(10, {"profit_factor": 2.0, "mdd_pct": 10.0, "sortino": 1.5,
+                  "spy": {"mdd_pct": 15.0}})
+_seed_config(12, {"profit_factor": 1.2, "mdd_pct": 10.0, "sortino": 1.5,
+                  "spy": {"mdd_pct": 15.0}})
+_seed_config(14, {"profit_factor": 2.0, "mdd_pct": 25.0, "sortino": 1.5,
+                  "spy": {"mdd_pct": 15.0}})
+_seed_config(16, {"profit_factor": 2.0, "mdd_pct": 10.0, "sortino": 0.5,
+                  "spy": {"mdd_pct": 15.0}})
+
+rows = {r["rules"]["rsi_low"]: r for r in
+        client.get("/configs").get_json()["configs"]}
+assert rows[10]["clears_bar"] is True and rows[10]["fails"] == [], rows[10]
+assert rows[12]["clears_bar"] is False and "profit factor" in rows[12]["fails"][0], rows[12]
+assert rows[14]["clears_bar"] is False and "drawdown" in rows[14]["fails"][0], rows[14]
+assert rows[16]["clears_bar"] is False and "Sortino" in rows[16]["fails"][0], rows[16]
+print("GET /configs' clears_bar and fails[] correctly flag each of the three "
+      "thresholds (profit factor, drawdown vs SPY, Sortino) independently")
+
+print("\n/CONFIGS CLEARS_BAR PINNED")
+
+
+# ---- /results.csv must not 404 away the blocked rows it promises to
+# carry, on a scan with zero qualified picks but pending ones ----
+A._state.update(results=[], pending=[{"ticker": "PEND", "score": None}],
+                results_ts=time.time())
+r = client.get("/results.csv")
+assert r.status_code == 200, r.status_code
+body = r.get_data(as_text=True)
+assert "PEND" in body and "BLOCKED" in body, body
+print("/results.csv exports blocked-only rows instead of 404ing them away")
+
+print("\n/RESULTS.CSV PENDING-ONLY EXPORT PINNED")

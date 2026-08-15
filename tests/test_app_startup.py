@@ -121,6 +121,18 @@ no_params = {"snapshot": dict(FRESH, results_ts=time.time() + 60)}
 assert client.post("/snapshot/restore", json=no_params).get_json()["restored"] is False
 print("snapshot mirror refuses stale, malformed and unattributed restores")
 
+# ---- and refuses a shape it cannot safely store ----
+# A non-dict entry in "results" used to reach market_db.save_snapshot()
+# unvalidated, then crash the NEXT load of this same filter set with an
+# unhandled AttributeError inside _methodology_violations() (row.get(...)
+# on a string). Reject the shape before it is ever written.
+bad_shape = {"snapshot": dict(FRESH, results_ts=time.time() + 120,
+                              _params=STRICT, results=["not-a-dict"])}
+r2 = client.post("/snapshot/restore", json=bad_shape)
+assert r2.status_code == 400, r2.status_code
+assert r2.get_json()["restored"] is False
+print("a malformed 'results' shape is refused with 400, never written")
+
 # ---- a simulation must carry the rules it was run under ----
 importlib.reload(app_mod)
 client = app_mod.app.test_client()

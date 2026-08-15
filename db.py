@@ -17,8 +17,11 @@ Config identity is the hash of the technical parameters only — fundamentals
 gates (profitability, earnings, analyst) can't be simulated historically on
 free data, so they don't participate in the hash.
 
-On Render's free tier this DB lives on ephemeral disk and rebuilds from a
-simulation re-run after a deploy; on a persistent disk it accumulates.
+On Render's free tier this DB lives on ephemeral disk. `app.py`'s
+`_restore_market_db()` pulls a ready-made copy of this file from the
+scheduled scan's own published `state/market.db` at boot and roughly
+hourly after — nothing here re-runs a simulation to rebuild it. On a
+persistent disk it also just accumulates from the scan's own writes.
 """
 
 import hashlib
@@ -93,10 +96,23 @@ CREATE TABLE IF NOT EXISTS edge_stats (
 """
 
 
+_schema_ready = False
+
+
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_SCHEMA)
+    global _schema_ready
+    if not _schema_ready:
+        # CREATE TABLE/INDEX IF NOT EXISTS is idempotent, so re-running it
+        # on every single call (this is the one function every db.py
+        # operation goes through) was pure overhead after the first —
+        # including against a market.db swapped in later by
+        # app.py's _restore_market_db(): that file is itself produced by
+        # this same _SCHEMA via a scan runner's own db.py, so every
+        # IF NOT EXISTS in it is already trivially satisfied.
+        conn.executescript(_SCHEMA)
+        _schema_ready = True
     return conn
 
 

@@ -684,8 +684,9 @@
   </section>
   <footer class="hint" style="margin:1.4rem 0 2.5rem;text-align:center;line-height:1.9">
     <a href="/limits" target="_blank" rel="noopener"><b>Known issues &amp; limits</b></a>
-    — what this tool cannot do, and the fact that its own strategy does not
-    currently clear its bar. Read it before acting on anything here.<br>
+    — what this tool cannot do, and the fact that its own entry signal was
+    tested against random entry and lost, twice. Read it before acting on
+    anything here.<br>
     <a href="/results.csv">Download this scan (CSV)</a> ·
     <span>Picks are a hypothesis, not advice. Verify earnings dates yourself.</span>
   </footer>
@@ -781,8 +782,11 @@ const REASONS = [
   ["not in uptrend",          "Not in an uptrend (below its 200-day average)"],
   ["RSI",                     "No real dip — momentum outside your dip zone"],
   ["no valid pivot support",  "No clear support level below the price"],
+  ["insufficient data for a volatility-based stop", "Not enough price history to size a volatility-based stop"],
   ["price at/above swing high","Already back at its recent high — nothing left to target"],
   ["R:R",                     "Possible gain too small vs possible loss"],
+  ["degenerate risk math",    "Entry price at or past the stop-loss level"],
+  ["implausible reward:risk", "Reward:risk too good to be real (stale target)"],
   ["stop inside noise",       "Stop-loss would sit inside the normal daily wiggle"],
   ["excluded sector",         "Financial sector (always excluded)"],
   ["sector not selected",     "Sector not ticked in your filters"],
@@ -852,15 +856,16 @@ let lastNearRows = [];  // current "Best of the rest" rows, same purpose
 let resultsFilterText = "";
 
 // The maximum points each score component can contribute (screener.py's
-// score_row weights), used only to size the bar fills — the numbers
-// themselves come from the row's own score_parts. Also fixes the display
-// order: jsonify sorts object keys alphabetically, which would otherwise
-// scramble "reward vs risk" (30 points) in between "penalties" and
-// "pullback volume".
-const PART_MAX = {"reward vs risk": 30, "strength vs market": 15,
-                   "depth of the dip": 15, "closeness to support": 15,
-                   "pullback volume": 10, "earnings distance": 7.5,
-                   "analyst consensus": 7.5};
+// SCORE_PART_MAX), used only to size the bar fills — the numbers
+// themselves come from the row's own score_parts. Read from /defaults
+// (loadDefaults() below) so a rebalance of the real weights can never
+// silently drift out of sync with this display-only copy the way a
+// hand-typed literal could; this starting value is only what renders
+// for the instant before that fetch resolves.
+let PART_MAX = {"reward vs risk": 30, "strength vs market": 15,
+                "depth of the dip": 15, "closeness to support": 15,
+                "pullback volume": 10, "earnings distance": 7.5,
+                "analyst consensus": 7.5};
 const PART_ORDER = ["reward vs risk", "strength vs market", "depth of the dip",
                      "closeness to support", "pullback volume", "earnings distance",
                      "analyst consensus", "penalties", "did not qualify",
@@ -907,22 +912,37 @@ function sortRows(rows, key, desc) {
 function wireSortable(container, getState, setState, onChange) {
   if (container.dataset.sortWired) return;
   container.dataset.sortWired = "1";
-  container.addEventListener("click", ev => {
-    const th = ev.target.closest("th[data-sort]");
-    if (!th) return;
+  const cycle = th => {
     const k = th.dataset.sort;
     const {key, desc} = getState();
     if (key === k && desc) setState(k, false);
     else if (key === k) setState(null, true);
     else setState(k, true);
     onChange();
+  };
+  container.addEventListener("click", ev => {
+    const th = ev.target.closest("th[data-sort]");
+    if (th) cycle(th);
+  });
+  // A <th> isn't natively focusable or keyboard-operable — tabindex="0" on
+  // the markup (sortHeader() below) makes it reachable; this makes Enter/
+  // Space act on it the same way a click already does.
+  container.addEventListener("keydown", ev => {
+    const th = ev.target.closest("th[data-sort]");
+    if (!th) return;
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      cycle(th);
+    }
   });
 }
 
 function sortHeader(key, label, tip, curKey, curDesc) {
+  const sorted = curKey === key;
+  const ariaSort = sorted ? (curDesc ? "descending" : "ascending") : "none";
   return `<th data-tip="${esc(tip)}" data-sort="${esc(key)}" class="sortable` +
-    `${curKey === key ? " sorted" : ""}">${esc(label)}` +
-    `${curKey === key ? (curDesc ? " ▼" : " ▲") : ""}</th>`;
+    `${sorted ? " sorted" : ""}" tabindex="0" aria-sort="${ariaSort}">${esc(label)}` +
+    `${sorted ? (curDesc ? " ▼" : " ▲") : ""}</th>`;
 }
 
 function esc(s) {
@@ -941,6 +961,7 @@ function tkLink(t) {
 async function loadDefaults() {
   const d = await (await fetch("/defaults")).json();
   DEFAULTS = d.defaults; SECTORS = d.sectors;
+  if (d.score_part_max) PART_MAX = d.score_part_max;
   document.getElementById("sectorChecks").innerHTML = SECTORS.map(s =>
     `<label><input type="checkbox" class="sector" value="${esc(s)}"> ${esc(s)}</label>`).join("");
   resetFilters();
@@ -1443,6 +1464,14 @@ function drawCurve(pts) {
   const path = pts.map((p, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(p.cum_r).toFixed(1)).join(" ");
   const zero = Y(0);
   const up = pts[pts.length - 1].cum_r >= 0;
+  const cum = pts[pts.length - 1].cum_r;
+  // Unlike sparkSVG (which already sets this), this chart's only other text
+  // is #btCurveNote explaining what the axis MEANS, never what it shows —
+  // a screen reader gets nothing without this.
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label",
+    `Cumulative result over ${pts.length} trade${pts.length === 1 ? "" : "s"}, from ` +
+    `${pts[0].date} to ${pts[pts.length - 1].date}, ending at ${cum > 0 ? "+" : ""}${cum}R`);
   svg.innerHTML =
     `<line x1="${PL}" y1="${zero}" x2="${W - PR}" y2="${zero}" stroke="var(--border)" stroke-width="1" stroke-dasharray="4 4"/>` +
     `<text x="${PL - 6}" y="${zero + 4}" text-anchor="end" font-size="11" fill="var(--muted)">0R</text>` +
@@ -1961,9 +1990,7 @@ async function refresh() {
   // poll, so per-header listeners would leak on a live scan
   if (!res.dataset.sortWired) {
     res.dataset.sortWired = "1";
-    res.addEventListener("click", ev => {
-      const th = ev.target.closest("th[data-sort]");
-      if (!th) return;
+    const cycleSort = th => {
       const k = th.dataset.sort;
       if (sortKey === k && sortDesc) sortDesc = false;
       else if (sortKey === k) { sortKey = null; sortDesc = true; }  // 3rd click restores
@@ -1972,6 +1999,21 @@ async function refresh() {
       // table builder: /status is a small in-memory read and this keeps
       // one code path for the table, sorted or not
       refresh();
+    };
+    res.addEventListener("click", ev => {
+      const th = ev.target.closest("th[data-sort]");
+      if (th) cycleSort(th);
+    });
+    // Same reasoning as wireSortable()'s keydown twin: a <th> needs
+    // tabindex to be reachable at all (set on the markup above), and
+    // Enter/Space to be operable once reached.
+    res.addEventListener("keydown", ev => {
+      const th = ev.target.closest("th[data-sort]");
+      if (!th) return;
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        cycleSort(th);
+      }
     });
   }
   // A second delegated listener, separate from sorting: clicking a row
@@ -2080,7 +2122,8 @@ async function refresh() {
     res.innerHTML = "<table class=\"rsp\"><thead><tr>" +
       cols.map(([k, label, tip]) =>
         `<th data-tip="${esc(tip)}" data-sort="${esc(k)}" class="sortable` +
-        `${sortKey === k ? " sorted" : ""}">${esc(label)}` +
+        `${sortKey === k ? " sorted" : ""}" tabindex="0" aria-sort="` +
+        `${sortKey === k ? (sortDesc ? "descending" : "ascending") : "none"}">${esc(label)}` +
         `${sortKey === k ? (sortDesc ? " ▼" : " ▲") : ""}</th>`).join("") +
       "</tr></thead><tbody>" +
       allRows.map((row, idx) => `<tr class="expandable${row.__blocked ? " blockedrow" : ""}" data-idx="${idx}" title="Click for the score breakdown, and the rest of this row's columns on a phone">` +
@@ -2135,7 +2178,8 @@ async function refresh() {
     res.className = "empty";
     res.textContent = "No stocks matched all your filters today — normal in some markets. " +
       "Check 'Best of the rest' below for the closest candidates and why each fell short, " +
-      "or click a blue suggestion above to relax one filter and rescan.";
+      "or click a blue suggestion above to relax one filter — a scan already stored for that " +
+      "combination will show, or the next scheduled run will cover it.";
   } else if (s.status === "error") {
     count.textContent = "";
     res.className = "empty";
@@ -2267,12 +2311,16 @@ loadDefaults();
 refresh();
 
 // filters restored from this browser, or edited by hand: look for a stored
-// scan matching them rather than making the user re-scan to see anything
+// scan matching them rather than making the user re-scan to see anything.
+// saveLocal() used to fire only from the CSV-import success handler —
+// "Everything stays in your browser" was true for an imported portfolio
+// and silently false for one typed by hand, which vanished on reload with
+// no error. Same delegated listeners, so every edit persists either way.
 document.addEventListener("change", (e) => {
-  if (e.target.closest("#filterBox, .sector")) filtersChanged();
+  if (e.target.closest("#filterBox, .sector")) { filtersChanged(); saveLocal(); }
 });
 document.addEventListener("input", (e) => {
-  if (e.target.closest("#filterBox")) filtersChanged();
+  if (e.target.closest("#filterBox")) { filtersChanged(); saveLocal(); }
 });
 setTimeout(() => loadStoredScan(true), 900);   // after loadDefaults() settles
 </script>

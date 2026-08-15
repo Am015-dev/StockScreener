@@ -103,6 +103,27 @@ assert c["cal_covered"] is True
 print("build_candidates(): a short-history name is excluded, a real one "
       "carries its credit/vol/earnings fields through correctly")
 
+# is_financial used to compare a bool/list against the string "financial",
+# which was always False regardless of the report — a bank's absent dd read
+# as an unexplained "credit not measured" instead of "not modelled for
+# financials, by design". tests/test_ranking.py's own filters() test never
+# caught this because it hand-builds is_financial=True directly, bypassing
+# this derivation entirely.
+series2 = {"BANK": [50.0] * 25, "NORM": [50.0] * 25}
+creds2 = {"BANK": {"dd": None, "not_modelled": True, "name": "Some Bank",
+                   "sector": "Financials"},
+          "NORM": {"dd": 9.0, "name": "Some Co", "sector": "Industrials"}}
+cands2 = ranking.build_candidates(series2, {}, creds2, {}, {}, True,
+                                  earn_single_source=set(),
+                                  region_of=lambda t: "US")
+by_ticker = {c["ticker"]: c for c in cands2}
+assert by_ticker["BANK"]["is_financial"] is True, \
+    "a not_modelled credit report must derive is_financial=True"
+assert by_ticker["NORM"]["is_financial"] is False, \
+    "a normally-measured credit report must derive is_financial=False"
+print("build_candidates(): is_financial correctly derived from "
+      "not_modelled, not compared against the wrong type")
+
 print("\nBUILD_CANDIDATES PINNED")
 
 

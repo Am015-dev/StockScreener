@@ -1,10 +1,19 @@
 # 1.x is required in practice: older clients lack the cookie/crumb handshake
 # and browser-impersonation (curl_cffi) that keep Yahoo from 429-blocking
-# requests coming from cloud/datacenter IPs like Render's.
-yfinance>=1.5
+# requests coming from cloud/datacenter IPs like Render's. No lockfile
+# exists here, so every deploy re-resolves these floors against whatever
+# is latest on PyPI that day — an unreviewed major-version jump landing
+# silently on the next `git push` is a real risk on a 512MB single-worker
+# instance, not a hypothetical one. Ceilings below are set at the NEXT
+# untested major, not rolled back to whatever this floor originally
+# assumed — pandas 3.x and numpy 2.x are already what this app has been
+# tested against, confirmed by the full suite passing under exactly these
+# versions; only yfinance's own comment above already flags 2.x itself as
+# the risky jump, so that ceiling sits at the boundary already documented.
+yfinance>=1.5,<2.0
 requests>=2.31
-pandas>=2.0
-numpy>=1.26
+pandas>=2.0,<4.0
+numpy>=1.26,<3.0
 flask>=3.0
 gunicorn>=21.2
 # Adopted over the hand-typed HOLIDAYS table in market_clock.py: covers

@@ -436,14 +436,6 @@ _cache: dict = {
 }
 
 
-def clear_cache():
-    _cache.update(universe_key=None, universe=None, universe_ts=0.0,
-                  ohlc_key=None, ohlc=None, ohlc_ts=0.0,
-                  bench=None, bench_ts=0.0, info={}, earnings={}, finnhub={}, fhf={},
-                  qv7={})
-    cache_store.clear()
-
-
 def _fresh(ts: float, ttl: float = CACHE_TTL) -> bool:
     return time.time() - ts < ttl
 
@@ -1147,7 +1139,15 @@ def _finnhub_days_to_earnings(ticker: str) -> int | None:
         return stored
     days = None
     try:
-        today = pd.Timestamp.now().normalize()
+        # Naive .now() is the container's wall clock — UTC on Render — which
+        # flips to the next calendar date 4-5 hours before US-Eastern does
+        # (~8pm-midnight ET), under-counting days-to-earnings by one during
+        # that window. Anchor to ET's own calendar date instead, the same
+        # fix _get_days_to_earnings() already applies for its own tz-aware
+        # index; stripped back to naive here since Finnhub's own dates
+        # (below) carry no tz and must compare against something that
+        # doesn't either.
+        today = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
         r = requests.get(
             "https://finnhub.io/api/v1/calendar/earnings",
             params={"from": today.strftime("%Y-%m-%d"),
@@ -1211,16 +1211,20 @@ def _earnings_calendar(days_ahead: int = EARN_CAL_DAYS, progress=None,
     """
     key = f"earncal:{days_ahead}"
     hit, stored = cache_store.fetch(key, EARN_CAL_TTL)
+    # Anchored to US-Eastern's own calendar date, not the container's naive
+    # wall clock (UTC on Render) — UTC's date flips 4-5 hours before ET's
+    # does, under-counting every cached ticker's days-to-earnings by one
+    # during that window. Stripped back to naive since `stored["as_of"]`
+    # and the Nasdaq dates built below carry no tz of their own.
+    today = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
     if hit and isinstance(stored, dict) and "map" in stored:
         # stored as days-from-that-date; re-base onto today
-        shift = int((pd.Timestamp.now().normalize()
-                     - pd.Timestamp(stored["as_of"])).days)
+        shift = int((today - pd.Timestamp(stored["as_of"])).days)
         cal = {s: d - shift for s, d in stored["map"].items() if d - shift >= 0}
         return cal, bool(stored.get("complete"))
     if not build:
         return {}, False
 
-    today = pd.Timestamp.now().normalize()
     cal: dict[str, int] = {}
     complete, checked = True, 0
     for i in range(days_ahead + 1):
@@ -1418,6 +1422,19 @@ def _clamp01(x: float) -> float:
     return min(max(x, 0.0), 1.0)
 
 
+# The single source of truth for each component's weight — score_row()
+# below computes against it directly, and app.py's /defaults exposes it so
+# the /full page's score-breakdown bars size themselves against the real
+# weights instead of a hand-copied JS literal that would silently drift
+# the instant these numbers changed here (templates/today.html's own
+# radar chart already gets its weights from the server this way, via
+# ranking.py's component_max — this does the same for /full).
+SCORE_PART_MAX = {"reward vs risk": 30.0, "strength vs market": 15.0,
+                  "depth of the dip": 15.0, "closeness to support": 15.0,
+                  "pullback volume": 10.0, "earnings distance": 7.5,
+                  "analyst consensus": 7.5}
+
+
 def score_row(row: dict, p: dict) -> tuple[int, str, dict]:
     """0-100 composite quality score + a one-line human rationale + the
     exact arithmetic behind it.
@@ -1452,13 +1469,13 @@ def score_row(row: dict, p: dict) -> tuple[int, str, dict]:
     an_score = 0.5 if am is None else _clamp01((4.0 - am) / 3.0)     # 1.0 -> 1, 4.0 -> 0
 
     contributions = {
-        "reward vs risk": 30.0 * rr_score,
-        "strength vs market": 15.0 * rs_score,
-        "depth of the dip": 15.0 * pullback,
-        "closeness to support": 15.0 * support_prox,
-        "pullback volume": 10.0 * vol_score,
-        "earnings distance": 7.5 * earn,
-        "analyst consensus": 7.5 * an_score,
+        "reward vs risk": SCORE_PART_MAX["reward vs risk"] * rr_score,
+        "strength vs market": SCORE_PART_MAX["strength vs market"] * rs_score,
+        "depth of the dip": SCORE_PART_MAX["depth of the dip"] * pullback,
+        "closeness to support": SCORE_PART_MAX["closeness to support"] * support_prox,
+        "pullback volume": SCORE_PART_MAX["pullback volume"] * vol_score,
+        "earnings distance": SCORE_PART_MAX["earnings distance"] * earn,
+        "analyst consensus": SCORE_PART_MAX["analyst consensus"] * an_score,
     }
 
     flags = [f for f in str(row.get("flags") or "").split(",") if f]
@@ -1604,7 +1621,28 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 if support is None or support >= price:
                     reject(ticker, "no valid pivot support below price")
                     continue
-                stop = support * (1 - p["stop_buffer_pct"] / 100)
+                # Needed here, not just for the diagnostic stop_atr value
+                # below: DEFAULTS["stop_mode"] is "atr" (STRATEGY.md's own
+                # sweep found switching from a fixed pivot-percentage stop
+                # to 1.5xATR moved the return from -14.3% to +25.0% and
+                # halved the drawdown), and backtest.py already implements
+                # this branch correctly — this scanner, the one that
+                # actually prices every live pick, did not, and was
+                # unconditionally using the pivot-only stop the project's
+                # own measurement found inferior. Mirrors backtest.py's
+                # stop_mode branch exactly.
+                a = atr(hist)
+                if p["stop_mode"] == "atr":
+                    if a is None:
+                        reject(ticker, "insufficient data for a volatility-based stop")
+                        continue
+                    # Never place it ABOVE the pivot — the structural level
+                    # is what invalidates the setup, so the wider of the
+                    # two stops is the honest one.
+                    stop = min(support * (1 - p["stop_buffer_pct"] / 100),
+                              price - p["stop_atr_mult"] * a)
+                else:
+                    stop = support * (1 - p["stop_buffer_pct"] / 100)
                 resistance = float(hist["High"].tail(p["swing_lookback"]).max())
                 if resistance <= price:
                     reject(ticker, "price at/above swing high (no target)")
@@ -1621,7 +1659,6 @@ def run_screener(params: dict | None = None, progress=print, on_partial=None) ->
                 misses: list[tuple[str, str]] = []
                 r = rsi(hist["Close"])
                 dollar_vol = avg_vol * price
-                a = atr(hist)
                 stop_atr = round(risk_ps / a, 2) if a else None
                 if p["require_market_uptrend"] and regime.get(region) is False:
                     misses.append(("regime", f"market regime ({BENCHMARKS[region]} below SMA200)"))

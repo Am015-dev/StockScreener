@@ -236,11 +236,14 @@ rather than taken on trust.
 - **The scheduled scan runs on weekdays only, 13:00–21:00 UTC.** Outside
   those hours — including all weekend — the newest data is the last
   session's close, and the page says so.
-- **Storage is ephemeral.** Render's free plan wipes the disk on every
-  deploy, taking the journal, the simulation history and the stored
-  snapshots with it. The browser mirrors the edge statistics to
+- **Storage is ephemeral, for the journal specifically.** Render's free
+  plan wipes the disk on every deploy. The simulation history and the
+  stored snapshots (both live in `db.py`'s market database) now survive
+  this — `app.py` restores that file from the scheduled scan's own
+  published copy at boot and roughly hourly after. The journal has no
+  server-side equivalent restore yet; the browser mirrors it to
   localStorage as a partial defence. A persistent disk (~$1–2/month)
-  would fix it properly.
+  would fix the journal properly.
 - **Published scans are read from a public data branch**, with the copy
   committed into the build as a fallback for when that read fails. The
   `/published` endpoint reports which of the two answered, per file.
