@@ -55,8 +55,25 @@ def parse_portfolio_csv(text: str) -> dict:
     i_fx = col("fxrate", "fx")
 
     if i_ticker is None or i_qty is None:
-        raise ValueError("no ticker/shares columns found — expected a Revolut "
-                         "transaction export or a simple ticker,shares,cost CSV")
+        # No header row matched — but the app's own "ticker, shares, cost"
+        # export (see the in-page textarea placeholder and the CSV-import
+        # write-back in templates/index.html) has no header at all. If row
+        # 0 itself looks like a data row (ticker-ish first cell, numeric
+        # second cell), treat the whole file as headerless data instead of
+        # refusing a user's own round-tripped holdings.
+        first = rows[0]
+        looks_like_data = (
+            len(first) >= 2
+            and re.match(r"^[A-Za-z][A-Za-z0-9.\-]*$", (first[0] or "").strip())
+            and _NUM.match((first[1] or "").strip())
+        )
+        if not looks_like_data:
+            raise ValueError("no ticker/shares columns found — expected a Revolut "
+                             "transaction export or a simple ticker,shares,cost CSV")
+        rows = [["ticker", "shares", "cost"]] + rows
+        header = ["ticker", "shares", "cost"]
+        i_type = i_total = i_ccy = i_fx = None
+        i_ticker, i_qty, i_price = 0, 1, 2
 
     # ---- simple holdings list (no Type/Total Amount columns) ----
     if i_type is None or i_total is None:

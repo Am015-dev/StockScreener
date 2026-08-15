@@ -91,6 +91,17 @@ assert any("sold more than tracked" in n for n in odd["notes"]), odd["notes"]
 print("selling more than the file recorded is reported, never a negative holding")
 
 
+# ---- the app's own header-less export round-trips ----
+# templates/index.html writes holdings back as bare "ticker, shares, cost"
+# lines with no header row (matches the textarea placeholder). A user who
+# saves and re-uploads their own data must not get a hard refusal.
+headerless = pi.parse_portfolio_csv("AAPL, 10, 172.50\nMSFT, 5, 300.00\n")
+hh = by_ticker(headerless)
+assert hh["AAPL"]["shares"] == 10 and hh["AAPL"]["cost"] == 172.50, hh
+assert hh["MSFT"]["shares"] == 5, hh
+print("a header-less ticker/shares/cost export round-trips without a header row")
+
+
 # ---- unusable input is refused with a reason ----
 for bad, why in ((""                      , "empty file"),
                  ("a,b,c\n1,2,3\n"        , "no ticker/shares columns")):
