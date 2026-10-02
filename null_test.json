@@ -1,0 +1,25 @@
+{
+ "ran_at": 1790502877.5690377,
+ "preset": "wide-net",
+ "universe": 400,
+ "scanned": 383,
+ "real": {
+  "n": 2674,
+  "avg_r": 0.12,
+  "win_rate_pct": 44,
+  "profit_factor": 1.21
+ },
+ "null": {
+  "runs": 25,
+  "mean_avg_r": 0.0712,
+  "sd_avg_r": 0.03103,
+  "mean_win_rate": 60.8,
+  "mean_pf": 1.234,
+  "mean_trades": 3069,
+  "entry_rate": 0.02578592092574735
+ },
+ "z": 1.573,
+ "p_value": 0.0769,
+ "signal_alive": true,
+ "verdict": "the signal beats random entry on this sample"
+}
