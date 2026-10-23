@@ -1,0 +1,25 @@
+{
+ "ran_at": 1792312957.7786248,
+ "preset": "wide-net",
+ "universe": 400,
+ "scanned": 383,
+ "real": {
+  "n": 2902,
+  "avg_r": 0.1,
+  "win_rate_pct": 44,
+  "profit_factor": 1.17
+ },
+ "null": {
+  "runs": 25,
+  "mean_avg_r": 0.0596,
+  "sd_avg_r": 0.03376,
+  "mean_win_rate": 60.3,
+  "mean_pf": 1.194,
+  "mean_trades": 3272,
+  "entry_rate": 0.02631006346328196
+ },
+ "z": 1.197,
+ "p_value": 0.1538,
+ "signal_alive": false,
+ "verdict": "the signal carries no information a coin flip does not"
+}
